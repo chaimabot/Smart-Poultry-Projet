@@ -123,6 +123,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const [loading, setLoading] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [alertCount, setAlertCount] = useState(0);
+  const [alerts, setAlerts] = useState([]);
   const [poultryInfo, setPoultryInfo] = useState({
     name: poultryName || "Poulailler Principal",
     location: "",
@@ -198,10 +199,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
       console.warn("[API] getPoultryById error:", e.message);
     }
     try {
-      // Fetch only unread alerts
-      const alerts = await getAlerts(poultryId);
-      if (Array.isArray(alerts)) {
-        const unreadCount = alerts.filter((a) => !a.read).length;
+      // Fetch alerts with full details
+      const alertsData = await getAlerts(poultryId);
+      if (Array.isArray(alertsData)) {
+        setAlerts(alertsData);
+        const unreadCount = alertsData.filter((a) => !a.read).length;
         setAlertCount(unreadCount);
       }
     } catch (e) {
@@ -1872,6 +1874,121 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 : "Distribuer maintenant"}
             </Text>
           </TouchableOpacity>
+
+          {/* ══════════════════════════════════════════════════════════════ */}
+          {/* ALERTS / NOTIFICATIONS */}
+          {/* ══════════════════════════════════════════════════════════════ */}
+          
+          {alerts.length > 0 && (
+            <>
+              <View
+                style={{
+                  height: 1,
+                  backgroundColor: "#F1F5F9",
+                  marginVertical: 24,
+                }}
+              />
+
+              <SectionLabel>Notifications ({alerts.length})</SectionLabel>
+
+              {alerts.map((alert) => {
+                // Determine badge color based on severity
+                let badgeBg = "#F0FDF4";
+                let badgeColor = "#22C55E";
+                let borderColor = "#22C55E30";
+                
+                if (alert.severity === "warn") {
+                  badgeBg = "#FFF7ED";
+                  badgeColor = "#F97316";
+                  borderColor = "#F9731630";
+                } else if (alert.severity === "danger") {
+                  badgeBg = "#FEF2F2";
+                  badgeColor = "#EF4444";
+                  borderColor = "#EF444430";
+                }
+
+                return (
+                  <View
+                    key={alert._id}
+                    style={{
+                      backgroundColor: badgeBg,
+                      borderRadius: 12,
+                      padding: 12,
+                      marginBottom: 10,
+                      borderWidth: 1,
+                      borderColor: borderColor,
+                      opacity: alert.read ? 0.6 : 1,
+                    }}
+                  >
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "flex-start",
+                        gap: 10,
+                      }}
+                    >
+                      {/* Icon / Emoji */}
+                      <Text style={{ fontSize: 20 }}>
+                        {alert.icon || (alert.severity === "warn" ? "⚠️" : alert.severity === "danger" ? "🔴" : "✅")}
+                      </Text>
+
+                      {/* Message content */}
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            fontWeight: "700",
+                            color: badgeColor,
+                            marginBottom: 4,
+                          }}
+                        >
+                          {alert.message}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 10,
+                            color: "#94A3B8",
+                            fontWeight: "500",
+                          }}
+                        >
+                          {alert.timestamp
+                            ? new Date(alert.timestamp).toLocaleString("fr-FR", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                day: "2-digit",
+                                month: "2-digit",
+                              })
+                            : "À l'instant"}
+                        </Text>
+                      </View>
+
+                      {/* Type badge */}
+                      <View
+                        style={{
+                          backgroundColor: badgeColor + "20",
+                          borderRadius: 6,
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontSize: 9,
+                            fontWeight: "700",
+                            color: badgeColor,
+                            textTransform: "uppercase",
+                            letterSpacing: 0.5,
+                          }}
+                        >
+                          {alert.type}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
+            </>
+          )}
         </View>
       </ScrollView>
     </SafeAreaView>
