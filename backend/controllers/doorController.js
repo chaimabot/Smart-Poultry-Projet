@@ -1,7 +1,60 @@
 const DoorSchedule = require("../models/DoorSchedule");
 const DoorEvent = require("../models/DoorEvent");
+const { createDoorAlert } = require("../services/alertService");
 
-// GET /api/poulaillers/:id/door/schedule
+// In-memory tracking of door motion times (to detect timeouts)
+const doorMotionTracker = new Map();
+
+/**
+ * Mark door motion as started
+ * Used to detect if motor is stuck after 30s
+ */
+const trackDoorMotion = (poulaillerId, action) => {
+  doorMotionTracker.set(poulaillerId, {
+    action,
+    startTime: Date.now(),
+  });
+};
+
+/**
+ * Check if door motion timed out (> 30s without reaching end switch)
+ */
+const checkDoorTimeout = async (poulaillerId) => {
+  const motion = doorMotionTracker.get(poulaillerId);
+  if (!motion) return;
+
+  const elapsed = Date.now() - motion.startTime;
+  if (elapsed > 30000) {
+    // Motor stuck for more than 30s
+    await createDoorAlert(
+      poulaillerId,
+      "door_timeout",
+      "danger",
+      "⚠️ Moteur porte bloqué (fin de course non atteinte après 30s)"
+    );
+    doorMotionTracker.delete(poulaillerId);
+  }
+};
+
+/**
+ * Record door motion completed successfully
+ */
+const recordDoorCompletion = async (poulaillerId, action) => {
+  doorMotionTracker.delete(poulaillerId);
+
+  const messages = {
+    open: "✅ Porte ouverte à l'heure programmée",
+    close: "✅ Porte fermée à l'heure programmée",
+  };
+
+  await createDoorAlert(
+    poulaillerId,
+    `door_${action}`,
+    "info",
+    messages[action] || `Porte ${action}`
+  );
+};
+
 exports.getDoorSchedule = async (req, res) => {
   try {
     const { id } = req.params;
@@ -129,3 +182,8 @@ exports.getDoorHistory = async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 };
+
+// Export helpers for MQTT handler and cron jobs
+exports.trackDoorMotion = trackDoorMotion;
+exports.recordDoorCompletion = recordDoorCompletion;
+exports.checkDoorTimeout = checkDoorTimeout;

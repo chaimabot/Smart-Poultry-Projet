@@ -161,6 +161,16 @@ const AlertSettingsScreen = ({ route, navigation }) => {
     fetchData();
   }, [fetchData]);
 
+  // [NOTIFICATION] Mark all alerts as read when opening Alerts tab
+  useEffect(() => {
+    if (activeTab === "alerts" && alerts.length > 0) {
+      const hasUnread = alerts.some((a) => !a.read && !a.isRead);
+      if (hasUnread) {
+        handleMarkAllAsRead();
+      }
+    }
+  }, [activeTab]);
+
   // ── Save thresholds ─────────────────────────────────────────────────────────
   const handleSave = async () => {
     const err = validateThresholds(thresholds);
@@ -662,12 +672,29 @@ const AlertSettingsScreen = ({ route, navigation }) => {
             ) : (
               alerts.map((item) => {
                 const isRead = item.isRead || item.read;
+                // Support new alert system: icon emoji + new severity levels
+                const iconEmoji = item.icon || (item.severity === "danger" ? "🔴" : item.severity === "warn" ? "⚠️" : "✅");
+                const severityColor = 
+                  item.severity === "danger" ? "#ef4444" :
+                  item.severity === "warn" ? "#f97316" :
+                  "#22C55E";
+                const severityLabel =
+                  item.severity === "danger" ? "DANGER" :
+                  item.severity === "warn" ? "AVERTISSEMENT" :
+                  "INFO";
+                const severityBgColor =
+                  item.severity === "danger" ? "#ef444420" :
+                  item.severity === "warn" ? "#f9731620" :
+                  "#22C55E20";
+                
+                // Fallback to old system if needed
                 const isCrit =
                   item.severity === "critical" || item.type === "CRITIQUE";
                 const param = PARAM_ICONS[item.parameter] || {
                   icon: "warning",
                   color: "#f59e0b",
                 };
+                
                 return (
                   <TouchableOpacity
                     key={item._id}
@@ -681,26 +708,30 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                           backgroundColor: cardBg,
                           borderColor: isRead
                             ? borderCol
-                            : isCrit
-                              ? "#ef444430"
-                              : "#f9731630",
+                            : item.severity ? severityColor + "30" : (isCrit ? "#ef444430" : "#f9731630"),
                         },
                         isRead && { opacity: 0.55 },
                       ]}
                     >
-                      {/* Icône capteur */}
-                      <View
-                        style={[
-                          styles.alertIcon,
-                          { backgroundColor: param.color + "20" },
-                        ]}
-                      >
-                        <MaterialIcons
-                          name={param.icon}
-                          size={20}
-                          color={param.color}
-                        />
-                      </View>
+                      {/* Icône: emoji ou MaterialIcon */}
+                      {iconEmoji ? (
+                        <Text style={{ fontSize: 24, marginRight: 12 }}>
+                          {iconEmoji}
+                        </Text>
+                      ) : (
+                        <View
+                          style={[
+                            styles.alertIcon,
+                            { backgroundColor: param.color + "20" },
+                          ]}
+                        >
+                          <MaterialIcons
+                            name={param.icon}
+                            size={20}
+                            color={param.color}
+                          />
+                        </View>
+                      )}
 
                       {/* Contenu */}
                       <View style={{ flex: 1 }}>
@@ -719,19 +750,17 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                             style={[
                               styles.severityBadge,
                               {
-                                backgroundColor: isCrit
-                                  ? "#ef444420"
-                                  : "#f9731620",
+                                backgroundColor: item.severity ? severityBgColor : (isCrit ? "#ef444420" : "#f9731620"),
                               },
                             ]}
                           >
                             <Text
                               style={[
                                 styles.severityText,
-                                { color: isCrit ? "#ef4444" : "#f97316" },
+                                { color: item.severity ? severityColor : (isCrit ? "#ef4444" : "#f97316") },
                               ]}
                             >
-                              {isCrit ? "CRITIQUE" : "ATTENTION"}
+                              {item.severity ? severityLabel : (isCrit ? "CRITIQUE" : "ATTENTION")}
                             </Text>
                           </View>
                           <Text style={[styles.alertTime, { color: subCol }]}>

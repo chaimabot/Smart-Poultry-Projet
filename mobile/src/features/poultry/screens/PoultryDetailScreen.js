@@ -198,8 +198,12 @@ export default function PoultryDetailScreen({ route, navigation }) {
       console.warn("[API] getPoultryById error:", e.message);
     }
     try {
+      // Fetch only unread alerts
       const alerts = await getAlerts(poultryId);
-      if (Array.isArray(alerts)) setAlertCount(alerts.length);
+      if (Array.isArray(alerts)) {
+        const unreadCount = alerts.filter((a) => !a.read).length;
+        setAlertCount(unreadCount);
+      }
     } catch (e) {
       console.warn("[API] getAlerts error:", e.message);
     }

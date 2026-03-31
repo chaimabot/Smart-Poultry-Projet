@@ -4,8 +4,12 @@ const Poulailler = require("../models/Poulailler");
 const Measure = require("../models/Measure");
 const Module = require("../models/Module");
 const DoorEvent = require("../models/DoorEvent");
+const { checkSensorThresholds, createMqttAlert } = require("./alertService");
+const doorController = require("../controllers/doorController");
 
 let client = null;
+let lastMqttDisconnectTime = 0;
+let mqttDisconnectAlertSent = false;
 
 // ============================================================================
 // CONFIGURATION ET CONNEXION MQTT
@@ -56,6 +60,22 @@ const connectMqtt = () => {
   // --- ÉVÉNEMENTS DU CLIENT ---
   client.on("connect", () => {
     console.log(`[MQTT] ✅ Backend connecté avec succès au broker !`);
+    mqttDisconnectAlertSent = false;
+
+    // Create reconnect alert for all poulailliers
+    (async () => {
+      try {
+        const poulailliers = await Poulailler.find().select("_id").lean();
+        for (const poule of poulailliers) {
+          await createMqttAlert(
+            poule._id.toString(),
+            "reconnect"
+          );
+        }
+      } catch (error) {
+        console.error("[MQTT] Error creating reconnect alerts:", error);
+      }
+    })();
 
     // Liste des topics
     const topics = [
@@ -63,6 +83,7 @@ const connectMqtt = () => {
       "smartpoultry/discovery",
       "smartpoultry/heartbeat",
       "poulailler/+/status",
+      "poulailler/+/commands/door",
     ];
 
     topics.forEach((topic) => {
@@ -70,6 +91,9 @@ const connectMqtt = () => {
         if (!err) console.log(`[MQTT] Souscrit à : ${topic}`);
       });
     });
+
+    // Start door timeout monitoring on MQTT connection
+    startDoorMonitoring();
   });
 
   client.on("message", async (topic, message) => {
@@ -92,8 +116,35 @@ const connectMqtt = () => {
     }
   });
 
+  client.on("disconnect", () => {
+    console.log("[MQTT] ❌ Déconnexion du broker MQTT");
+    lastMqttDisconnectTime = Date.now();
+    mqttDisconnectAlertSent = false;
+  });
+
   client.on("reconnect", () => {
     console.log("[MQTT] Reconnexion en cours...");
+  });
+
+  client.on("offline", () => {
+    console.log("[MQTT] Client hors ligne - tentative de reconnexion...");
+    (async () => {
+      // After 30s offline, create danger alert for all poulailliers
+      if (Date.now() - lastMqttDisconnectTime > 30000 && !mqttDisconnectAlertSent) {
+        try {
+          const poulailliers = await Poulailler.find().select("_id").lean();
+          for (const poule of poulailliers) {
+            await createMqttAlert(
+              poule._id.toString(),
+              "disconnect"
+            );
+          }
+          mqttDisconnectAlertSent = true;
+        } catch (error) {
+          console.error("[MQTT] Error creating disconnect alerts:", error);
+        }
+      }
+    })();
   });
 
   return client;
@@ -163,6 +214,13 @@ const handleMqttMessage = async (topic, message) => {
       console.log(
         `[MQTT] Mesures enregistrées pour le poulailler ${poultryId}`,
       );
+
+      // [ALERT] Check thresholds and create alerts
+      await checkSensorThresholds(
+        poultryId,
+        data,
+        updatedPoulailler.thresholds
+      );
     }
     return;
   }
@@ -204,6 +262,14 @@ const handleMqttMessage = async (topic, message) => {
         console.log(
           `[DOOR] Event logged: ${data.door ? "OPEN" : "CLOSE"} for ${poultryId}`
         );
+
+        // Door motion completed successfully - record in alerts
+        try {
+          const action = data.door ? "open" : "close";
+          await doorController.recordDoorCompletion(poultryId, action);
+        } catch (error) {
+          console.error("[DOOR] Error recording door completion alert:", error);
+        }
       }
     }
 
@@ -212,6 +278,29 @@ const handleMqttMessage = async (topic, message) => {
     console.log(
       `[MQTT] Status ventilateur mis à jour pour ${poultryId}: ${data.fanOn ? "ON" : "OFF"} (${data.fanAuto ? "AUTO" : "MANUEL"})`,
     );
+    return;
+  }
+
+  // 4. Door commands (poulailler/{ID}/commands/door) - Track motion start
+  if (
+    topicParts[0] === "poulailler" &&
+    topicParts[2] === "commands" &&
+    topicParts[3] === "door"
+  ) {
+    const poultryId = topicParts[1];
+    if (!mongoose.Types.ObjectId.isValid(poultryId)) return;
+
+    if (data.action === "open" || data.action === "close") {
+      // Track door motion for timeout detection
+      try {
+        doorController.trackDoorMotion(poultryId, data.action);
+        console.log(
+          `[DOOR] Motion tracked: ${data.action.toUpperCase()} for ${poultryId}`
+        );
+      } catch (error) {
+        console.error("[DOOR] Error tracking motion:", error);
+      }
+    }
     return;
   }
 
@@ -252,9 +341,43 @@ const disconnectMqtt = () => {
   if (client) client.end();
 };
 
+let doorTimeoutIntervalId = null;
+
+const startDoorMonitoring = () => {
+  if (doorTimeoutIntervalId) return; // Already running
+
+  // Check every 5 seconds if any door motion has timed out
+  doorTimeoutIntervalId = setInterval(async () => {
+    try {
+      // Get all tracked doors and check for timeouts
+      // This is handled by doorController's in-memory map
+      // which tracks start times. We need to check all doors in that map.
+      // For now, create a simple polling that checks the tracker
+      const poulailliers = await Poulailler.find().select("_id").lean();
+      for (const poule of poulailliers) {
+        await doorController.checkDoorTimeout(poule._id.toString());
+      }
+    } catch (error) {
+      console.error("[MQTT] Error checking door timeouts:", error);
+    }
+  }, 5000);
+
+  console.log("[MQTT] Door timeout monitoring started");
+};
+
+const stopDoorMonitoring = () => {
+  if (doorTimeoutIntervalId) {
+    clearInterval(doorTimeoutIntervalId);
+    doorTimeoutIntervalId = null;
+    console.log("[MQTT] Door timeout monitoring stopped");
+  }
+};
+
 module.exports = {
   connectMqtt,
   publishCommand,
   disconnectMqtt,
   getMqttClient: () => client,
+  startDoorMonitoring,
+  stopDoorMonitoring,
 };
