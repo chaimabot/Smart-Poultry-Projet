@@ -1,282 +1,241 @@
 const mqtt = require("mqtt");
+const mongoose = require("mongoose");
 const Poulailler = require("../models/Poulailler");
 const Measure = require("../models/Measure");
 const Module = require("../models/Module");
+const DoorEvent = require("../models/DoorEvent");
 
 let client = null;
 
-const mqttConfig = {
-  broker: process.env.MQTT_BROKER || "mqtt://localhost:1883",
-  username: process.env.MQTT_USERNAME || undefined,
-  password: process.env.MQTT_PASSWORD || undefined,
-  reconnectPeriod: 1000,
-  connectTimeout: 10 * 1000,
-};
-
+// ============================================================================
+// CONFIGURATION ET CONNEXION MQTT
+// ============================================================================
 const connectMqtt = () => {
-  console.log("[MQTT] Connexion au broker:", mqttConfig.broker);
+  // 1. Extraction et nettoyage des variables d'environnement
+  const host =
+    process.env.MQTT_BROKER ||
+    "372f445aface456abb82e44117d9d92b.s1.eu.hivemq.cloud";
+  // const port = parseInt(process.env.MQTT_PORT) || 8883; // Disabled - using WebSocket
+  const username = process.env.MQTT_USER?.trim();
+  const password = process.env.MQTT_PASS?.trim();
 
-  client = mqtt.connect(mqttConfig.broker, {
-    username: mqttConfig.username,
-    password: mqttConfig.password,
-    reconnectPeriod: mqttConfig.reconnectPeriod,
-    connectTimeout: mqttConfig.connectTimeout,
-  });
+  if (!username || !password) {
+    console.error(
+      "[MQTT] ❌ Erreur : MQTT_USER ou MQTT_PASS est vide dans le fichier .env",
+    );
+    return null;
+  }
 
+  // Nettoyage du host pour ne garder que le nom de domaine
+  // WebSocket comme mobile (wss:// port 8884)
+  const cleanHost = host.replace("wss://", "").split(":")[0];
+  const brokerUrl = `wss://${cleanHost}:8884/mqtt`;
+  const wsPort = 8884; // WebSocket port
+
+  console.log(
+    `[MQTT Backend] WebSocket connect: wss://${cleanHost}:8884 (matches mobile)`,
+  );
+
+  const options = {
+    keepalive: 60,
+    clean: true,
+    reconnectPeriod: 5000,
+    connectTimeout: 30 * 1000,
+    username: username,
+    password: password,
+    port: wsPort,
+    clientId: `backend_ws_${Math.random().toString(16).slice(2, 10)}`,
+    // WebSocket compatible
+    protocolId: "MQTT",
+    protocolVersion: 4,
+    rejectUnauthorized: true, // ✅ SÉCURITÉ: Vérifier certificats SSL/TLS (HiveMQ)
+  };
+
+  client = mqtt.connect(brokerUrl, options);
+
+  // --- ÉVÉNEMENTS DU CLIENT ---
   client.on("connect", () => {
-    console.log("[MQTT] Connecté au broker MQTT");
-    client.subscribe("poulailler/+/measures", (err) => {
-      if (err) {
-        console.error("[MQTT] Erreur subscription:", err);
-      } else {
-        console.log("[MQTT] Souscrit à poulailler/+/measures");
-      }
-    });
-    client.subscribe("poulailler/+/commands/response", (err) => {
-      if (!err) console.log("[MQTT] Souscrit à poulailler/+/commands/response");
-    });
+    console.log(`[MQTT] ✅ Backend connecté avec succès au broker !`);
 
-    // =========================================================================
-    // NOUVELLES SOUSCRIPTIONS POUR MODULE DISCOVERY & CLAIM
-    // =========================================================================
-    client.subscribe("smartpoultry/discovery", (err) => {
-      if (!err) {
-        console.log("[MQTT] Souscrit à smartpoultry/discovery");
-      }
-    });
+    // Liste des topics
+    const topics = [
+      "poulailler/+/measures",
+      "smartpoultry/discovery",
+      "smartpoultry/heartbeat",
+      "poulailler/+/status",
+    ];
 
-    client.subscribe("smartpoultry/heartbeat", (err) => {
-      if (!err) {
-        console.log("[MQTT] Souscrit à smartpoultry/heartbeat");
-      }
-    });
-
-    // Topic pour les réponses de claim par MAC
-    client.subscribe("smartpoultry/claim/response", (err) => {
-      if (!err) {
-        console.log("[MQTT] Souscrit à smartpoultry/claim/response");
-      }
+    topics.forEach((topic) => {
+      client.subscribe(topic, (err) => {
+        if (!err) console.log(`[MQTT] Souscrit à : ${topic}`);
+      });
     });
   });
 
   client.on("message", async (topic, message) => {
-    console.log(`[MQTT] Message reçu sur ${topic}:`, message.toString());
-    await handleMqttMessage(topic, message);
+    try {
+      await handleMqttMessage(topic, message);
+    } catch (error) {
+      console.error(`[MQTT] Erreur de traitement sur ${topic}:`, error.message);
+    }
   });
 
   client.on("error", (error) => {
-    console.error("[MQTT] Erreur:", error.message);
+    console.error("[MQTT] ❌ Erreur de connexion:", error.message);
+    if (error.message.includes("Not authorized")) {
+      console.log(
+        "👉 CONSEIL : Vérifiez que l'utilisateur 'backend' existe dans la console HiveMQ.",
+      );
+      console.log(
+        "👉 CONSEIL : Assurez-vous qu'il n'y a pas d'autres sessions 'backend' actives.",
+      );
+    }
   });
 
   client.on("reconnect", () => {
     console.log("[MQTT] Reconnexion en cours...");
   });
 
-  client.on("disconnect", () => {
-    console.log("[MQTT] Déconnecté du broker");
-  });
-
   return client;
 };
 
 // ============================================================================
-// MODULE DISCOVERY - Première connexion du module
+// LOGIQUE DE TRAITEMENT DES MESSAGES
 // ============================================================================
-/**
- * Gère les messages de découverte (première connexion) des modules ESP32
- * Crée une entrée "pending_claim" si le module est inconnu
- */
-const handleModuleDiscovery = async (message) => {
-  try {
-    const data = JSON.parse(message.toString());
-
-    const { serial, mac, firmware } = data;
-
-    if (!serial || !mac) {
-      console.warn("[MQTT] Discovery: serial ou MAC manquant");
-      return;
-    }
-
-    // Rechercher le module existant
-    let module = await Module.findOne({ macAddress: mac.toUpperCase() });
-
-    if (module) {
-      // Module connu: mettre à jour le lastPing
-      module.lastPing = new Date();
-      module.updateStatus();
-
-      // Si le module a un code claim non utilisé, informer le backend
-      if (module.claimCode && !module.claimCodeUsedAt) {
-        console.log(`[MQTT] Module ${serial} connu, en attente de claim`);
-        module.status = "pending_claim";
-      }
-
-      await module.save();
-      console.log(
-        `[MQTT] Discovery: Module ${serial} mis à jour, status: ${module.status}`,
-      );
-    } else {
-      // Nouveau module: créer une entrée en attente de claim
-      // Note: On ne crée pas automatiquement le module pour la sécurité
-      // L'admin doit d'abord générer un code claim
-      console.log(
-        `[MQTT] Discovery: Nouveau module detecté ${serial} (${mac})`,
-      );
-      console.log(
-        `[MQTT] Aucun code claim associe. Veuillez generer un code depuis l'admin.`,
-      );
-    }
-  } catch (error) {
-    console.error("[MQTT] Erreur handleModuleDiscovery:", error.message);
-  }
-};
-
-// ============================================================================
-// MODULE HEARTBEAT - Ping périodique du module
-// ============================================================================
-/**
- * Gère les heartbeats périodiques des modules ESP32
- * Met à jour lastPing et ajuste le statut
- */
-const handleModuleHeartbeat = async (message) => {
-  try {
-    const data = JSON.parse(message.toString());
-
-    const { serial, mac, claimed, claimCode, rssi, uptime } = data;
-
-    if (!mac) {
-      console.warn("[MQTT] Heartbeat: MAC manquant");
-      return;
-    }
-
-    const module = await Module.findOne({ macAddress: mac.toUpperCase() });
-
-    if (!module) {
-      console.warn(`[MQTT] Heartbeat: Module ${mac} non trouvé dans la DB`);
-      return;
-    }
-
-    // Mettre à jour le lastPing
-    module.lastPing = new Date();
-    module.updateStatus();
-    await module.save();
-
-    console.log(
-      `[MQTT] Heartbeat recu de ${serial}, status: ${module.status}, RSSI: ${rssi}`,
-    );
-  } catch (error) {
-    console.error("[MQTT] Erreur handleModuleHeartbeat:", error.message);
-  }
-};
-
 const handleMqttMessage = async (topic, message) => {
+  const topicParts = topic.split("/");
+  const payload = message.toString();
+  let data;
+
   try {
-    const topicParts = topic.split("/");
+    data = JSON.parse(payload);
+  } catch (e) {
+    if (process.env.DEBUG_MQTT) console.debug("[MQTT] non-JSON skip:", topic);
+    return;
+  }
 
-    // =============================================================================
-    // MODULE DISCOVERY - Première connexion du module
-    // =============================================================================
-    if (topic === "smartpoultry/discovery") {
-      await handleModuleDiscovery(message);
-      return;
-    }
+  // 1. Discovery (smartpoultry/discovery)
+  if (topic === "smartpoultry/discovery") {
+    const { mac, serial } = data;
+    if (!mac) return;
+    await Module.findOneAndUpdate(
+      { macAddress: mac.toUpperCase() },
+      { lastPing: new Date(), status: "online" },
+      { upsert: false },
+    );
+    console.log(`[MQTT] Module ${serial || mac} détecté en ligne.`);
+    return;
+  }
 
-    // =============================================================================
-    // MODULE HEARTBEAT - Ping périodique du module
-    // =============================================================================
-    if (topic === "smartpoultry/heartbeat") {
-      await handleModuleHeartbeat(message);
-      return;
-    }
+  // 2. Mesures (poulailler/{ID}/measures)
+  if (topicParts[0] === "poulailler" && topicParts[2] === "measures") {
+    const poultryId = topicParts[1];
+    if (!mongoose.Types.ObjectId.isValid(poultryId)) return;
 
-    // =============================================================================
-    // MESURES EXISTANTES
-    // =============================================================================
-    if (topicParts[0] === "poulailler" && topicParts[2] === "measures") {
-      const poultryId = topicParts[1];
-      const data = JSON.parse(message.toString());
-
-      console.log(`[MQTT] Données reçues pour poulailler ${poultryId}:`, data);
-
-      const requiredFields = [
-        "temperature",
-        "humidity",
-        "co2",
-        "nh3",
-        "dust",
-        "waterLevel",
-      ];
-      const hasAllFields = requiredFields.every((field) =>
-        data.hasOwnProperty(field),
-      );
-
-      if (!hasAllFields) {
-        console.warn("[MQTT] Structure de donnée invalide, champs manquants");
-        return;
-      }
-
-      const poulailler = await Poulailler.findByIdAndUpdate(
-        poultryId,
-        {
-          lastMonitoring: {
-            temperature: data.temperature,
-            humidity: data.humidity,
-            co2: data.co2,
-            nh3: data.nh3,
-            dust: data.dust,
-            waterLevel: data.waterLevel,
-            timestamp: new Date(),
-          },
-          updatedAt: new Date(),
+    // Mise à jour du dernier état du Poulailler
+    const updatedPoulailler = await Poulailler.findByIdAndUpdate(
+      poultryId,
+      {
+        lastMonitoring: {
+          temperature: data.temperature,
+          humidity: data.humidity,
+          co2: data.co2,
+          nh3: data.nh3,
+          dust: data.dust,
+          waterLevel: data.waterLevel,
+          airQualityPercent: data.airQualityPercent,
+          nh3DigitalAlert: data.nh3DigitalAlert,
+          timestamp: new Date(),
         },
-        { new: true },
-      );
+        updatedAt: new Date(),
+      },
+      { new: true },
+    );
 
-      if (!poulailler) {
-        console.warn(`[MQTT] Poulailler ${poultryId} non trouvé`);
-        return;
-      }
-
-      console.log(`[MQTT] lastMonitoring mis à jour pour ${poultryId}`);
-
+    if (updatedPoulailler) {
+      // Sauvegarde dans la collection historique Measure
       const measure = new Measure({
         poulailler: poultryId,
-        temperature: data.temperature,
-        humidity: data.humidity,
-        co2: data.co2,
-        nh3: data.nh3,
-        dust: data.dust,
-        waterLevel: data.waterLevel,
+        ...data,
         timestamp: new Date(),
       });
-
       await measure.save();
-      console.log(`[MQTT] Mesure sauvegardée pour ${poultryId}`);
-
-      checkAlerts(poulailler, data);
+      console.log(
+        `[MQTT] Mesures enregistrées pour le poulailler ${poultryId}`,
+      );
     }
-  } catch (error) {
-    console.error(
-      "[MQTT] Erreur lors du traitement du message:",
-      error.message,
+    return;
+  }
+
+  // 3. Status actuators (poulailler/{ID}/status)
+  if (topicParts[0] === "poulailler" && topicParts[2] === "status") {
+    const poultryId = topicParts[1];
+    if (!mongoose.Types.ObjectId.isValid(poultryId)) return;
+
+    const poulailler = await Poulailler.findById(poultryId);
+    if (!poulailler) {
+      console.warn(`[MQTT] Poulailler ${poultryId} non trouvé pour status`);
+      return;
+    }
+
+    // Update ventilation + lamp states from ESP32
+    const updates = {
+      "actuatorStates.ventilation.status": data.fanOn ? "on" : "off",
+      "actuatorStates.ventilation.mode": data.fanAuto ? "auto" : "manual",
+      "actuatorStates.lamp.status": data.lampOn ? "on" : "off",
+      "actuatorStates.lamp.mode": data.lampAuto ? "auto" : "manual",
+      updatedAt: new Date(),
+    };
+
+    // [DOOR] Track door status and log events
+    if (data.door !== undefined) {
+      updates["actuatorStates.door.status"] = data.door ? "open" : "closed";
+      
+      // Log door event if status changed
+      const oldDoorStatus = poulailler.actuatorStates?.door?.status;
+      if (oldDoorStatus !== (data.door ? "open" : "closed")) {
+        const doorEvent = new DoorEvent({
+          poulaillerId: poultryId,
+          action: data.door ? "open" : "close",
+          source: "auto", // Always auto from ESP32 status updates
+          timestamp: new Date(),
+        });
+        await doorEvent.save();
+        console.log(
+          `[DOOR] Event logged: ${data.door ? "OPEN" : "CLOSE"} for ${poultryId}`
+        );
+      }
+    }
+
+    await Poulailler.findByIdAndUpdate(poultryId, updates);
+
+    console.log(
+      `[MQTT] Status ventilateur mis à jour pour ${poultryId}: ${data.fanOn ? "ON" : "OFF"} (${data.fanAuto ? "AUTO" : "MANUEL"})`,
     );
+    return;
+  }
+
+  // FIX: BUG5 - Handle /config/get requests from ESP32
+  if (
+    topicParts[0] === "poulailler" &&
+    topicParts[2] === "config" &&
+    topicParts[3] === "get"
+  ) {
+    const poultryId = topicParts[1];
+    const poulaillersController = require("./controllers/poulaillersController");
+    await poulaillersController.syncConfig(poultryId, module.exports);
+    return;
   }
 };
 
-const checkAlerts = async (poulailler, data) => {
-  if (data.temperature > 35) {
-    console.warn(
-      `[ALERT] Température élevée détectée pour ${poulailler._id}: ${data.temperature}°C`,
-    );
-  }
-};
-
+// ============================================================================
+// ACTIONS SORTANTES
+// ============================================================================
 const publishCommand = (poultryId, command, value) => {
   if (!client || !client.connected) {
-    console.error("[MQTT] Le client MQTT n'est pas connecté");
+    console.error("[MQTT] Publication impossible : client déconnecté.");
     return false;
   }
-
   const topic = `poulailler/${poultryId}/commands`;
   const payload = JSON.stringify({
     command,
@@ -284,31 +243,18 @@ const publishCommand = (poultryId, command, value) => {
     timestamp: new Date().toISOString(),
   });
 
-  client.publish(topic, payload, { qos: 1 }, (err) => {
-    if (err) {
-      console.error(`[MQTT] Erreur publication ${topic}:`, err.message);
-    } else {
-      console.log(`[MQTT] Commande publiée sur ${topic}:`, payload);
-    }
-  });
-
+  client.publish(topic, payload, { qos: 1 });
+  console.log(`[MQTT] Commande envoyée sur ${topic}`);
   return true;
 };
 
-const getMqttClient = () => client;
-
 const disconnectMqtt = () => {
-  if (client) {
-    client.end();
-    console.log("[MQTT] Déconnecté");
-  }
+  if (client) client.end();
 };
 
 module.exports = {
   connectMqtt,
   publishCommand,
-  getMqttClient,
   disconnectMqtt,
-  handleModuleDiscovery,
-  handleModuleHeartbeat,
+  getMqttClient: () => client,
 };

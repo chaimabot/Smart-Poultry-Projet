@@ -26,6 +26,7 @@ exports.getAlertes = async (req, res) => {
       search,
       startDate,
       endDate,
+      period,
       page = 1,
       limit = 20,
       sortBy = "createdAt",
@@ -76,14 +77,45 @@ exports.getAlertes = async (req, res) => {
       ];
     }
 
-    // Filtre date
+    // Filtre période
+    if (period) {
+      let startDateFilter = new Date();
+
+      switch (period) {
+        case "today":
+          startDateFilter.setHours(0, 0, 0, 0);
+          break;
+        case "7d":
+          startDateFilter.setDate(startDateFilter.getDate() - 7);
+          break;
+        case "30d":
+          startDateFilter.setDate(startDateFilter.getDate() - 30);
+          break;
+        case "90d":
+          startDateFilter.setDate(startDateFilter.getDate() - 90);
+          break;
+        default:
+          // Pour les périodes personnalisées, on utilise startDate/endDate
+          break;
+      }
+
+      if (period !== "custom") {
+        query.createdAt = { $gte: startDateFilter };
+      }
+    }
+
+    // Filtre date (personnalisé)
+    // Si period est "custom" ou si des dates spécifiques sont fournies
     if (startDate || endDate) {
-      query.createdAt = {};
+      query.createdAt = query.createdAt || {};
       if (startDate) {
         query.createdAt.$gte = new Date(startDate);
       }
       if (endDate) {
-        query.createdAt.$lte = new Date(endDate);
+        // Ajouter une journée pour inclure toute la journée de fin
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = end;
       }
     }
 
@@ -408,14 +440,15 @@ exports.getAlertesStats = async (req, res) => {
     // 1. Poulaillers hors-ligne (dernière mesure il y a plus de 4 heures)
     const Measure = require("../models/Measure");
     const Poulailler = require("../models/Poulailler");
-    
+
     const poulaillers = await Poulailler.find({ status: "active" });
     let poulaillersHorsLigne = 0;
-    
+
     for (const poulailler of poulaillers) {
-      const lastMeasure = await Measure.findOne({ poulailler: poulailler._id })
-        .sort({ timestamp: -1 });
-      
+      const lastMeasure = await Measure.findOne({
+        poulailler: poulailler._id,
+      }).sort({ timestamp: -1 });
+
       if (!lastMeasure || new Date(lastMeasure.timestamp) < fourHoursAgo) {
         poulaillersHorsLigne++;
       }
@@ -429,18 +462,21 @@ exports.getAlertesStats = async (req, res) => {
 
     // 3. Élevages à risque élevé (> 8 alertes en 24h)
     const alertes24h = await Alert.find({
-      createdAt: { $gte: twentyFourHoursAgo }
+      createdAt: { $gte: twentyFourHoursAgo },
     });
-    
+
     const alertesParPoulailler = {};
     for (const alerte of alertes24h) {
       const poulaillerId = alerte.poulailler?.toString();
       if (poulaillerId) {
-        alertesParPoulailler[poulaillerId] = (alertesParPoulailler[poulaillerId] || 0) + 1;
+        alertesParPoulailler[poulaillerId] =
+          (alertesParPoulailler[poulaillerId] || 0) + 1;
       }
     }
-    
-    const elevagesARisque = Object.values(alertesParPoulailler).filter(count => count > 8).length;
+
+    const elevagesARisque = Object.values(alertesParPoulailler).filter(
+      (count) => count > 8,
+    ).length;
 
     // 4. Modules en attente d'association depuis plus de 7 jours
     const Module = require("../models/Module");

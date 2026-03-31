@@ -27,6 +27,7 @@ interface InviteForm {
   firstName: string;
   lastName: string;
   phone: string;
+  role: "eleveur" | "admin";
 }
 
 interface EditForm {
@@ -56,6 +57,7 @@ export default function Utilisateurs() {
     firstName: "",
     lastName: "",
     phone: "",
+    role: "eleveur",
   });
   const [inviteErrors, setInviteErrors] = useState<Record<string, string>>({});
   const [inviting, setInviting] = useState(false);
@@ -106,9 +108,21 @@ export default function Utilisateurs() {
     setInviting(true);
     setInviteSuccess(false);
     try {
-      await eleveursAPI.invite(inviteForm);
+      if (inviteForm.role === "admin") {
+        await utilisateursAPI.inviteAdmin(inviteForm);
+      } else {
+        // Ne pas envoyer le role au backend car c'est toujours "eleveur"
+        const { role, ...inviteData } = inviteForm;
+        await eleveursAPI.invite(inviteData);
+      }
       setInviteSuccess(true);
-      setInviteForm({ email: "", firstName: "", lastName: "", phone: "" });
+      setInviteForm({
+        email: "",
+        firstName: "",
+        lastName: "",
+        phone: "",
+        role: "eleveur",
+      });
       setTimeout(() => {
         setShowInviteModal(false);
         setInviteSuccess(false);
@@ -615,16 +629,21 @@ export default function Utilisateurs() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Téléphone
+                  Rôle
                 </label>
-                <input
-                  type="tel"
-                  value={inviteForm.phone}
+                <select
+                  value={inviteForm.role}
                   onChange={(e) =>
-                    setInviteForm({ ...inviteForm, phone: e.target.value })
+                    setInviteForm({
+                      ...inviteForm,
+                      role: e.target.value as "eleveur" | "admin",
+                    })
                   }
                   className="w-full px-4 py-2.5 border rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-primary/40"
-                />
+                >
+                  <option value="eleveur">Éleveur</option>
+                  <option value="admin">Administrateur</option>
+                </select>
               </div>
 
               {inviteSuccess && (

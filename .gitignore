@@ -1,1 +1,78 @@
- 
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Test & Seed Files (should not be in production)
+**/test_code.js
+**/seed_data.js
+**/TEST_*.md
+**/*test*.js
+tests/
+__tests__/
+
+# Dependencies
+node_modules/
+bower_components/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# OS Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# IDE
+*.swp
+*.swo
+*~
+.vscode
+.idea/
+
+# Build outputs
+dist/
+build/
+*.tgz
+
+# PlatformIO
+.pio/
+.pioenvs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Mobile
+mobile/node_modules/
+mobile/.expo/
+
+# Web
+web/node_modules/
+web/dist/
+
+# Backend
+backend/node_modules/
+backend-admin/node_modules/
+
+# Embedded
+Embarquee/build/
+Embarquee/.pio/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak

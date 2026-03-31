@@ -1,3 +1,4 @@
+const Log = require("../models/Log");
 const Alert = require("../models/Alert");
 const User = require("../models/User");
 const Poulailler = require("../models/Poulailler");
@@ -14,93 +15,166 @@ function formatTimeAgo(date) {
   return `il y a ${Math.round(diff / 1440)} j`;
 }
 
-// @desc    Liste des logs système
+// Helper to map log type to display type
+function mapLogTypeToDisplayType(type) {
+  const typeMap = {
+    user_created: "utilisateur",
+    user_updated: "utilisateur",
+    user_deleted: "utilisateur",
+    user_login: "connexion",
+    user_logout: "connexion",
+    poulailler_created: "poulailler",
+    poulailler_updated: "poulailler",
+    poulailler_deleted: "poulailler",
+    module_claimed: "module",
+    module_dissociated: "module",
+    module_offline: "module",
+    alert_created: "alerte",
+    alert_resolved: "alerte",
+    command_sent: "commande",
+    command_executed: "commande",
+    system_error: "systeme",
+    system_info: "systeme",
+  };
+  return typeMap[type] || "systeme";
+}
+
+// @desc    Liste des logs d'admin
 // @route   GET /api/admin/logs
 // @access  Private/Admin
 exports.getLogs = async (req, res) => {
   try {
-    const { type, startDate, endDate, page = 1, limit = 50 } = req.query;
+    const {
+      type,
+      severity,
+      startDate,
+      endDate,
+      userId,
+      poulaillerId,
+      page = 1,
+      limit = 50,
+    } = req.query;
 
-    // We'll aggregate logs from different sources
-    const logs = [];
-    const start = startDate
-      ? new Date(startDate)
-      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const end = endDate ? new Date(endDate) : new Date();
+    // Build query - Par défaut, ne montrer que les logs d'admin
+    const query = { user: { $exists: true, $ne: null } };
 
-    // Get recent alerts
-    const alerts = await Alert.find({
-      createdAt: { $gte: start, $lte: end },
-    })
-      .populate({
-        path: "poulailler",
-        select: "name",
-      })
+    // Filter by display type (mapped from internal type)
+    if (type) {
+      const internalTypes = [];
+      switch (type) {
+        case "utilisateur":
+          internalTypes.push(
+            "user_created",
+            "user_updated",
+            "user_deleted",
+            "user_login",
+            "user_logout",
+          );
+          break;
+        case "connexion":
+          internalTypes.push("user_login", "user_logout");
+          break;
+        case "poulailler":
+          internalTypes.push(
+            "poulailler_created",
+            "poulailler_updated",
+            "poulailler_deleted",
+          );
+          break;
+        case "module":
+          internalTypes.push(
+            "module_claimed",
+            "module_dissociated",
+            "module_offline",
+          );
+          break;
+        case "alerte":
+          internalTypes.push("alert_created", "alert_resolved");
+          break;
+        case "commande":
+          internalTypes.push("command_sent", "command_executed");
+          break;
+        case "systeme":
+          internalTypes.push("system_error", "system_info");
+          break;
+        default:
+          internalTypes.push(type);
+      }
+      query.type = { $in: internalTypes };
+    }
+
+    // Filter by severity
+    if (severity) {
+      query.severity = severity;
+    }
+
+    // Filter by date range
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    } else {
+      // Default: last 30 days
+      query.createdAt = {
+        $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      };
+    }
+
+    // Filter by specific admin user
+    if (userId) {
+      query.user = userId;
+    }
+
+    // Filter by poulailler
+    if (poulaillerId) {
+      query.poulailler = poulaillerId;
+    }
+
+    // Execute query with pagination
+    const total = await Log.countDocuments(query);
+    const logs = await Log.find(query)
+      .populate("user", "firstName lastName email role")
+      .populate("targetUser", "firstName lastName email")
+      .populate("poulailler", "name")
+      .populate("module", "type status")
       .sort({ createdAt: -1 })
-      .limit(100);
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
 
-    alerts.forEach((alert) => {
-      logs.push({
-        type: "alerte",
-        severity: alert.severity,
-        message: `Alerte ${alert.severity}: ${alert.parameter} - ${alert.value}`,
-        poulailler: alert.poulailler?.name,
-        timestamp: alert.createdAt,
-      });
+    // Transform logs for display
+    const transformedLogs = logs.map((log) => {
+      let poulaillerName = null;
+      if (log.poulailler) {
+        poulaillerName = log.poulailler.name;
+      }
+
+      let userName = null;
+      let userRole = null;
+      if (log.user) {
+        userName = `${log.user.firstName} ${log.user.lastName}`;
+        userRole = log.user.role;
+      }
+
+      return {
+        id: log._id,
+        type: mapLogTypeToDisplayType(log.type),
+        internalType: log.type,
+        severity: log.severity,
+        message: log.message,
+        description: log.description,
+        poulailler: poulaillerName,
+        user: userName,
+        userRole: userRole,
+        ipAddress: log.ipAddress,
+        timestamp: log.createdAt,
+        timestampFormatted: formatTimeAgo(log.createdAt),
+        metadata: log.metadata,
+      };
     });
-
-    // Get recent commands
-    const commands = await Command.find({
-      createdAt: { $gte: start, $lte: end },
-    })
-      .populate({
-        path: "poulailler",
-        select: "name",
-      })
-      .sort({ createdAt: -1 })
-      .limit(50);
-
-    commands.forEach((cmd) => {
-      logs.push({
-        type: "commande",
-        severity: cmd.status === "failed" ? "error" : "info",
-        message: `Commande ${cmd.type} - ${cmd.status}`,
-        poulailler: cmd.poulailler?.name,
-        timestamp: cmd.createdAt,
-      });
-    });
-
-    // Get recent user logins (from User model if tracked)
-    const recentUsers = await User.find({
-      lastLogin: { $gte: start, $lte: end },
-    }).limit(50);
-
-    recentUsers.forEach((user) => {
-      logs.push({
-        type: "connexion",
-        severity: "info",
-        message: `Connexion utilisateur: ${user.email} (${user.role})`,
-        poulailler: null,
-        timestamp: user.lastLogin,
-      });
-    });
-
-    // Sort all logs by timestamp descending
-    logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-    // Filter by type if specified
-    const filteredLogs = type ? logs.filter((log) => log.type === type) : logs;
-
-    // Paginate
-    const total = filteredLogs.length;
-    const paginatedLogs = filteredLogs.slice((page - 1) * limit, page * limit);
 
     res.json({
       success: true,
-      data: paginatedLogs.map((log) => ({
-        ...log,
-        timestampFormatted: formatTimeAgo(log.timestamp),
-      })),
+      data: transformedLogs,
       pagination: {
         total,
         page: parseInt(page),
@@ -123,13 +197,47 @@ exports.getLogsStats = async (req, res) => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
     const last7Days = new Date(today);
     last7Days.setDate(last7Days.getDate() - 7);
 
-    // Alert stats
+    const last30Days = new Date(today);
+    last30Days.setDate(last30Days.getDate() - 30);
+
+    // Only count logs from admin users
+    const adminQuery = { user: { $exists: true, $ne: null } };
+
+    // Count logs by type and severity
+    const [
+      totalLogs,
+      logsToday,
+      logsLast7Days,
+      logsLast30Days,
+      logsBySeverity,
+      logsByType,
+      recentErrors,
+    ] = await Promise.all([
+      Log.countDocuments(adminQuery),
+      Log.countDocuments({ ...adminQuery, createdAt: { $gte: today } }),
+      Log.countDocuments({ ...adminQuery, createdAt: { $gte: last7Days } }),
+      Log.countDocuments({ ...adminQuery, createdAt: { $gte: last30Days } }),
+      Log.aggregate([
+        { $match: adminQuery },
+        { $group: { _id: "$severity", count: { $sum: 1 } } },
+      ]),
+      Log.aggregate([
+        { $match: adminQuery },
+        { $group: { _id: "$type", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 },
+      ]),
+      Log.find({ ...adminQuery, severity: { $in: ["error", "critical"] } })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .populate("user", "firstName lastName")
+        .populate("poulailler", "name"),
+    ]);
+
+    // Also get legacy stats from other collections
     const alertsToday = await Alert.countDocuments({
       createdAt: { $gte: today },
     });
@@ -138,23 +246,47 @@ exports.getLogsStats = async (req, res) => {
       createdAt: { $gte: last7Days },
     });
 
-    // Command stats
     const commandsToday = await Command.countDocuments({
       createdAt: { $gte: today },
     });
 
-    // User connections
     const connectionsToday = await User.countDocuments({
       lastLogin: { $gte: today },
+    });
+
+    // Format severity stats
+    const severityStats = {};
+    logsBySeverity.forEach((item) => {
+      severityStats[item._id] = item.count;
+    });
+
+    // Format type stats
+    const typeStats = {};
+    logsByType.forEach((item) => {
+      typeStats[item._id] = item.count;
     });
 
     res.json({
       success: true,
       data: {
+        totalLogs,
+        logsToday,
+        logsLast7Days,
+        logsLast30Days,
         alertsToday,
         alertsLast7Days,
         commandsToday,
         connectionsToday,
+        severityStats,
+        typeStats,
+        recentErrors: recentErrors.map((log) => ({
+          id: log._id,
+          message: log.message,
+          severity: log.severity,
+          timestamp: log.createdAt,
+          poulailler: log.poulailler?.name,
+          user: log.user ? `${log.user.firstName} ${log.user.lastName}` : null,
+        })),
       },
     });
   } catch (err) {
@@ -162,5 +294,109 @@ exports.getLogsStats = async (req, res) => {
     res
       .status(500)
       .json({ success: false, error: "Erreur lors de la récupération" });
+  }
+};
+
+// @desc    Exporter les logs
+// @route   GET /api/admin/logs/export
+// @access  Private/Admin
+exports.exportLogs = async (req, res) => {
+  try {
+    const { startDate, endDate, type, severity, format = "json" } = req.query;
+
+    // Build query - only admin logs
+    const query = { user: { $exists: true, $ne: null } };
+
+    if (type) {
+      query.type = type;
+    }
+
+    if (severity) {
+      query.severity = severity;
+    }
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    const logs = await Log.find(query)
+      .populate("user", "firstName lastName email")
+      .populate("targetUser", "firstName lastName email")
+      .populate("poulailler", "name")
+      .populate("module", "type status")
+      .sort({ createdAt: -1 })
+      .limit(10000);
+
+    if (format === "csv") {
+      // Convert to CSV
+      const headers = [
+        "Date",
+        "Type",
+        "Sévérité",
+        "Message",
+        "Description",
+        "Admin",
+        "Poulailler",
+        "Adresse IP",
+      ];
+
+      const rows = logs.map((log) => [
+        log.createdAt.toISOString(),
+        log.type,
+        log.severity,
+        log.message,
+        log.description || "",
+        log.user ? `${log.user.firstName} ${log.user.lastName}` : "",
+        log.poulailler?.name || "",
+        log.ipAddress || "",
+      ]);
+
+      const csv = [
+        headers.join(","),
+        ...rows.map((row) => row.map((cell) => `"${cell}"`).join(",")),
+      ].join("\n");
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", "attachment; filename=logs.csv");
+      res.send(csv);
+    } else {
+      res.json({
+        success: true,
+        data: logs,
+        exportedAt: new Date(),
+        count: logs.length,
+      });
+    }
+  } catch (err) {
+    console.error("[EXPORT LOGS ERROR]", err);
+    res.status(500).json({ success: false, error: "Erreur lors de l'export" });
+  }
+};
+
+// @desc    Supprimer les logs anciens
+// @route   DELETE /api/admin/logs/cleanup
+// @access  Private/Admin
+exports.cleanupLogs = async (req, res) => {
+  try {
+    const { olderThanDays = 90 } = req.body;
+
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - olderThanDays);
+
+    const result = await Log.deleteMany({
+      createdAt: { $lt: cutoffDate },
+      severity: { $nin: ["error", "critical"] }, // Keep errors and critical logs
+    });
+
+    res.json({
+      success: true,
+      message: `${result.deletedCount} logs supprimés`,
+      deletedCount: result.deletedCount,
+    });
+  } catch (err) {
+    console.error("[CLEANUP LOGS ERROR]", err);
+    res.status(500).json({ success: false, error: "Erreur lors du nettoyage" });
   }
 };

@@ -847,7 +847,7 @@ export default function DashboardScreen({ navigation }) {
                             },
                           ]}
                         >
-                          {alert.message}
+                          {alert.message || alert.type || "Alerte système"}
                         </Text>
 
                         <Text style={[styles.alertTime, { color: "#94a3b8" }]}>

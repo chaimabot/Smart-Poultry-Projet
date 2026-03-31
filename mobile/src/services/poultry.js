@@ -184,7 +184,13 @@ export const controlActuator = async (id, actuator, state, mode = "manual") => {
     });
     return response.data;
   } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
+    // ✅ Lever une vraie Error avec le message du serveur
+    const message =
+      error.response?.data?.error ||
+      error.response?.data?.message ||
+      error.message ||
+      "Erreur réseau";
+    throw new Error(message);
   }
 };
 

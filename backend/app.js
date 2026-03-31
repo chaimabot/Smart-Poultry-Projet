@@ -1,14 +1,19 @@
+const dotenv = require("dotenv");
+dotenv.config(); // ← DOIT ÊTRE EN PREMIER, avant tout autre require()
+
 const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
-const dotenv = require("dotenv");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
-const { connectMqtt } = require("./services/mqttService");
+// ✅ NEW: Winston logger
+const logger = require("./utils/logger");
+const requestLogger = require("./middlewares/requestLogger");
 
-// Charger les variables d'environnement
-dotenv.config();
+const { connectMqtt } = require("./services/mqttService");
+// ✅ NEW: Per-user rate limiting
+const { perUserLimiter, authLimiter, criticalLimiter } = require("./middlewares/rateLimiter");
 
 // Connexion à la base de données
 mongoose
@@ -27,11 +32,39 @@ app.use((req, res, next) => {
   next();
 });
 
+// ✅ NEW: Winston request logging (replaces console.log)
+app.use(requestLogger);
+
 // Sécurité : En-têtes HTTP
 app.use(helmet());
 
-// Sécurité : CORS
-app.use(cors());
+// Sécurité : CORS - Whitelist origins
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+
+    const allowedOrigins = [
+      "http://localhost:19000", // Expo dev
+      "http://localhost:8081", // React Native debugger
+      "http://127.0.0.1:19000",
+      "http://192.168.1.100:19000", // Local network
+      process.env.MOBILE_APP_URL, // Production mobile
+    ].filter(Boolean);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`[CORS] ⚠️ Blocked origin: ${origin}`);
+      callback(new Error("CORS not allowed"));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-auth-token"],
+};
+
+app.use(cors(corsOptions));
 
 // Sécurité : Rate Limiting
 const limiter = rateLimit({
@@ -42,6 +75,9 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// ✅ NEW: Per-user rate limiting (after protect middleware on protected routes)
+// This is applied on specific routes in their respective route files
+
 // Middleware Body Parser
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -51,13 +87,13 @@ const authRoutes = require("./routes/auth");
 const poulaillerRoutes = require("./routes/poulaillers");
 const alertRoutes = require("./routes/alerts");
 const systemConfigRoutes = require("./routes/systemConfig");
-const moduleRoutes = require("./routes/modules");
+const modulesRoutes = require("./routes/modules");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/poulaillers", poulaillerRoutes);
 app.use("/api/alerts", alertRoutes);
 app.use("/api/system-config", systemConfigRoutes);
-app.use("/api/modules", moduleRoutes);
+app.use("/api/modules", modulesRoutes);
 
 // Route de base
 app.get("/", (req, res) => {
@@ -88,6 +124,5 @@ const server = app.listen(PORT, () => {
 // Gestion des rejets de promesse non gérés
 process.on("unhandledRejection", (err, promise) => {
   console.log(`Erreur: ${err.message}`);
-  // Fermer le serveur et quitter le processus
   server.close(() => process.exit(1));
 });

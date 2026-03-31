@@ -1,22 +1,29 @@
 const mongoose = require("mongoose");
 
 /**
- * Statuts SIMPLIFIES du module (4 statuts):
- * - pending: Module découvert via MQTT, en attente d'association à un poulailler
- * - associated: Module associé à un poulailler et fonctionnel
- * - offline: Module associé mais plus de communication (pas de heartbeat depuis 15 min)
- * - dissociated: Module dissocié du poulailler (plus actif)
+ * Statuts du module (SIMPLIFIES):
+ * - pending: Module en attente de claim/association
+ * - associated: Module associe a un poulailler
+ * - offline: Module hors ligne (pas de ping depuis 24h)
+ * - dissociated: Module dissocie (disponible pour nouvelle association)
  */
 const STATUS_ENUM = ["pending", "associated", "offline", "dissociated"];
 
 /**
- * Schéma de log d'audit pour les opérations sur les modules
+ * Schema de log d'audit pour les operations sur les modules
  */
 const auditLogSchema = new mongoose.Schema(
   {
     action: {
       type: String,
-      enum: ["created", "associated", "dissociated", "code_generated"],
+      enum: [
+        "created",
+        "claimed",
+        "associated",
+        "dissociated",
+        "revoked",
+        "code_generated",
+      ],
       required: true,
     },
     performedBy: {
@@ -47,112 +54,79 @@ const auditLogSchema = new mongoose.Schema(
 
 const moduleSchema = new mongoose.Schema(
   {
-    // Identifiant unique du module (MAC address ou serial)
     serialNumber: {
       type: String,
-      required: [true, "Le numéro de série est requis"],
+      required: [true, "Le numero de serie est requis"],
       unique: true,
       uppercase: true,
       trim: true,
     },
-
-    // Adresse MAC pour identification ESP32
     macAddress: {
       type: String,
       required: true,
       unique: true,
       uppercase: true,
-      match: /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/,
     },
-
-    // Nom convivial du module
     deviceName: {
       type: String,
       required: [true, "Le nom du module est requis"],
-      maxlength: [50, "Le nom ne peut pas dépasser 50 caractères"],
+      maxlength: [50, "Le nom ne peut pas depasser 50 caracteres"],
     },
-
-    // Version du firmware
     firmwareVersion: {
       type: String,
       default: null,
     },
-
-    // Statut actuel du module
     status: {
       type: String,
       enum: STATUS_ENUM,
       default: "pending",
       index: true,
     },
-
-    // Code de claim (generé crytographiquement)
-    // Format: K9P2-MW4Q-8R7T-X1Y2 (10-12 chars avec tirets)
     claimCode: {
       type: String,
       unique: true,
       sparse: true,
       index: true,
     },
-
-    // Date d'expiration du code claim (180 jours par defaut)
     claimCodeExpiresAt: {
       type: Date,
       default: null,
     },
-
-    // Date d'utilisation du code claim
     claimCodeUsedAt: {
       type: Date,
       default: null,
     },
-
-    // Ancien code claim (pour historique, ne peut pas etre reutilise)
     previousClaimCode: {
       type: String,
       default: null,
     },
-
-    // Reference vers le poulailler associe
     poulailler: {
       type: mongoose.Schema.ObjectId,
       ref: "Poulailler",
       default: null,
     },
-
-    // Proprietaire (eleveur) du module
     owner: {
       type: mongoose.Schema.ObjectId,
       ref: "User",
       default: null,
     },
-
-    // Date d'installation
     installationDate: {
       type: Date,
       default: null,
     },
-
-    // Dernier ping recu
     lastPing: {
       type: Date,
       default: null,
     },
-
-    // Motif de dissociation/revocation
     dissociationReason: {
       type: String,
-      maxlength: [500, "Le motif ne peut pas dépasser 500 caractères"],
+      maxlength: [500, "Le motif ne peut pas depasser 500 caracteres"],
       default: null,
     },
-
-    // Date de dissociation
     dissociatedAt: {
       type: Date,
       default: null,
     },
-
-    // Logs d'audit
     auditLogs: [auditLogSchema],
   },
   {
@@ -160,87 +134,57 @@ const moduleSchema = new mongoose.Schema(
   },
 );
 
-/**
- * Index pour optimiser les requetes frequentes
- */
-// Index compose pour les modules en attente de claim
+// Indexes
 moduleSchema.index({ status: 1, claimCodeExpiresAt: 1 });
-// Index pour recherche par claim code
 moduleSchema.index({ claimCode: 1, claimCodeUsedAt: 1 });
-// Index pour les modules d'un owner
 moduleSchema.index({ owner: 1, status: 1 });
 
 /**
- * Methode pour mettre a jour le statut bas sur lastPing
- * - associated + lastPing > 15 min = offline
- * - offline + nouveau heartbeat = associated
- * - Les autres statuts (pending, dissociated) ne changent pas automatiquement
+ * Methode pour mettre a jour le statut base sur lastPing
  */
 moduleSchema.methods.updateStatus = function () {
-  // Ne pas modifier si en attente ou dissocié
   if (this.status === "pending" || this.status === "dissociated") return;
+  if (!this.lastPing) return;
 
-  // Vérifier le dernier heartbeat
-  if (this.lastPing) {
-    const timeSinceLastPing = Date.now() - new Date(this.lastPing).getTime();
-    const fifteenMinutes = 15 * 60 * 1000;
+  const timeSinceLastPing = Date.now() - new Date(this.lastPing).getTime();
+  const twentyFourHours = 24 * 60 * 60 * 1000;
 
-    if (timeSinceLastPing > fifteenMinutes && this.status === "associated") {
-      // Passer en offline si plus de heartbeat depuis 15 min
-      this.status = "offline";
-    }
+  if (timeSinceLastPing > twentyFourHours && this.status === "associated") {
+    this.status = "offline";
   }
 };
 
 /**
  * Methode pour generer un code claim cryptographique
- * Entropie >= 50 bits (10-12 caracteres alphanumeriques avec tirets)
- * Format: XXXX-XXXX-XXXX (12 caracteres avec tirets)
+ * Entropie >= 50 bits
+ * Format: XXXX-XXXX-XXXX
  */
 moduleSchema.statics.generateClaimCode = function () {
-  // Generation de 9 bytes (72 bits d'entropie) pour le code declaim
-  const bytes = require("crypto").randomBytes(9);
+  // Generation de 4 bytes pour chaque partie (32 bits chacun)
+  const bytes1 = require("crypto").randomBytes(4);
+  const bytes2 = require("crypto").randomBytes(4);
+  const bytes3 = require("crypto").randomBytes(4);
 
-  // Conversion en base36 et mise en majuscules
-  // On obtient environ 14 caracteres, on prend les 12 premiers avec format XXX-XXX-XXX
-  const base36 = bytes.toString("base36").toUpperCase();
+  // Conversion en hex et prise des 4 premiers caracteres
+  const part1 = bytes1.toString("hex").substring(0, 4).toUpperCase();
+  const part2 = bytes2.toString("hex").substring(0, 4).toUpperCase();
+  const part3 = bytes3.toString("hex").substring(0, 4).toUpperCase();
 
   // Format avec tirets: XXXX-XXXX-XXXX
-  return `${base36.substring(0, 4)}-${base36.substring(4, 8)}-${base36.substring(8, 12)}`;
+  return `${part1}-${part2}-${part3}`;
 };
 
 /**
- * Methode pour verifier si un code claim est expiré
+ * Methode pour verifier si un code claim est expire
  */
 moduleSchema.methods.isClaimCodeExpired = function () {
   if (!this.claimCode || !this.claimCodeExpiresAt) return true;
   return new Date() > this.claimCodeExpiresAt;
 };
 
-/**
- * Methode pour ajouter un log d'audit
- */
-moduleSchema.methods.addAuditLog = async function (
-  action,
-  userId,
-  details = null,
-  options = {},
-) {
-  this.auditLogs.push({
-    action,
-    performedBy: userId,
-    details,
-    claimCode: options.claimCode || null,
-    poulaillerId: options.poulaillerId || null,
-    ipAddress: options.ipAddress || null,
-  });
-  await this.save();
-};
-
-// Middleware pre-save pour mettre a jour le statut
-moduleSchema.pre("save", function (next) {
+// Pre-save middleware - utilise async/await pour mongoose 5+
+moduleSchema.pre("save", async function () {
   this.updateStatus();
-  next();
 });
 
 module.exports = mongoose.model("Module", moduleSchema);

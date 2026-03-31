@@ -1,18 +1,15 @@
- import { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { rapportsAPI } from "../../services/api";
 import Header from "../../components/layout/Header";
 import Sidebar from "../../components/layout/Sidebar";
-import {
-  generateGlobalReportPDF,
-  generateAlertesReportPDF,
-  generateModulesReportPDF,
-} from "../../utils/pdfExport";
 
 interface GlobalReport {
   periode: string;
   poulaillers: {
     total: number;
-    actifs: number;
+    connects: number;
+    horsLigne: number;
+    enAttente: number;
     pourcentageActifs: number;
   };
   eleveurs: {
@@ -21,20 +18,17 @@ interface GlobalReport {
   };
   modules: {
     total: number;
+    associes: number;
+    libres: number;
     connectes: number;
-    tauxConnexion: string;
+    horsLigne: number;
+    tauxConnexion: number;
   };
   alertes: {
     total: number;
     critiques: number;
     warnings: number;
-    resolues: number;
-  };
-  commandes: {
-    total: number;
-    executees: number;
-    echouees: number;
-    tauxReussite: number;
+    actives: number;
   };
 }
 
@@ -65,9 +59,14 @@ interface ModulesReport {
   connectes: number;
   deconnectes: number;
   tauxConnexion: number;
-  parStatut: Array<{
-    _id: string;
-    count: number;
+  modulesSansPing: Array<{
+    id: string;
+    name: string;
+    type: string;
+    status: string;
+    poulailler: string;
+    lastPing: string;
+    heuresSansPing: number;
   }>;
   modules: Array<{
     id: string;
@@ -76,9 +75,31 @@ interface ModulesReport {
     status: string;
     poulailler: string;
     lastPing: string;
-    firmwareVersion: string;
   }>;
 }
+
+interface MesuresReport {
+  periode: string;
+  poulaillersActifs: number;
+  poulaillersInactifs: number;
+  totalPoulaillers: number;
+  dernieresMesures: Array<{
+    poulaillerId: string;
+    poulaillerName: string;
+    derniereMesure: string;
+    parametres: string[];
+  }>;
+}
+
+const parameterLabels: Record<string, string> = {
+  temperature: "Température",
+  humidity: "Humidité",
+  co2: "CO₂",
+  nh3: "NH₃",
+  ammonia: "NH₃",
+  dust: "Poussière",
+  waterLevel: "Niveau d'eau",
+};
 
 export default function Rapports() {
   const [period, setPeriod] = useState("7d");
@@ -89,26 +110,33 @@ export default function Rapports() {
   const [modulesReport, setModulesReport] = useState<ModulesReport | null>(
     null,
   );
+  const [mesuresReport, setMesuresReport] = useState<MesuresReport | null>(
+    null,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"global" | "alertes" | "modules">(
-    "global",
-  );
+  const [activeTab, setActiveTab] = useState<
+    "global" | "alertes" | "modules" | "mesures"
+  >("global");
 
   const fetchAllReports = async () => {
     setLoading(true);
     setError(null);
 
     try {
-      const [globalRes, alertesRes, modulesRes] = await Promise.all([
-        rapportsAPI.getGlobal(period),
-        rapportsAPI.getAlertes(period),
-        rapportsAPI.getModules(period),
-      ]);
+      const [globalRes, alertesRes, modulesRes, mesuresRes] = await Promise.all(
+        [
+          rapportsAPI.getGlobal(period),
+          rapportsAPI.getAlertes(period),
+          rapportsAPI.getModules(period),
+          rapportsAPI.getMesures(period),
+        ],
+      );
 
       setGlobalReport(globalRes.data.data);
       setAlertesReport(alertesRes.data.data);
       setModulesReport(modulesRes.data.data);
+      setMesuresReport(mesuresRes.data.data);
     } catch (err: any) {
       console.error("Erreur fetchReports:", err);
       if (err.response?.status === 401) {
@@ -127,28 +155,22 @@ export default function Rapports() {
     fetchAllReports();
   }, [period]);
 
-  const handleExportPDF = () => {
-    if (activeTab === "global" && globalReport) {
-      generateGlobalReportPDF(globalReport, period);
-    } else if (activeTab === "alertes" && alertesReport) {
-      generateAlertesReportPDF(alertesReport, period);
-    } else if (activeTab === "modules" && modulesReport) {
-      generateModulesReportPDF(modulesReport, period);
-    }
+  // Calculate hours since last ping
+  const getHeuresSansPing = (lastPing: string): number => {
+    if (!lastPing) return 999;
+    const diff = Date.now() - new Date(lastPing).getTime();
+    return Math.round(diff / (1000 * 60 * 60));
   };
 
-  const getAlertesResolutionRate = () => {
-    if (!globalReport || globalReport.alertes.total === 0) return 0;
-    return Math.round(
-      (globalReport.alertes.resolues / globalReport.alertes.total) * 100,
-    );
-  };
-
-  const getEleveursActivityRate = () => {
-    if (!globalReport || globalReport.eleveurs.total === 0) return 0;
-    return Math.round(
-      (globalReport.eleveurs.actifs / globalReport.eleveurs.total) * 100,
-    );
+  // Format date for display
+  const formatDate = (dateString: string): string => {
+    if (!dateString) return "N/A";
+    return new Date(dateString).toLocaleString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
   return (
@@ -159,297 +181,165 @@ export default function Rapports() {
         <main className="flex-1 p-6 lg:p-8">
           {/* Header */}
           <div className="mb-8">
-            <h1 className="text-3xl font-bold text-slate-900 dark:text-white">
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
               Rapports & Statistiques
             </h1>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Analyse complète des performances du système Smart Poultry
+              Analyse des performances du système Smart Poultry
             </p>
           </div>
 
           {/* Period Selector */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
-            <div className="flex gap-2">
-              {["24h", "7d", "30d", "90d"].map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setPeriod(p)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    period === p
-                      ? "bg-primary text-white shadow-md"
-                      : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700"
-                  }`}
-                >
-                  {p === "24h"
-                    ? "24H"
-                    : p === "7d"
-                      ? "7J"
-                      : p === "30d"
-                        ? "30J"
-                        : "90J"}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={handleExportPDF}
-              disabled={loading || !globalReport}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="material-symbols-outlined text-sm">
-                picture_as_pdf
-              </span>
-              Exporter PDF
-            </button>
+          <div className="flex gap-2 mb-6">
+            {["24h", "7d", "30d", "90d"].map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  period === p
+                    ? "bg-slate-800 text-white"
+                    : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                {p === "24h"
+                  ? "24H"
+                  : p === "7d"
+                    ? "7J"
+                    : p === "30d"
+                      ? "30J"
+                      : "90J"}
+              </button>
+            ))}
           </div>
 
           {error && (
-            <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl">
-              <div className="flex items-center gap-3">
-                <span className="material-symbols-outlined text-red-600">
-                  error
-                </span>
-                <p className="text-red-600 dark:text-red-400">{error}</p>
-                <button
-                  onClick={fetchAllReports}
-                  className="ml-auto text-sm text-red-700 dark:text-red-300 hover:underline"
-                >
-                  Réessayer
-                </button>
-              </div>
+            <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 rounded-xl">
+              <p className="text-red-600 dark:text-red-400">{error}</p>
             </div>
           )}
 
           {loading ? (
             <div className="flex items-center justify-center h-64">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-slate-800"></div>
             </div>
           ) : globalReport ? (
             <>
-              {/* KPI Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <KpiCard
-                  icon="home"
-                  color="blue"
-                  label="Poulaillers"
-                  value={globalReport.poulaillers.total}
-                  subValue={`${globalReport.poulaillers.actifs} actifs (${globalReport.poulaillers.pourcentageActifs}%)`}
-                />
-                <KpiCard
-                  icon="person"
-                  color="green"
-                  label="Éleveurs"
-                  value={globalReport.eleveurs.total}
-                  subValue={`${globalReport.eleveurs.actifs} actifs (${getEleveursActivityRate()}%)`}
-                />
-                <KpiCard
-                  icon="sensors"
-                  color="purple"
-                  label="Modules"
-                  value={globalReport.modules.total}
-                  subValue={`${globalReport.modules.connectes} connectés (${globalReport.modules.tauxConnexion})`}
-                />
-                <KpiCard
-                  icon="warning"
-                  color="amber"
-                  label="Alertes"
-                  value={globalReport.alertes.total}
-                  subValue={`${globalReport.alertes.critiques} critiques, ${getAlertesResolutionRate()}% résolues`}
-                />
-              </div>
-
               {/* Tabs */}
-              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm overflow-hidden mb-8">
-                <div className="border-b border-slate-200 dark:border-slate-700">
-                  <nav className="flex">
-                    <button
-                      onClick={() => setActiveTab("global")}
-                      className={`px-6 py-4 text-sm font-medium transition-colors relative ${
-                        activeTab === "global"
-                          ? "text-primary"
-                          : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                      }`}
-                    >
-                      Vue Globale
-                      {activeTab === "global" && (
-                        <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("alertes")}
-                      className={`px-6 py-4 text-sm font-medium transition-colors relative ${
-                        activeTab === "alertes"
-                          ? "text-primary"
-                          : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                      }`}
-                    >
-                      Analyse des Alertes
-                      {activeTab === "alertes" && (
-                        <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("modules")}
-                      className={`px-6 py-4 text-sm font-medium transition-colors relative ${
-                        activeTab === "modules"
-                          ? "text-primary"
-                          : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                      }`}
-                    >
-                      Performance des Modules
-                      {activeTab === "modules" && (
-                        <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-                      )}
-                    </button>
+              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden mb-6">
+                <div className="border-b border-slate-200 dark:border-slate-700 overflow-x-auto">
+                  <nav className="flex min-w-max">
+                    {[
+                      { key: "global", label: "Vue Globale" },
+                      { key: "alertes", label: "Alertes" },
+                      { key: "modules", label: "Modules" },
+                      { key: "mesures", label: "Mesures" },
+                    ].map((tab) => (
+                      <button
+                        key={tab.key}
+                        onClick={() => setActiveTab(tab.key as any)}
+                        className={`px-6 py-4 text-sm font-medium whitespace-nowrap transition-colors ${
+                          activeTab === tab.key
+                            ? "text-slate-900 dark:text-white border-b-2 border-slate-800"
+                            : "text-slate-500 dark:text-slate-400 hover:text-slate-700"
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
                   </nav>
                 </div>
 
                 <div className="p-6">
+                  {/* GLOBAL TAB */}
                   {activeTab === "global" && (
                     <div className="space-y-6">
-                      {/* Summary Stats */}
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-slate-200 dark:bg-slate-800 rounded-lg">
-                              <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-                                home
-                              </span>
-                            </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-200">
-                              Poulaillers
-                            </span>
-                          </div>
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.poulaillers.total}
-                          </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            {globalReport.poulaillers.pourcentageActifs}%
-                            d'activité
-                          </p>
-                        </div>
-
-                        <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-slate-200 dark:bg-slate-800 rounded-lg">
-                              <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-                                sensors
-                              </span>
-                            </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-200">
-                              Modules
-                            </span>
-                          </div>
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.modules.connectes}/
-                            {globalReport.modules.total}
-                          </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            Connectés ({globalReport.modules.tauxConnexion})
-                          </p>
-                        </div>
-
-                        <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-slate-200 dark:bg-slate-800 rounded-lg">
-                              <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-                                command
-                              </span>
-                            </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-200">
-                              Commandes
-                            </span>
-                          </div>
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.commandes.tauxReussite}%
-                          </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            Taux de réussite
-                          </p>
-                        </div>
+                      {/* KPIs */}
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <KpiCard
+                          icon="home"
+                          label="Poulaillers"
+                          value={globalReport.poulaillers.total}
+                          subValues={[
+                            `${globalReport.poulaillers.connects} connectés`,
+                            `${globalReport.poulaillers.horsLigne} hors ligne`,
+                          ]}
+                        />
+                        <KpiCard
+                          icon="person"
+                          label="Éleveurs"
+                          value={globalReport.eleveurs.total}
+                          subValues={[`${globalReport.eleveurs.actifs} actifs`]}
+                        />
+                        <KpiCard
+                          icon="sensors"
+                          label="Modules"
+                          value={globalReport.modules.total}
+                          subValues={[
+                            `${globalReport.modules.associes} associés`,
+                            `${globalReport.modules.libres} libres`,
+                          ]}
+                        />
+                        <KpiCard
+                          icon="warning"
+                          label="Alertes actives"
+                          value={globalReport.alertes.actives}
+                          subValues={[
+                            `${globalReport.alertes.critiques} critiques`,
+                          ]}
+                        />
                       </div>
 
-                      {/* Detailed Table */}
+                      {/* Summary Table */}
                       <div className="overflow-x-auto">
                         <table className="w-full">
                           <thead className="bg-slate-100 dark:bg-slate-900">
                             <tr>
                               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                Catégorie
+                                Métrique
                               </th>
                               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                Total
+                                Valeur
                               </th>
                               <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                Actifs/Connectés
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                Taux
+                                Détails
                               </th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
                             <tr>
                               <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
-                                Poulaillers
+                                Taux de connexion modules
                               </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.poulaillers.total}
+                              <td className="px-4 py-3 text-slate-900 dark:text-white font-semibold">
+                                {globalReport.modules.tauxConnexion}%
                               </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.poulaillers.actifs}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                                  {globalReport.poulaillers.pourcentageActifs}%
-                                </span>
-                              </td>
-                            </tr>
-                            <tr>
-                              <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
-                                Éleveurs
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.eleveurs.total}
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.eleveurs.actifs}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                                  {getEleveursActivityRate()}%
-                                </span>
-                              </td>
-                            </tr>
-                            <tr>
-                              <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
-                                Modules
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
+                              <td className="px-4 py-3 text-slate-500">
+                                {globalReport.modules.connectes} /{" "}
                                 {globalReport.modules.total}
                               </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.modules.connectes}
+                            </tr>
+                            <tr>
+                              <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
+                                Poulaillers actifs
                               </td>
-                              <td className="px-4 py-3">
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                                  {globalReport.modules.tauxConnexion}
-                                </span>
+                              <td className="px-4 py-3 text-slate-900 dark:text-white font-semibold">
+                                {globalReport.poulaillers.pourcentageActifs}%
+                              </td>
+                              <td className="px-4 py-3 text-slate-500">
+                                {globalReport.poulaillers.connects} /{" "}
+                                {globalReport.poulaillers.total}
                               </td>
                             </tr>
                             <tr>
                               <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
-                                Commandes
+                                Alertes période
                               </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.commandes.total}
+                              <td className="px-4 py-3 text-slate-900 dark:text-white font-semibold">
+                                {globalReport.alertes.total}
                               </td>
-                              <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                {globalReport.commandes.executees}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                                  {globalReport.commandes.tauxReussite}%
-                                </span>
+                              <td className="px-4 py-3 text-slate-500">
+                                {globalReport.alertes.critiques} critiques,{" "}
+                                {globalReport.alertes.warnings} warnings
                               </td>
                             </tr>
                           </tbody>
@@ -458,147 +348,98 @@ export default function Rapports() {
                     </div>
                   )}
 
+                  {/* ALERTES TAB */}
                   {activeTab === "alertes" && alertesReport && (
                     <div className="space-y-6">
-                      {/* Alert Stats Cards */}
+                      {/* Alert Stats */}
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center border border-slate-200 dark:border-slate-700">
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.alertes.total}
+                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-slate-900 dark:text-white">
+                            {globalReport?.alertes.total || 0}
                           </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            Total
-                          </p>
+                          <p className="text-sm text-slate-500">Total</p>
                         </div>
-                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center border border-slate-200 dark:border-slate-700">
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.alertes.critiques}
+                        <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-red-600">
+                            {globalReport?.alertes.critiques || 0}
                           </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            Critiques
-                          </p>
+                          <p className="text-sm text-red-500">Critiques</p>
                         </div>
-                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center border border-slate-200 dark:border-slate-700">
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.alertes.warnings}
+                        <div className="p-4 bg-orange-50 dark:bg-orange-900/20 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-orange-600">
+                            {globalReport?.alertes.warnings || 0}
                           </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            Avertissements
-                          </p>
+                          <p className="text-sm text-orange-500">Warnings</p>
                         </div>
-                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center border border-slate-200 dark:border-slate-700">
-                          <p className="text-3xl font-bold text-slate-700 dark:text-slate-200">
-                            {globalReport.alertes.resolues}
+                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-slate-900 dark:text-white">
+                            {globalReport?.alertes.actives || 0}
                           </p>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                            Résolues
-                          </p>
+                          <p className="text-sm text-slate-500">Actives</p>
                         </div>
                       </div>
 
-                      {/* Alert Distribution */}
-                      <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                      {/* Distribution by Parameter */}
+                      <div>
                         <h4 className="font-semibold text-slate-900 dark:text-white mb-4">
-                          Distribution des alertes
+                          Répartition par paramètre
                         </h4>
-                        <div className="space-y-3">
-                          <div>
-                            <div className="flex justify-between text-sm mb-1">
-                              <span className="text-slate-600 dark:text-slate-300">
-                                Critiques
-                              </span>
-                              <span className="font-medium text-slate-700 dark:text-slate-200">
-                                {globalReport.alertes.critiques}
-                              </span>
-                            </div>
-                            <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                          {alertesReport.parParametre
+                            .slice(0, 6)
+                            .map((param, idx) => (
                               <div
-                                className="h-full bg-slate-500 rounded-full"
-                                style={{
-                                  width: `${globalReport.alertes.total > 0 ? (globalReport.alertes.critiques / globalReport.alertes.total) * 100 : 0}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <div>
-                            <div className="flex justify-between text-sm mb-1">
-                              <span className="text-slate-600 dark:text-slate-300">
-                                Avertissements
-                              </span>
-                              <span className="font-medium text-slate-700 dark:text-slate-200">
-                                {globalReport.alertes.warnings}
-                              </span>
-                            </div>
-                            <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-slate-400 rounded-full"
-                                style={{
-                                  width: `${globalReport.alertes.total > 0 ? (globalReport.alertes.warnings / globalReport.alertes.total) * 100 : 0}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <div>
-                            <div className="flex justify-between text-sm mb-1">
-                              <span className="text-slate-600 dark:text-slate-300">
-                                Résolues
-                              </span>
-                              <span className="font-medium text-slate-700 dark:text-slate-200">
-                                {globalReport.alertes.resolues}
-                              </span>
-                            </div>
-                            <div className="h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-slate-600 rounded-full"
-                                style={{
-                                  width: `${globalReport.alertes.total > 0 ? (globalReport.alertes.resolues / globalReport.alertes.total) * 100 : 0}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
+                                key={idx}
+                                className="p-3 bg-slate-100 dark:bg-slate-900 rounded-lg"
+                              >
+                                <p className="font-medium text-slate-900 dark:text-white">
+                                  {parameterLabels[param.parameter] ||
+                                    param.parameter}
+                                </p>
+                                <p className="text-sm text-slate-500">
+                                  {param.total} alertes ({param.critiques}{" "}
+                                  critiques)
+                                </p>
+                              </div>
+                            ))}
                         </div>
                       </div>
 
-                      {/* Top Alert Parameters */}
-                      {alertesReport.parParametre &&
-                        alertesReport.parParametre.length > 0 && (
+                      {/* Top 5 Poulaillers */}
+                      {alertesReport.parPoulailler.length > 0 && (
+                        <div>
+                          <h4 className="font-semibold text-slate-900 dark:text-white mb-4">
+                            Poulaillers les plus en alerte (Top 5)
+                          </h4>
                           <div className="overflow-x-auto">
                             <table className="w-full">
                               <thead className="bg-slate-100 dark:bg-slate-900">
                                 <tr>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                    Paramètre
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
+                                    Poulailler
                                   </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
                                     Total
                                   </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
                                     Critiques
-                                  </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                    Warnings
                                   </th>
                                 </tr>
                               </thead>
-                              <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                                {alertesReport.parParametre
+                              <tbody className="divide-y divide-slate-200">
+                                {alertesReport.parPoulailler
                                   .slice(0, 5)
-                                  .map((param, idx) => (
+                                  .map((p, idx) => (
                                     <tr key={idx}>
-                                      <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
-                                        {param.parameter || "N/A"}
+                                      <td className="px-4 py-2 text-slate-900 dark:text-white">
+                                        {p.poulaillerName}
                                       </td>
-                                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                        {param.total}
+                                      <td className="px-4 py-2 text-slate-600">
+                                        {p.count}
                                       </td>
-                                      <td className="px-4 py-3">
-                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                                          {param.critiques}
-                                        </span>
-                                      </td>
-                                      <td className="px-4 py-3">
-                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300">
-                                          {param.warnings}
+                                      <td className="px-4 py-2">
+                                        <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs">
+                                          {p.critical}
                                         </span>
                                       </td>
                                     </tr>
@@ -606,211 +447,225 @@ export default function Rapports() {
                               </tbody>
                             </table>
                           </div>
-                        )}
+                        </div>
+                      )}
                     </div>
                   )}
 
+                  {/* MODULES TAB */}
                   {activeTab === "modules" && modulesReport && (
                     <div className="space-y-6">
                       {/* Module Stats */}
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-slate-200 dark:bg-slate-800 rounded-lg">
-                              <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-                                sensors
-                              </span>
-                            </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-200">
-                              Total Modules
-                            </span>
-                          </div>
-                          <p className="text-4xl font-bold text-slate-700 dark:text-slate-200">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-slate-900 dark:text-white">
                             {modulesReport.total}
                           </p>
+                          <p className="text-sm text-slate-500">Total</p>
                         </div>
-
-                        <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-slate-200 dark:bg-slate-800 rounded-lg">
-                              <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-                                wifi
-                              </span>
-                            </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-200">
-                              Connectés
-                            </span>
-                          </div>
-                          <p className="text-4xl font-bold text-slate-700 dark:text-slate-200">
+                        <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-green-600">
                             {modulesReport.connectes}
                           </p>
+                          <p className="text-sm text-green-500">Connectés</p>
                         </div>
-
-                        <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
-                          <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-slate-200 dark:bg-slate-800 rounded-lg">
-                              <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-                                signal_cellular_alt
-                              </span>
-                            </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-200">
-                              Taux de Connexion
-                            </span>
-                          </div>
-                          <p className="text-4xl font-bold text-slate-700 dark:text-slate-200">
+                        <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-red-600">
+                            {modulesReport.deconnectes}
+                          </p>
+                          <p className="text-sm text-red-500">Hors ligne</p>
+                        </div>
+                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-slate-900 dark:text-white">
                             {modulesReport.tauxConnexion}%
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            Taux connexion
                           </p>
                         </div>
                       </div>
 
-                      {/* Connection Status */}
-                      <div className="p-6 bg-slate-100 dark:bg-slate-900 rounded-xl">
+                      {/* Modules without ping */}
+                      <div>
                         <h4 className="font-semibold text-slate-900 dark:text-white mb-4">
-                          État de connexion
+                          Modules sans ping depuis 24h+
                         </h4>
-                        <div className="flex items-center gap-4">
-                          <div className="flex-1">
-                            <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-slate-600 rounded-full transition-all"
-                                style={{
-                                  width: `${modulesReport.tauxConnexion}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <span className="text-lg font-semibold text-slate-900 dark:text-white">
-                            {modulesReport.tauxConnexion}%
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Modules List */}
-                      {modulesReport.modules &&
-                        modulesReport.modules.length > 0 && (
+                        {modulesReport.modulesSansPing &&
+                        modulesReport.modulesSansPing.length > 0 ? (
                           <div className="overflow-x-auto">
                             <table className="w-full">
                               <thead className="bg-slate-100 dark:bg-slate-900">
                                 <tr>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
                                     Module
                                   </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                    Type
-                                  </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
                                     Poulailler
                                   </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                    Statut
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
+                                    Dernier ping
                                   </th>
-                                  <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase">
-                                    Dernière connexion
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
+                                    Durée
                                   </th>
                                 </tr>
                               </thead>
-                              <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
-                                {modulesReport.modules
-                                  .slice(0, 10)
-                                  .map((mod) => (
-                                    <tr key={mod.id}>
-                                      <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
+                              <tbody className="divide-y divide-slate-200">
+                                {modulesReport.modulesSansPing.map(
+                                  (mod, idx) => (
+                                    <tr key={idx}>
+                                      <td className="px-4 py-2 text-slate-900 dark:text-white">
                                         {mod.name}
                                       </td>
-                                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
-                                        {mod.type || "N/A"}
-                                      </td>
-                                      <td className="px-4 py-3 text-slate-600 dark:text-slate-300">
+                                      <td className="px-4 py-2 text-slate-600">
                                         {mod.poulailler}
                                       </td>
-                                      <td className="px-4 py-3">
-                                        <span
-                                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                            mod.status === "connecte" ||
-                                            mod.status === "connected"
-                                              ? "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300"
-                                              : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
-                                          }`}
-                                        >
-                                          {mod.status || "unknown"}
+                                      <td className="px-4 py-2 text-slate-500 text-sm">
+                                        {formatDate(mod.lastPing)}
+                                      </td>
+                                      <td className="px-4 py-2">
+                                        <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs">
+                                          {mod.heuresSansPing}h
                                         </span>
                                       </td>
-                                      <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                                        {mod.lastPing
-                                          ? new Date(
-                                              mod.lastPing,
-                                            ).toLocaleString("fr-FR")
-                                          : "N/A"}
+                                    </tr>
+                                  ),
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <p className="text-slate-500">
+                            Aucun module sans ping
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MESURES TAB */}
+                  {activeTab === "mesures" && mesuresReport && (
+                    <div className="space-y-6">
+                      {/* Activity Stats */}
+                      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                        <div className="p-4 bg-slate-100 dark:bg-slate-900 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-slate-900 dark:text-white">
+                            {mesuresReport.totalPoulaillers}
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            Total Poulaillers
+                          </p>
+                        </div>
+                        <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-green-600">
+                            {mesuresReport.poulaillersActifs}
+                          </p>
+                          <p className="text-sm text-green-500">Actifs</p>
+                        </div>
+                        <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl text-center">
+                          <p className="text-2xl font-bold text-red-600">
+                            {mesuresReport.poulaillersInactifs}
+                          </p>
+                          <p className="text-sm text-red-500">Inactifs</p>
+                        </div>
+                      </div>
+
+                      {/* Dernieres mesures */}
+                      <div>
+                        <h4 className="font-semibold text-slate-900 dark:text-white mb-4">
+                          Dernières mesures reçues
+                        </h4>
+                        {mesuresReport.dernieresMesures &&
+                        mesuresReport.dernieresMesures.length > 0 ? (
+                          <div className="overflow-x-auto">
+                            <table className="w-full">
+                              <thead className="bg-slate-100 dark:bg-slate-900">
+                                <tr>
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
+                                    Poulailler
+                                  </th>
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
+                                    Dernière mesure
+                                  </th>
+                                  <th className="px-4 py-2 text-left text-xs font-semibold text-slate-600 uppercase">
+                                    Paramètres
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-200">
+                                {mesuresReport.dernieresMesures
+                                  .slice(0, 10)
+                                  .map((p, idx) => (
+                                    <tr key={idx}>
+                                      <td className="px-4 py-2 text-slate-900 dark:text-white">
+                                        {p.poulaillerName}
+                                      </td>
+                                      <td className="px-4 py-2 text-slate-500 text-sm">
+                                        {formatDate(p.derniereMesure)}
+                                      </td>
+                                      <td className="px-4 py-2">
+                                        <div className="flex gap-1 flex-wrap">
+                                          {p.parametres.map((param, i) => (
+                                            <span
+                                              key={i}
+                                              className="px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-xs rounded"
+                                            >
+                                              {param}
+                                            </span>
+                                          ))}
+                                        </div>
                                       </td>
                                     </tr>
                                   ))}
                               </tbody>
                             </table>
                           </div>
+                        ) : (
+                          <p className="text-slate-500">
+                            Aucune donnée disponible
+                          </p>
                         )}
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
             </>
-          ) : (
-            <div className="text-center py-12 text-slate-500 dark:text-slate-400">
-              Aucune donnée disponible. Veuillez vous connecter.
-            </div>
-          )}
+          ) : null}
         </main>
       </div>
     </div>
   );
 }
 
-// Composant KPI réutilisable
+// KPI Card Component
 function KpiCard({
   icon,
-  color,
   label,
   value,
-  subValue,
+  subValues,
 }: {
   icon: string;
-  color: "blue" | "amber" | "red" | "green" | "purple";
   label: string;
-  value: number | string;
-  subValue?: string;
+  value: number;
+  subValues: string[];
 }) {
-  const colors = {
-    blue: "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700",
-    amber:
-      "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700",
-    red: "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700",
-    green:
-      "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700",
-    purple:
-      "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700",
-  };
-
   return (
-    <div
-      className={`bg-white dark:bg-slate-800 border p-5 lg:p-6 rounded-xl shadow-sm ${colors[color]}`}
-    >
-      <div className="flex items-center justify-between mb-4">
-        <div className={`p-3 rounded-lg bg-slate-100 dark:bg-slate-700`}>
-          <span className="material-symbols-outlined text-slate-600 dark:text-slate-300">
-            {icon}
-          </span>
-        </div>
+    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="material-symbols-outlined text-slate-500">{icon}</span>
+        <span className="text-xs font-medium text-slate-500 uppercase">
+          {label}
+        </span>
       </div>
-      <p className="text-sm font-medium text-slate-500 dark:text-slate-400 mb-1">
-        {label}
-      </p>
-      <h3 className="text-3xl font-bold text-slate-900 dark:text-white">
+      <p className="text-2xl font-bold text-slate-900 dark:text-white">
         {value}
-      </h3>
-      {subValue && (
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          {subValue}
+      </p>
+      {subValues.map((sub, idx) => (
+        <p key={idx} className="text-xs text-slate-500 mt-1">
+          {sub}
         </p>
-      )}
+      ))}
     </div>
   );
 }

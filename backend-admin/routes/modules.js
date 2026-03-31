@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const { protect, admin } = require("../middlewares/auth");
+const { checkSessionTimeout } = require("../middlewares/sessionTimeout");
 const {
   getModules,
   getModuleById,
@@ -17,47 +18,37 @@ const {
   getPendingPoulaillers,
 } = require("../controllers/modulesController");
 
-// All routes require authentication and admin role
-router.use(protect, admin);
+// All routes require authentication, session check, and admin role
+router.use(protect, checkSessionTimeout, admin);
 
 // ============================================================================
-// ROUTES MODULES
+// ORDRE CRITIQUE: Les routes SPECIFIQUES doivent etre AVANT les routes DYNAMIQUES
 // ============================================================================
 
-// List all modules with pagination and filters
+// --- ROUTES GET SPECIFIQUES (AVANT /:id) ---
 router.get("/", getModules);
-
-// Get available (unassigned) modules
 router.get("/available", getAvailableModules);
-
-// Get poulaillers waiting for module
 router.get("/pending-poulaillers", getPendingPoulaillers);
 
-// Get single module
-router.get("/:id", getModuleById);
-
-// Create new module (without claim code)
-router.post("/", createModule);
-
-// Generate claim code for a module (creates module if not exists)
-router.post("/generate-claim", generateClaimCode);
-
-// Claim a module with code
+// --- ROUTES POST SPECIFIQUES (AVANT /:id) ---
 router.post("/claim", claimModule);
-
-// Decode QR code
+router.post("/generate-claim", generateClaimCode);
 router.post("/decode-qr", decodeQRCode);
 
-// Update module
-router.put("/:id", updateModule);
+// --- ROUTES POST STANDARD ---
+router.post("/", createModule);
 
-// Associate module to poulailler
+// --- ROUTES PUT SPECIFIQUES (AVANT /:id) ---
 router.put("/:id/associate", associateModule);
-
-// Dissociate module from poulailler
 router.put("/:id/dissociate", dissociateModule);
 
-// Delete module
+// --- ROUTES PUT STANDARD ---
+router.put("/:id", updateModule);
+
+// --- ROUTES DELETE ---
 router.delete("/:id", deleteModule);
+
+// --- ROUTE GET DYNAMIQUE (DOIT ETRE EN DERNIER) ---
+router.get("/:id", getModuleById);
 
 module.exports = router;

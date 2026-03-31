@@ -1,6 +1,7 @@
 // controllers/utilisateursController.js
 const User = require("../models/User");
 const Poulailler = require("../models/Poulailler");
+const logService = require("../services/logService");
 
 // @desc    Liste des utilisateurs (tous les rôles)
 // @route   GET /api/admin/utilisateurs
@@ -121,6 +122,14 @@ exports.toggleStatus = async (req, res) => {
     user.isActive = !user.isActive;
     await user.save();
 
+    // Log: qui a effectué l'action et qui est concerné
+    await logService.userUpdated(
+      req.user?._id, // L'admin qui fait l'action
+      user._id, // L'utilisateur cible
+      [user.isActive ? "activation" : "désactivation"],
+      req.ip || req.connection?.remoteAddress,
+    );
+
     res.json({
       success: true,
       message: user.isActive ? "Utilisateur activé" : "Utilisateur désactivé",
@@ -169,6 +178,14 @@ exports.deleteUtilisateur = async (req, res) => {
       });
     }
 
+    // Log: qui a supprimé et qui a été supprimé
+    await logService.userDeleted(
+      req.user?._id, // L'admin qui supprime
+      user._id, // L'utilisateur supprimé
+      user.email, // Email de l'utilisateur supprimé
+      req.ip || req.connection?.remoteAddress,
+    );
+
     // SUPPRIMER DÉFINITIVEMENT l'utilisateur
     console.log("[DELETE USER] Permanently deleting user...");
     await User.findByIdAndDelete(req.params.id);
@@ -184,6 +201,89 @@ exports.deleteUtilisateur = async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Erreur lors de la suppression: " + err.message,
+    });
+  }
+};
+
+// @desc    Inviter un nouvel administrateur
+// @route   POST /api/admin/utilisateurs/invite-admin
+// @access  Private/Admin
+exports.inviteAdmin = async (req, res) => {
+  const { email, firstName, lastName, phone } = req.body;
+
+  // Validation
+  if (!email || !firstName || !lastName) {
+    return res.status(400).json({
+      success: false,
+      error: "Email, prénom et nom sont requis",
+    });
+  }
+
+  try {
+    // Vérifier si l'utilisateur existe déjà
+    const existingUser = await User.findOne({ email });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        error: "Cet email est déjà utilisé",
+      });
+    }
+
+    // Générer le token d'invitation
+    const crypto = require("crypto");
+    const inviteToken = crypto.randomBytes(32).toString("hex");
+    const inviteTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 jours
+
+    // Créer l'utilisateur administrateur avec statut pending
+    const bcrypt = require("bcryptjs");
+    const tempPassword = "temp_" + crypto.randomBytes(4).toString("hex");
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(tempPassword, salt);
+
+    const admin = await User.create({
+      email,
+      firstName,
+      lastName,
+      phone: phone || null,
+      password: hashedPassword,
+      role: "admin",
+      status: "pending",
+      inviteToken,
+      inviteTokenExpires,
+      isActive: true,
+    });
+
+    // Envoyer l'email d'invitation avec le rôle admin
+    const emailService = require("../services/emailService");
+    try {
+      await emailService.sendInviteEmail(
+        email,
+        inviteToken,
+        firstName,
+        "admin",
+      );
+    } catch (emailError) {
+      console.error("[EMAIL ERROR]", emailError);
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Invitation d'administrateur envoyée avec succès",
+      data: {
+        id: admin._id,
+        email: admin.email,
+        firstName: admin.firstName,
+        lastName: admin.lastName,
+        role: admin.role,
+        status: admin.status,
+      },
+    });
+  } catch (err) {
+    console.error("[INVITE ADMIN ERROR]", err);
+    res.status(500).json({
+      success: false,
+      error: "Erreur lors de l'invitation de l'administrateur",
     });
   }
 };

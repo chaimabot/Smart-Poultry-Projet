@@ -14,8 +14,11 @@ try {
 // Import controllers
 const {
   getDashboardStats,
+  getAlertesChart,
+  getModulesActivity,
   getAlertesRecentes,
   getPoulaillersCritiques,
+  getActiviteRecente,
 } = require("../controllers/dashboardController");
 
 // Appliquer les middlewares seulement s'ils existent
@@ -27,8 +30,11 @@ if (protect && admin) {
 
 // Routes
 router.get("/stats", getDashboardStats);
+router.get("/alertes-chart", getAlertesChart);
+router.get("/modules-activity", getModulesActivity);
 router.get("/alertes-recentes", getAlertesRecentes);
 router.get("/poulaillers-critiques", getPoulaillersCritiques);
+router.get("/activite-recente", getActiviteRecente);
 
 // Test
 router.get("/test", (req, res) => {

@@ -1,13 +1,16 @@
 import AppNavigator from "./src/navigation/AppNavigator";
 import { ThemeProvider } from "./src/context/ThemeContext";
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { MqttProvider } from "./src/context/MqttContext";
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <ThemeProvider>
-        <AppNavigator />
-      </ThemeProvider>
+      <MqttProvider>
+        <ThemeProvider>
+          <AppNavigator />
+        </ThemeProvider>
+      </MqttProvider>
     </SafeAreaProvider>
   );
 }

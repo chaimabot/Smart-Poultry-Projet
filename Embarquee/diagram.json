@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "author": "Smart Poultry",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-devkit-v1",
+      "id": "esp32",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht22",
+      "top": -90,
+      "left": 230,
+      "attrs": { "pin": "D4" }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "mq135",
+      "top": 80,
+      "left": 230,
+      "attrs": { "label": "MQ135 CO2/NH3", "value": "0.3" }
+    },
+    {
+      "type": "wokwi-hc-sr04",
+      "id": "hcsr04",
+      "top": -90,
+      "left": -200,
+      "attrs": { "distance": "20" }
+    },
+    {
+      "type": "wokwi-stepper-motor",
+      "id": "stepper",
+      "top": 210,
+      "left": -230,
+      "attrs": { "display": "steps" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_fan",
+      "top": 210,
+      "left": 230,
+      "attrs": { "color": "blue", "label": "Ventilateur" }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_relay",
+      "top": 270,
+      "left": 230,
+      "attrs": { "color": "red", "label": "Relais" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "sw_open",
+      "top": 310,
+      "left": -200,
+      "attrs": { "color": "green", "label": "Fin course OUVERT" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "sw_close",
+      "top": 370,
+      "left": -200,
+      "attrs": { "color": "red", "label": "Fin course FERME" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r_open",
+      "top": 310,
+      "left": -90,
+      "attrs": { "value": "10000" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r_close",
+      "top": 370,
+      "left": -90,
+      "attrs": { "value": "10000" }
+    }
+  ],
+  "connections": [
+    ["esp32:3V3", "dht22:VCC", "red", []],
+    ["esp32:GND.1", "dht22:GND", "black", []],
+    ["esp32:D4", "dht22:SDA", "green", []],
+
+    ["esp32:3V3", "mq135:VCC", "red", []],
+    ["esp32:GND.2", "mq135:GND", "black", []],
+    ["esp32:D34", "mq135:SIG", "yellow", []],
+
+    ["esp32:5V", "hcsr04:VCC", "red", []],
+    ["esp32:GND.3", "hcsr04:GND", "black", []],
+    ["esp32:D5", "hcsr04:TRIG", "orange", []],
+    ["esp32:D18", "hcsr04:ECHO", "blue", []],
+
+    ["esp32:D19", "stepper:IN1", "purple", []],
+    ["esp32:D21", "stepper:IN2", "purple", []],
+    ["esp32:D22", "stepper:IN3", "purple", []],
+    ["esp32:D23", "stepper:IN4", "purple", []],
+
+    ["esp32:D25", "led_fan:A", "blue", []],
+    ["esp32:GND.4", "led_fan:K", "black", []],
+
+    ["esp32:D26", "led_relay:A", "red", []],
+    ["esp32:GND.5", "led_relay:K", "black", []],
+
+    ["esp32:3V3", "r_open:1", "red", []],
+    ["r_open:2", "esp32:D32", "green", []],
+    ["r_open:2", "sw_open:1", "green", []],
+    ["sw_open:2", "esp32:GND.6", "black", []],
+
+    ["esp32:3V3", "r_close:1", "red", []],
+    ["r_close:2", "esp32:D33", "green", []],
+    ["r_close:2", "sw_close:1", "green", []],
+    ["sw_close:2", "esp32:GND.7", "black", []]
+  ]
+}

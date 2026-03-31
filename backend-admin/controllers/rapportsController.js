@@ -43,9 +43,17 @@ exports.getGlobalReport = async (req, res) => {
     const totalPoulaillers = await Poulailler.countDocuments({
       isArchived: false,
     });
-    const poulaillersActifs = await Poulailler.countDocuments({
+    const poulaillersConnectes = await Poulailler.countDocuments({
       isArchived: false,
       status: "connecte",
+    });
+    const poulaillersHorsLigne = await Poulailler.countDocuments({
+      isArchived: false,
+      status: "hors ligne",
+    });
+    const poulaillersEnAttente = await Poulailler.countDocuments({
+      isArchived: false,
+      status: "en attente",
     });
 
     // Stats Eleveurs
@@ -57,15 +65,22 @@ exports.getGlobalReport = async (req, res) => {
 
     // Stats Modules
     const totalModules = await Module.countDocuments();
+    const modulesAssocies = await Module.countDocuments({
+      poulailler: { $ne: null },
+    });
+    const modulesLibres = await Module.countDocuments({
+      poulailler: null,
+    });
     const modulesConnectes = await Module.countDocuments({
       lastPing: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
     });
+    const modulesHorsLigne = totalModules - modulesConnectes;
     const tauxConnexion =
       totalModules > 0
         ? Math.round((modulesConnectes / totalModules) * 100)
         : 0;
 
-    // Stats Alertes
+    // Stats Alertes (actives = not resolved)
     const totalAlertes = await Alert.countDocuments({
       createdAt: { $gte: startDate, $lte: endDate },
     });
@@ -81,35 +96,10 @@ exports.getGlobalReport = async (req, res) => {
       createdAt: { $gte: startDate, $lte: endDate },
       resolvedAt: { $ne: null },
     });
-
-    // Stats Commandes
-    const totalCommandes = await Command.countDocuments({
+    const alertesActives = await Alert.countDocuments({
       createdAt: { $gte: startDate, $lte: endDate },
+      resolvedAt: null,
     });
-    const commandesExecutees = await Command.countDocuments({
-      createdAt: { $gte: startDate, $lte: endDate },
-      status: "executed",
-    });
-    const commandesEchouees = await Command.countDocuments({
-      createdAt: { $gte: startDate, $lte: endDate },
-      status: "failed",
-    });
-
-    // Uptime calculation (simulated based on lastPing)
-    const uptimeData = await Module.aggregate([
-      {
-        $match: {
-          lastPing: { $gte: startDate },
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: 1 },
-          avgPing: { $avg: "$lastPing" },
-        },
-      },
-    ]);
 
     res.json({
       success: true,
@@ -119,10 +109,12 @@ exports.getGlobalReport = async (req, res) => {
         dateFin: endDate,
         poulaillers: {
           total: totalPoulaillers,
-          actifs: poulaillersActifs,
+          connects: poulaillersConnectes,
+          horsLigne: poulaillersHorsLigne,
+          enAttente: poulaillersEnAttente,
           pourcentageActifs:
             totalPoulaillers > 0
-              ? Math.round((poulaillersActifs / totalPoulaillers) * 100)
+              ? Math.round((poulaillersConnectes / totalPoulaillers) * 100)
               : 0,
         },
         eleveurs: {
@@ -131,34 +123,27 @@ exports.getGlobalReport = async (req, res) => {
         },
         modules: {
           total: totalModules,
+          associes: modulesAssocies,
+          libres: modulesLibres,
           connectes: modulesConnectes,
-          tauxConnexion: `${tauxConnexion}%`,
+          horsLigne: modulesHorsLigne,
+          tauxConnexion: tauxConnexion,
         },
         alertes: {
           total: totalAlertes,
           critiques: alertesCritiques,
           warnings: alertesWarnings,
           resolues: alertesResolues,
-        },
-        commandes: {
-          total: totalCommandes,
-          executees: commandesExecutees,
-          echouees: commandesEchouees,
-          tauxReussite:
-            totalCommandes > 0
-              ? Math.round((commandesExecutees / totalCommandes) * 100)
-              : 0,
+          actives: alertesActives,
         },
       },
     });
   } catch (err) {
     console.error("[GET GLOBAL REPORT ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la génération du rapport",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Erreur lors de la génération du rapport",
+    });
   }
 };
 
@@ -219,11 +204,11 @@ exports.getAlertesReport = async (req, res) => {
         },
       },
       {
-        $unwind: "$poulailler",
+        $unwind: { path: "$poulailler", preserveNullAndEmptyArrays: true },
       },
       {
         $project: {
-          poulaillerName: "$poulailler.name",
+          poulaillerName: { $ifNull: ["$poulailler.name", "Inconnu"] },
           count: 1,
           critical: 1,
         },
@@ -267,7 +252,7 @@ exports.getAlertesReport = async (req, res) => {
       data: {
         periode: period,
         parParametre: alertsByParameter.map((item) => ({
-          parameter: item._id,
+          parameter: item._id || "inconnu",
           total: item.count,
           critiques: item.critical,
           warnings: item.warning,
@@ -278,12 +263,10 @@ exports.getAlertesReport = async (req, res) => {
     });
   } catch (err) {
     console.error("[GET ALERTES REPORT ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la génération du rapport",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Erreur lors de la génération du rapport",
+    });
   }
 };
 
@@ -316,15 +299,29 @@ exports.getModulesReport = async (req, res) => {
       .sort({ lastPing: -1 })
       .limit(50);
 
-    const formattedModules = modulesDetails.map((m) => ({
-      id: m._id,
-      name: m.name,
-      type: m.type,
-      status: m.status,
-      poulailler: m.poulailler?.name || "Non associé",
-      lastPing: m.lastPing,
-      firmwareVersion: m.firmwareVersion,
-    }));
+    // Calculate hours since last ping for each module
+    const formattedModules = modulesDetails.map((m) => {
+      const heuresSansPing = m.lastPing
+        ? Math.round(
+            (Date.now() - new Date(m.lastPing).getTime()) / (1000 * 60 * 60),
+          )
+        : 999;
+      return {
+        id: m._id,
+        name: m.name,
+        type: m.type,
+        status: m.status,
+        poulailler: m.poulailler?.name || "Non associé",
+        lastPing: m.lastPing,
+        firmwareVersion: m.firmwareVersion,
+        heuresSansPing: heuresSansPing,
+      };
+    });
+
+    // Get modules without ping for 24h+
+    const modulesSansPing = formattedModules.filter(
+      (m) => m.heuresSansPing >= 24,
+    );
 
     res.json({
       success: true,
@@ -339,81 +336,83 @@ exports.getModulesReport = async (req, res) => {
             : 0,
         parStatut: modulesByStatus,
         modules: formattedModules,
+        modulesSansPing: modulesSansPing,
       },
     });
   } catch (err) {
     console.error("[GET MODULES REPORT ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la génération du rapport",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Erreur lors de la génération du rapport",
+    });
   }
 };
 
-// @desc    Rapport sur les mesure
+// @desc    Rapport sur les mesures - activité des poulaillers
 // @route   GET /api/admin/rapports/mesures
 // @access  Private/Admin
 exports.getMesuresReport = async (req, res) => {
   try {
     const { period = "7d", poulaillerId } = req.query;
-    const { startDate, endDate } = getDateRange(period);
+    const { startDate, endDate = new Date() } = getDateRange(period);
 
-    const matchQuery = {
-      timestamp: { $gte: startDate, $lte: endDate },
-    };
+    // Get all poulaillers
+    const poulaillers = await Poulailler.find({ isArchived: false })
+      .populate("owner", "firstName lastName")
+      .limit(100);
 
-    if (poulaillerId) {
-      matchQuery.poulailler = poulaillerId;
-    }
+    // Get latest measure for each poulailler
+    const poulaillersWithMesures = await Promise.all(
+      poulaillers.map(async (p) => {
+        const lastMeasure = await Measure.findOne({ poulailler: p._id })
+          .sort({ timestamp: -1 })
+          .limit(1);
 
-    // Average measures
-    const avgMeasures = await Measure.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: null,
-          avgTemperature: { $avg: "$temperature" },
-          avgHumidity: { $avg: "$humidityCo" },
-          avg2: { $avg: "$co2" },
-          avgNh3: { $avg: "$nh3" },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
+        return {
+          poulaillerId: p._id,
+          poulaillerName: p.name,
+          derniereMesure: lastMeasure?.timestamp || null,
+          parametres: lastMeasure
+            ? Object.keys(lastMeasure._doc).filter(
+                (k) =>
+                  !["_id", "poulailler", "timestamp", "__v"].includes(k) &&
+                  lastMeasure[k] !== undefined &&
+                  lastMeasure[k] !== null,
+              )
+            : [],
+        };
+      }),
+    );
 
-    // Min/Max values
-    const minMaxMeasures = await Measure.aggregate([
-      { $match: matchQuery },
-      {
-        $group: {
-          _id: null,
-          minTemperature: { $min: "$temperature" },
-          maxTemperature: { $max: "$temperature" },
-          minHumidity: { $min: "$humidity" },
-          maxHumidity: { $max: "$humidity" },
-          minCo2: { $min: "$co2" },
-          maxCo2: { $max: "$co2" },
-        },
-      },
-    ]);
+    // Calculate actifs/inactifs (inactif = no measure in last 24h)
+    const now = Date.now();
+    const poulaillersActifs = poulaillersWithMesures.filter(
+      (p) =>
+        p.derniereMesure &&
+        now - new Date(p.derniereMesure).getTime() < 24 * 60 * 60 * 1000,
+    ).length;
+
+    const poulaillersInactifs = poulaillersWithMesures.filter(
+      (p) =>
+        !p.derniereMesure ||
+        now - new Date(p.derniereMesure).getTime() >= 24 * 60 * 60 * 1000,
+    ).length;
 
     res.json({
       success: true,
       data: {
         periode: period,
-        moyenne: avgMeasures[0] || null,
-        minMax: minMaxMeasures[0] || null,
+        poulaillersActifs: poulaillersActifs,
+        poulaillersInactifs: poulaillersInactifs,
+        totalPoulaillers: poulaillers.length,
+        dernieresMesures: poulaillersWithMesures,
       },
     });
   } catch (err) {
     console.error("[GET MESURES REPORT ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la génération du rapport",
-      });
+    res.status(500).json({
+      success: false,
+      error: "Erreur lors de la génération du rapport",
+    });
   }
 };
