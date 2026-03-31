@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -14,7 +14,6 @@ import { BlurView } from "expo-blur";
 import Toast from "./Toast";
 import { controlActuator } from "../services/poultry";
 
-// Jours de la semaine
 const jours = [
   { key: "L", label: "Lun" },
   { key: "M", label: "Mar" },
@@ -28,14 +27,14 @@ const jours = [
 export default function ActuatorControl({
   darkMode = false,
   poultryId,
-  actuators, // { door: { status, mode }, ventilation: { status, mode } }
+  actuators,
 }) {
-  // ── États locaux initialisés depuis les props backend ──────────────────────
+  // ── États locaux ───────────────────────────────────────────────────────────
   const [doorState, setDoorState] = useState(
     actuators?.door?.status === "open" ? "Ouverte" : "Fermée",
   );
   const [doorMode, setDoorMode] = useState(
-    actuators?.door?.mode === "manual" ? "Manuel" : "Auto",
+    actuators?.door?.mode === "auto" ? "Auto" : "Manuel",
   );
   const [doorProcessing, setDoorProcessing] = useState(false);
 
@@ -43,11 +42,55 @@ export default function ActuatorControl({
     actuators?.ventilation?.status === "on" ? "Actif" : "Arrêt",
   );
   const [fanMode, setFanMode] = useState(
-    actuators?.ventilation?.mode === "manual" ? "Manuel" : "Auto",
+    actuators?.ventilation?.mode === "auto" ? "Auto" : "Manuel",
   );
   const [fanProcessing, setFanProcessing] = useState(false);
 
-  // ── Horaires (local uniquement pour l'instant) ─────────────────────────────
+  const [lampState, setLampState] = useState(
+    actuators?.lamp?.status === "on" ? "Allumée" : "Éteinte",
+  );
+  const [lampMode, setLampMode] = useState(
+    actuators?.lamp?.mode === "auto" ? "Auto" : "Manuel",
+  );
+  const [lampProcessing, setLampProcessing] = useState(false);
+
+  // ── Refs pour bloquer la synchro pendant actions/changements de mode ───────
+  const doorActionInProgress = useRef(false);
+  const doorModeInProgress = useRef(false);
+  const fanActionInProgress = useRef(false);
+  const fanModeInProgress = useRef(false);
+  const lampActionInProgress = useRef(false);
+  const lampModeInProgress = useRef(false);
+
+  // ── Synchronisation depuis le serveur (bloquée pendant actions locales) ────
+  useEffect(() => {
+    if (!doorActionInProgress.current && !doorModeInProgress.current) {
+      if (actuators?.door?.status) {
+        setDoorState(actuators.door.status === "open" ? "Ouverte" : "Fermée");
+      }
+      if (actuators?.door?.mode) {
+        setDoorMode(actuators.door.mode === "auto" ? "Auto" : "Manuel");
+      }
+    }
+    if (!fanActionInProgress.current && !fanModeInProgress.current) {
+      if (actuators?.ventilation?.status) {
+        setFanState(actuators.ventilation.status === "on" ? "Actif" : "Arrêt");
+      }
+      if (actuators?.ventilation?.mode) {
+        setFanMode(actuators.ventilation.mode === "auto" ? "Auto" : "Manuel");
+      }
+    }
+    if (!lampActionInProgress.current && !lampModeInProgress.current) {
+      if (actuators?.lamp?.status) {
+        setLampState(actuators.lamp.status === "on" ? "Allumée" : "Éteinte");
+      }
+      if (actuators?.lamp?.mode) {
+        setLampMode(actuators.lamp.mode === "auto" ? "Auto" : "Manuel");
+      }
+    }
+  }, [actuators]);
+
+  // ── Horaires ───────────────────────────────────────────────────────────────
   const [schedules, setSchedules] = useState([
     {
       id: 1,
@@ -81,9 +124,10 @@ export default function ActuatorControl({
     setToast({ visible: true, message, type });
   const hideToast = () => setToast((prev) => ({ ...prev, visible: false }));
 
-  // ── Basculer mode Auto ↔ Manuel ────────────────────────────────────────────
+  // ── Modes Auto ↔ Manuel ────────────────────────────────────────────────────
   const toggleDoorMode = async () => {
     const newMode = doorMode === "Auto" ? "Manuel" : "Auto";
+    doorModeInProgress.current = true;
     setDoorMode(newMode);
     setDoorProcessing(true);
     try {
@@ -95,15 +139,19 @@ export default function ActuatorControl({
       );
       showToast(`Porte : Mode ${newMode} activé`);
     } catch (e) {
-      showToast("Erreur lors du changement de mode", "error");
-      setDoorMode(doorMode); // rollback
+      showToast(e.message || "Erreur changement de mode", "error");
+      setDoorMode(doorMode);
     } finally {
       setDoorProcessing(false);
+      setTimeout(() => {
+        doorModeInProgress.current = false;
+      }, 3000);
     }
   };
 
   const toggleFanMode = async () => {
     const newMode = fanMode === "Auto" ? "Manuel" : "Auto";
+    fanModeInProgress.current = true;
     setFanMode(newMode);
     setFanProcessing(true);
     try {
@@ -115,21 +163,54 @@ export default function ActuatorControl({
       );
       showToast(`Ventilation : Mode ${newMode} activé`);
     } catch (e) {
-      showToast("Erreur lors du changement de mode", "error");
-      setFanMode(fanMode); // rollback
+      showToast(e.message || "Erreur changement de mode", "error");
+      setFanMode(fanMode);
     } finally {
       setFanProcessing(false);
+      setTimeout(() => {
+        fanModeInProgress.current = false;
+      }, 3000);
     }
   };
 
-  // ── Ouvrir / Fermer la porte ───────────────────────────────────────────────
+  const toggleLampMode = async () => {
+    const newMode = lampMode === "Auto" ? "Manuel" : "Auto";
+    lampModeInProgress.current = true;
+    setLampMode(newMode);
+    setLampProcessing(true);
+    try {
+      await controlActuator(
+        poultryId,
+        "lamp",
+        lampState === "Allumée" ? "on" : "off",
+        newMode === "Manuel" ? "manual" : "auto",
+      );
+      showToast(`Lampe : Mode ${newMode} activé`);
+    } catch (e) {
+      showToast(e.message || "Erreur changement de mode", "error");
+      setLampMode(lampMode);
+    } finally {
+      setLampProcessing(false);
+      setTimeout(() => {
+        lampModeInProgress.current = false;
+      }, 3000);
+    }
+  };
+
+  // ── Actions ────────────────────────────────────────────────────────────────
   const toggleDoor = async () => {
     if (doorMode === "Auto") {
       showToast("Passez d'abord en mode Manuel", "warning");
       return;
     }
+    if (!poultryId) {
+      showToast("ID poulailler manquant", "error");
+      return;
+    }
     const newState = doorState === "Fermée" ? "Ouverte" : "Fermée";
+    doorActionInProgress.current = true;
     setDoorProcessing(true);
+    setDoorState(newState);
     try {
       await controlActuator(
         poultryId,
@@ -137,23 +218,31 @@ export default function ActuatorControl({
         newState === "Ouverte" ? "open" : "closed",
         "manual",
       );
-      setDoorState(newState);
       showToast(`Porte ${newState.toLowerCase()}`);
     } catch (e) {
-      showToast("Erreur lors du contrôle de la porte", "error");
+      setDoorState(doorState);
+      showToast(e.message || "Erreur contrôle porte", "error");
     } finally {
       setDoorProcessing(false);
+      setTimeout(() => {
+        doorActionInProgress.current = false;
+      }, 2000);
     }
   };
 
-  // ── Démarrer / Arrêter la ventilation ─────────────────────────────────────
   const toggleFan = async () => {
     if (fanMode === "Auto") {
       showToast("Passez d'abord en mode Manuel", "warning");
       return;
     }
+    if (!poultryId) {
+      showToast("ID poulailler manquant", "error");
+      return;
+    }
     const newState = fanState === "Arrêt" ? "Actif" : "Arrêt";
+    fanActionInProgress.current = true;
     setFanProcessing(true);
+    setFanState(newState);
     try {
       await controlActuator(
         poultryId,
@@ -161,12 +250,47 @@ export default function ActuatorControl({
         newState === "Actif" ? "on" : "off",
         "manual",
       );
-      setFanState(newState);
       showToast(`Ventilation ${newState === "Actif" ? "démarrée" : "arrêtée"}`);
     } catch (e) {
-      showToast("Erreur lors du contrôle de la ventilation", "error");
+      setFanState(fanState);
+      showToast(e.message || "Erreur contrôle ventilation", "error");
     } finally {
       setFanProcessing(false);
+      setTimeout(() => {
+        fanActionInProgress.current = false;
+      }, 2000);
+    }
+  };
+
+  const toggleLamp = async () => {
+    if (lampMode === "Auto") {
+      showToast("Passez d'abord en mode Manuel", "warning");
+      return;
+    }
+    if (!poultryId) {
+      showToast("ID poulailler manquant", "error");
+      return;
+    }
+    const newState = lampState === "Éteinte" ? "Allumée" : "Éteinte";
+    lampActionInProgress.current = true;
+    setLampProcessing(true);
+    setLampState(newState);
+    try {
+      await controlActuator(
+        poultryId,
+        "lamp",
+        newState === "Allumée" ? "on" : "off",
+        "manual",
+      );
+      showToast(`Lampe ${newState === "Allumée" ? "allumée" : "éteinte"}`);
+    } catch (e) {
+      setLampState(lampState);
+      showToast(e.message || "Erreur contrôle lampe", "error");
+    } finally {
+      setLampProcessing(false);
+      setTimeout(() => {
+        lampActionInProgress.current = false;
+      }, 2000);
     }
   };
 
@@ -246,7 +370,6 @@ export default function ActuatorControl({
         },
       ]}
     >
-      {/* En-tête */}
       <View style={styles.deviceHeader}>
         <View
           style={[styles.deviceIcon, { backgroundColor: activeColor + "20" }]}
@@ -260,7 +383,9 @@ export default function ActuatorControl({
               styles.deviceState,
               {
                 color:
-                  state === "Ouverte" || state === "Actif"
+                  state === "Ouverte" ||
+                  state === "Actif" ||
+                  state === "Allumée"
                     ? activeColor
                     : "#64748b",
               },
@@ -281,15 +406,16 @@ export default function ActuatorControl({
           <Text
             style={[
               styles.modeBadgeText,
-              { color: mode === "Auto" ? activeColor : "#f97316" },
+              {
+                color: mode === "Auto" ? activeColor : "#f97316",
+              },
             ]}
           >
-            {mode}
+            {mode.toUpperCase()}
           </Text>
         </View>
       </View>
 
-      {/* Boutons Auto / Manuel */}
       <View style={styles.controlButtons}>
         <TouchableOpacity
           style={[styles.modeBtn, mode === "Auto" && styles.modeBtnActive]}
@@ -332,7 +458,6 @@ export default function ActuatorControl({
         </TouchableOpacity>
       </View>
 
-      {/* Bouton d'action (Mode Manuel uniquement) */}
       {mode === "Manuel" ? (
         <TouchableOpacity
           style={[
@@ -350,11 +475,15 @@ export default function ActuatorControl({
               name={
                 name === "Porte"
                   ? state === "Fermée"
-                    ? "door-back-door"
+                    ? "door-sliding"
                     : "door-front"
-                  : state === "Arrêt"
-                    ? "play-arrow"
-                    : "stop"
+                  : name === "Lampe"
+                    ? state === "Éteinte"
+                      ? "lightbulb"
+                      : "lightbulb-outline"
+                    : state === "Arrêt"
+                      ? "play-arrow"
+                      : "stop"
               }
               size={20}
               color="#fff"
@@ -365,16 +494,20 @@ export default function ActuatorControl({
               ? state === "Fermée"
                 ? "Ouvrir"
                 : "Fermer"
-              : state === "Arrêt"
-                ? "Démarrer"
-                : "Arrêter"}
+              : name === "Lampe"
+                ? state === "Éteinte"
+                  ? "Allumer"
+                  : "Éteindre"
+                : state === "Arrêt"
+                  ? "Démarrer"
+                  : "Arrêter"}
           </Text>
         </TouchableOpacity>
       ) : (
         <View style={styles.autoInfo}>
           <MaterialIcons name="info-outline" size={14} color={secondaryText} />
           <Text style={[styles.autoInfoText, { color: secondaryText }]}>
-            Contrôle automatique activé
+            Mode automatique activé
           </Text>
         </View>
       )}
@@ -397,7 +530,6 @@ export default function ActuatorControl({
         toggleDoor,
         "#10b981",
       )}
-
       {renderDevice(
         "Ventilation",
         "toys",
@@ -408,8 +540,17 @@ export default function ActuatorControl({
         toggleFan,
         "#3b82f6",
       )}
+      {renderDevice(
+        "Lampe",
+        "lightbulb",
+        lampState,
+        lampMode,
+        lampProcessing,
+        toggleLampMode,
+        toggleLamp,
+        "#f59e0b",
+      )}
 
-      {/* Bouton programmation horaire */}
       <TouchableOpacity
         style={[styles.scheduleBtn, { borderColor: "#22C55E" }]}
         onPress={() => setShowScheduleModal(true)}
@@ -421,7 +562,6 @@ export default function ActuatorControl({
         <MaterialIcons name="chevron-right" size={20} color="#22C55E" />
       </TouchableOpacity>
 
-      {/* Modal programmation */}
       <Modal visible={showScheduleModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View

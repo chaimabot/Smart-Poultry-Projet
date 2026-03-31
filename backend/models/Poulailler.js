@@ -99,6 +99,10 @@ const poulaillerSchema = new mongoose.Schema(
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
       },
+      lamp: {
+        status: { type: String, enum: ["on", "off"], default: "off" },
+        mode: { type: String, enum: ["auto", "manual"], default: "auto" },
+      },
     },
     isCritical: {
       type: Boolean,
@@ -121,6 +125,8 @@ const poulaillerSchema = new mongoose.Schema(
       humidity: Number,
       co2: Number,
       nh3: Number,
+      airQualityPercent: Number,
+      nh3DigitalAlert: Boolean,
       dust: Number,
       waterLevel: Number,
       timestamp: Date,

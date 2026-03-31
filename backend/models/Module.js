@@ -1,13 +1,11 @@
 const mongoose = require("mongoose");
 
 /**
- * Statuts du module:
- * - stock: Module en stock, pas encore activé
- * - pending_claim: Module découvert mais pas encore réclamé/associé
- * - claimed: Code claim utilisé (en attente d'association à un poulailler)
+ * Statuts du module (SIMPLIFIES - Uni avec backend-admin):
+ * - pending: Module en attente de claim/association
  * - associated: Module associé à un poulailler
- * - offline: Module Hors ligne (pas de ping depuis 24h)
- * - revoked: Module révoqué/dissocié
+ * - offline: Module hors ligne (pas de ping depuis 24h)
+ * - dissociated: Module dissocié (disponible pour nouvelle association)
  */
 const STATUS_ENUM = ["pending", "associated", "offline", "dissociated"];
 
@@ -56,7 +54,6 @@ const auditLogSchema = new mongoose.Schema(
 
 const moduleSchema = new mongoose.Schema(
   {
-    // Identifiant unique du module (MAC address ou serial)
     serialNumber: {
       type: String,
       required: [true, "Le numéro de série est requis"],
@@ -64,104 +61,72 @@ const moduleSchema = new mongoose.Schema(
       uppercase: true,
       trim: true,
     },
-
-    // Adresse MAC pour identification ESP32
     macAddress: {
       type: String,
       required: true,
       unique: true,
       uppercase: true,
-      match: /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/,
     },
-
-    // Nom convivial du module
     deviceName: {
       type: String,
       required: [true, "Le nom du module est requis"],
       maxlength: [50, "Le nom ne peut pas dépasser 50 caractères"],
     },
-
-    // Version du firmware
     firmwareVersion: {
       type: String,
       default: null,
     },
-
-    // Statut actuel du module
     status: {
       type: String,
       enum: STATUS_ENUM,
       default: "pending",
       index: true,
     },
-
-    // Code de claim (generé cryptographiquement)
-    // Format: K9P2-MW4Q-8R7T-X1Y2 (10-12 chars avec tirets)
     claimCode: {
       type: String,
       unique: true,
       sparse: true,
       index: true,
     },
-
-    // Date d'expiration du code claim (180 jours par defaut)
     claimCodeExpiresAt: {
       type: Date,
       default: null,
     },
-
-    // Date d'utilisation du code claim
     claimCodeUsedAt: {
       type: Date,
       default: null,
     },
-
-    // Ancien code claim (pour historique, ne peut pas être réutilisé)
     previousClaimCode: {
       type: String,
       default: null,
     },
-
-    // Reference vers le poulailler associe
     poulailler: {
       type: mongoose.Schema.ObjectId,
       ref: "Poulailler",
       default: null,
     },
-
-    // Proprietaire (eleveur) du module
     owner: {
       type: mongoose.Schema.ObjectId,
       ref: "User",
       default: null,
     },
-
-    // Date d'installation
     installationDate: {
       type: Date,
       default: null,
     },
-
-    // Dernier ping recu
     lastPing: {
       type: Date,
       default: null,
     },
-
-    // Motif de dissociation/revocation
     dissociationReason: {
       type: String,
       maxlength: [500, "Le motif ne peut pas dépasser 500 caractères"],
       default: null,
     },
-
-    // Date de dissociation
     dissociatedAt: {
       type: Date,
       default: null,
     },
-
-    // Logs d'audit
     auditLogs: [auditLogSchema],
   },
   {
@@ -169,83 +134,53 @@ const moduleSchema = new mongoose.Schema(
   },
 );
 
-/**
- * Index pour optimiser les requetes frequentes
- */
-// Index compose pour les modules en attente de claim
+// Indexes
 moduleSchema.index({ status: 1, claimCodeExpiresAt: 1 });
-// Index pour recherche par claim code
 moduleSchema.index({ claimCode: 1, claimCodeUsedAt: 1 });
-// Index pour les modules d'un owner
 moduleSchema.index({ owner: 1, status: 1 });
 
 /**
- * Methode pour mettre a jour le statut bas sur lastPing
- * - Si lastPing < 24h: connecte/associated
- * - Si lastPing > 24h: offline
- * - Si lastPing null et status != stock: pending_claim
+ * Methode pour mettre a jour le statut base sur lastPing
  */
 moduleSchema.methods.updateStatus = function () {
-  // Ne pas modifier si en attente ou dissocie
   if (this.status === "pending" || this.status === "dissociated") return;
+  if (!this.lastPing) return;
 
-  // Verifier le dernier heartbeat
-  if (this.lastPing) {
-    const timeSinceLastPing = Date.now() - new Date(this.lastPing).getTime();
-    const fifteenMinutes = 15 * 60 * 1000;
+  const timeSinceLastPing = Date.now() - new Date(this.lastPing).getTime();
+  const twentyFourHours = 24 * 60 * 60 * 1000;
 
-    if (timeSinceLastPing > fifteenMinutes && this.status === "associated") {
-      this.status = "offline";
-    }
+  if (timeSinceLastPing > twentyFourHours && this.status === "associated") {
+    this.status = "offline";
   }
 };
 
 /**
  * Methode pour generer un code claim cryptographique
- * Entropie >= 50 bits (10-12 caracteres alphanumeriques avec tirets)
- * Format: XXXX-XXXX-XXXX (12 caracteres avec tirets)
+ * Format: XXXX-XXXX-XXXX
  */
 moduleSchema.statics.generateClaimCode = function () {
-  // Generation de 9 bytes (72 bits d'entropie) pour le code declaim
-  const bytes = require("crypto").randomBytes(9);
+  // Generation de 4 bytes pour chaque partie
+  const bytes1 = require("crypto").randomBytes(4);
+  const bytes2 = require("crypto").randomBytes(4);
+  const bytes3 = require("crypto").randomBytes(4);
 
-  // Conversion en base36 et mise en majuscules
-  // On obtient environ 14 caracteres, on prend les 12 premiers avec format XXX-XXX-XXX
-  const base36 = bytes.toString("base36").toUpperCase();
+  // Conversion en hex et prise des 4 premiers caracteres
+  const part1 = bytes1.toString("hex").substring(0, 4).toUpperCase();
+  const part2 = bytes2.toString("hex").substring(0, 4).toUpperCase();
+  const part3 = bytes3.toString("hex").substring(0, 4).toUpperCase();
 
-  // Format avec tirets: XXXX-XXXX-XXXX
-  return `${base36.substring(0, 4)}-${base36.substring(4, 8)}-${base36.substring(8, 12)}`;
+  return `${part1}-${part2}-${part3}`;
 };
 
 /**
- * Methode pour verifier si un code claim est expiré
+ * Methode pour verifier si un code claim est expire
  */
 moduleSchema.methods.isClaimCodeExpired = function () {
   if (!this.claimCode || !this.claimCodeExpiresAt) return true;
   return new Date() > this.claimCodeExpiresAt;
 };
 
-/**
- * Methode pour ajouter un log d'audit
- */
-moduleSchema.methods.addAuditLog = async function (
-  action,
-  userId,
-  details = null,
-  options = {},
-) {
-  this.auditLogs.push({
-    action,
-    performedBy: userId,
-    details,
-    claimCode: options.claimCode || null,
-    poulaillerId: options.poulaillerId || null,
-    ipAddress: options.ipAddress || null,
-  });
-  await this.save();
-};
-
-// Middleware pre-save pour mettre a jour le statut
+// Pre-save middleware
 moduleSchema.pre("save", function (next) {
   this.updateStatus();
   next();

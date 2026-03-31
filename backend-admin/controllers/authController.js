@@ -2,6 +2,7 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const Joi = require("joi");
 const bcrypt = require("bcryptjs");
+const logService = require("../services/logService");
 
 // Validation Joi pour l'inscription ADMIN
 const registerAdminSchema = Joi.object({
@@ -58,6 +59,14 @@ exports.registerAdmin = async (req, res) => {
       role: "admin", // ← Seul changement important ici
     });
 
+    // Log user creation
+    await logService.userCreated(
+      null,
+      user._id,
+      email,
+      req.ip || req.connection?.remoteAddress,
+    );
+
     const token = generateToken(user._id, user.role);
 
     res.status(201).json({
@@ -103,12 +112,10 @@ exports.loginAdmin = async (req, res) => {
 
     // Vérifier que le compte est actif
     if (!user.isActive) {
-      return res
-        .status(401)
-        .json({
-          success: false,
-          error: "Compte désactivé. Veuillez contacter l'administrateur.",
-        });
+      return res.status(401).json({
+        success: false,
+        error: "Compte désactivé. Veuillez contacter l'administrateur.",
+      });
     }
 
     // Vérifier que c'est bien un admin
@@ -120,15 +127,33 @@ exports.loginAdmin = async (req, res) => {
 
     // Vérifier le mot de passe
     const isMatch = await user.matchPassword(password);
-    console.log("Password match result:", isMatch);
-    console.log("Entered password:", password);
-    console.log("Stored password:", user.password);
 
     if (!isMatch) {
+      // Log failed login attempt
+      await logService.create({
+        type: "user_login",
+        severity: "warning",
+        message: "Échec de connexion",
+        description: `Email: ${email}`,
+        targetUser: user._id,
+        ipAddress: req.ip || req.connection?.remoteAddress,
+        userAgent: req.get("user-agent"),
+      });
       return res
         .status(401)
         .json({ success: false, error: "Identifiants invalides" });
     }
+
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Log successful login
+    await logService.userLogin(
+      user._id,
+      req.ip || req.connection?.remoteAddress,
+      req.get("user-agent"),
+    );
 
     const token = generateToken(user._id, user.role);
 

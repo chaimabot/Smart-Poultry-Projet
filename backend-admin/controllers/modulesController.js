@@ -1,144 +1,36 @@
 const Module = require("../models/Module");
 const Poulailler = require("../models/Poulailler");
-const User = require("../models/User");
 const Joi = require("joi");
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
+// Configuration
+const CLAIM_CODE_TTL_MS = 180 * 24 * 60 * 60 * 1000;
 
-// Delai d'expiration du code claim (180 jours en millisecondes)
-const CLAIM_CODE_TTL_DAYS = 180;
-const CLAIM_CODE_TTL_MS = CLAIM_CODE_TTL_DAYS * 24 * 60 * 60 * 1000;
-
-// Rate limiting - nombre de tentatives max par IP
-const MAX_CLAIM_ATTEMPTS = 10;
-const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-
-// Stockage en memoire pour le rate limiting (en production, utiliser Redis)
-const claimAttempts = new Map();
-
-// ============================================================================
-// SCHEMAS DE VALIDATION
-// ============================================================================
-
-/**
- * Schema de validation pour la creation d'un module
- * @security - Validation stricte pour eviter les injections
- */
+// Schemas de validation
 const createModuleSchema = Joi.object({
-  serialNumber: Joi.string()
-    .required()
-    .uppercase()
-    .trim()
-    .min(8)
-    .max(32)
-    .pattern(/^[A-Z0-9\-]+$/),
-  macAddress: Joi.string()
-    .required()
-    .uppercase()
-    .pattern(/^([0-9A-F]{2}[:-]){5}([0-9A-F]{2})$/),
-  deviceName: Joi.string()
-    .required()
-    .min(2)
-    .max(50)
-    .trim()
-    .pattern(/^[A-Za-z0-9\s\-_]+$/),
+  serialNumber: Joi.string().required().trim().min(3).max(32),
+  macAddress: Joi.string().required().trim(),
+  deviceName: Joi.string().required().trim().min(2).max(50),
   firmwareVersion: Joi.string().allow("", null).max(20),
 });
 
-/**
- * Schema de validation pour la mise a jour d'un module
- */
-const updateModuleSchema = Joi.object({
-  deviceName: Joi.string()
-    .min(2)
-    .max(50)
-    .trim()
-    .pattern(/^[A-Za-z0-9\s\-_]+$/),
+const generateClaimSchema = Joi.object({
+  serialNumber: Joi.string().required().trim().min(3).max(32),
+  macAddress: Joi.string().required().trim(),
+  deviceName: Joi.string().required().trim().min(2).max(50),
   firmwareVersion: Joi.string().allow("", null).max(20),
 });
 
-/**
- * Schema de validation pour le claim d'un module
- * SIMPLIFICATION: claim passe directement a associated avec poulaillerId
- * @security - Validation stricte du code claim
- */
 const claimModuleSchema = Joi.object({
-  claimCode: Joi.string()
-    .required()
-    .uppercase()
-    .trim()
-    .min(10)
-    .max(14)
-    .pattern(/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/),
-  poulaillerId: Joi.string()
-    .required()
-    .pattern(/^[0-9a-fA-F]{24}$/),
+  claimCode: Joi.string().required().uppercase().trim(),
+  poulaillerId: Joi.string().required(),
 });
 
-/**
- * Schema de validation pour l'association module-poulailler
- * (Plus necessaire avec le nouveau flux - kept for backward compatibility)
- */
-const associateSchema = Joi.object({
-  poulaillerId: Joi.string()
-    .required()
-    .pattern(/^[0-9a-fA-F]{24}$/),
-});
-
-/**
- * Schema de validation pour la dissociation
- * @security - Motif obligatoire pour audit
- */
 const dissociateSchema = Joi.object({
   reason: Joi.string().required().min(10).max(500).trim(),
   confirm: Joi.boolean().valid(true).required(),
 });
 
-/**
- * Schema de validation pour la generation de code claim
- */
-const generateClaimSchema = Joi.object({
-  serialNumber: Joi.string()
-    .required()
-    .uppercase()
-    .trim()
-    .min(8)
-    .max(32)
-    .pattern(/^[A-Z0-9\-]+$/),
-  macAddress: Joi.string()
-    .required()
-    .uppercase()
-    .pattern(/^([0-9A-F]{2}[:-]){5}([0-9A-F]{2})$/),
-  deviceName: Joi.string()
-    .required()
-    .min(2)
-    .max(50)
-    .trim()
-    .pattern(/^[A-Za-z0-9\s\-_]+$/),
-  firmwareVersion: Joi.string().allow("", null).max(20),
-});
-
-/**
- * Schema de validation pour la Recherche
- * Statuts SIMPLIFIES: pending, associated, offline, dissociated
- */
-const searchQuerySchema = Joi.object({
-  status: Joi.string().valid("pending", "associated", "offline", "dissociated"),
-  search: Joi.string().max(50).trim(),
-  page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(100).default(10),
-  ownerId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/),
-});
-
-// ============================================================================
-// FONCTIONS UTILITAIRES
-// ============================================================================
-
-/**
- * Formate une date en "il y a X" (francais)
- */
+// Fonctions utilitaires
 function formatTimeAgo(date) {
   if (!date) return "Jamais";
   const diff = Math.round((Date.now() - new Date(date).getTime()) / 60000);
@@ -148,43 +40,6 @@ function formatTimeAgo(date) {
   return `il y a ${Math.round(diff / 1440)} j`;
 }
 
-/**
- * Nettoie les anciennes entrees de rate limiting
- */
-function cleanupRateLimit(ip) {
-  const now = Date.now();
-  const attempts = claimAttempts.get(ip);
-  if (attempts) {
-    const validAttempts = attempts.filter(
-      (timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS,
-    );
-    if (validAttempts.length === 0) {
-      claimAttempts.delete(ip);
-    } else {
-      claimAttempts.set(ip, validAttempts);
-    }
-  }
-}
-
-/**
- * Verifie et met a jour le rate limiting
- */
-function checkRateLimit(ip) {
-  cleanupRateLimit(ip);
-  const attempts = claimAttempts.get(ip) || [];
-
-  if (attempts.length >= MAX_CLAIM_ATTEMPTS) {
-    return true; // Rate limit depasse
-  }
-
-  attempts.push(Date.now());
-  claimAttempts.set(ip, attempts);
-  return false;
-}
-
-/**
- * Formate un module pour la reponse API
- */
 function formatModule(m) {
   return {
     id: m._id,
@@ -193,17 +48,15 @@ function formatModule(m) {
     deviceName: m.deviceName,
     firmwareVersion: m.firmwareVersion || "N/A",
     status: m.status,
-    claimCode: m.claimCode ? `${m.claimCode.substring(0, 4)}-XXXX-XXXX` : null,
+    // Retourner le code claim COMPLET pour permettre la copie
+    claimCode: m.claimCode || null,
     claimCodeExpiresAt: m.claimCodeExpiresAt,
     claimCodeUsedAt: m.claimCodeUsedAt,
     lastPing: m.lastPing,
     lastPingFormatted: formatTimeAgo(m.lastPing),
     installationDate: m.installationDate,
     poulailler: m.poulailler
-      ? {
-          id: m.poulailler._id,
-          name: m.poulailler.name,
-        }
+      ? { id: m.poulailler._id, name: m.poulailler.name }
       : null,
     owner: m.owner
       ? {
@@ -212,43 +65,23 @@ function formatModule(m) {
           email: m.owner.email,
         }
       : null,
-    dissociationReason: m.dissociationReason,
-    dissociatedAt: m.dissociatedAt,
     createdAt: m.createdAt,
     updatedAt: m.updatedAt,
   };
 }
 
-// ============================================================================
-// CONTROLLERS
-// ============================================================================
-
-/**
- * @desc    Liste des modules avec pagination et filtres
- * @route   GET /api/admin/modules
- * @access  Private/Admin
- */
+// Controllers
 exports.getModules = async (req, res) => {
   try {
-    const { error, value } = searchQuerySchema.validate(req.query);
-    if (error) {
-      return res.status(400).json({
-        success: false,
-        error: error.details[0].message,
-      });
-    }
-
-    const { status, search, page, limit, ownerId } = value;
+    const { status, search, page = 1, limit = 10 } = req.query;
     const query = {};
 
     if (status) query.status = status;
-    if (ownerId) query.owner = ownerId;
     if (search) {
       query.$or = [
         { serialNumber: { $regex: search, $options: "i" } },
         { macAddress: { $regex: search, $options: "i" } },
         { deviceName: { $regex: search, $options: "i" } },
-        { claimCode: { $regex: search.toUpperCase(), $options: "i" } },
       ];
     }
 
@@ -258,271 +91,252 @@ exports.getModules = async (req, res) => {
       .populate({ path: "owner", select: "firstName lastName email" })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
-      .limit(limit);
+      .limit(parseInt(limit));
 
     res.json({
       success: true,
       data: modules.map(formatModule),
-      pagination: { total, page, pages: Math.ceil(total / limit) },
+      pagination: {
+        total,
+        page: parseInt(page),
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (err) {
     console.error("[GET MODULES ERROR]", err);
-    res.status(500).json({
-      success: false,
-      error: "Erreur lors de la récupération des modules",
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Obtenir un module par ID
- * @route   GET /api/admin/modules/:id
- * @access  Private/Admin
- */
 exports.getModuleById = async (req, res) => {
   try {
-    const module = await Module.findById(req.params.id)
-      .populate({
-        path: "poulailler",
-        select: "name owner status",
-        populate: { path: "owner", select: "firstName lastName email" },
-      })
-      .populate({ path: "owner", select: "firstName lastName email" })
-      .populate({
-        path: "auditLogs.performedBy",
-        select: "firstName lastName email",
-      });
+    const mod = await Module.findById(req.params.id)
+      .populate({ path: "poulailler", select: "name" })
+      .populate({ path: "owner", select: "firstName lastName email" });
 
-    if (!module) {
+    if (!mod) {
       return res
         .status(404)
         .json({ success: false, error: "Module non trouvé" });
     }
 
-    res.json({ success: true, data: formatModule(module) });
+    res.json({ success: true, data: formatModule(mod) });
   } catch (err) {
     console.error("[GET MODULE BY ID ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la récupération du module",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Generer un nouveau module avec code claim
- * @route   POST /api/admin/modules/generate-claim
- * @access  Private/Admin
- * @security Genere un code claim cryptographique avec TTL de 180 jours
- *
- * FLUX SIMPLIFIE:
- * - Cree/Met a jour le module en statut 'pending'
- * - Genere un code claim cryptographique
- */
 exports.generateClaimCode = async (req, res) => {
+  console.log("\n========== GENERATE-CLAIM ==========");
+  console.log("Request body:", req.body);
+
   const { error, value } = generateClaimSchema.validate(req.body);
   if (error) {
+    console.log("Validation error:", error.details[0].message);
     return res
       .status(400)
       .json({ success: false, error: error.details[0].message });
   }
 
-  const { serialNumber, macAddress, deviceName, firmwareVersion } = value;
+  const serial = value.serialNumber.toUpperCase().trim();
+  const mac = value.macAddress.toUpperCase().trim();
+  const name = value.deviceName.trim();
+  const fw = value.firmwareVersion || null;
+
+  console.log("Normalized:", { serial, mac, name });
 
   try {
     const existingModule = await Module.findOne({
-      $or: [{ serialNumber }, { macAddress }],
+      $or: [{ serialNumber: serial }, { macAddress: mac }],
     });
 
     if (existingModule) {
-      // Module existant - regenerer le code si expire
-      if (existingModule.claimCode && !existingModule.isClaimCodeExpired()) {
-        return res.json({
-          success: true,
-          message: "Module existant avec code claim valide",
-          data: formatModule(existingModule),
-        });
-      }
+      console.log("Existing module found:", existingModule.serialNumber);
 
-      // Nouveau code claim
       const newClaimCode = Module.generateClaimCode();
       existingModule.claimCode = newClaimCode;
       existingModule.claimCodeExpiresAt = new Date(
         Date.now() + CLAIM_CODE_TTL_MS,
       );
       existingModule.claimCodeUsedAt = null;
-      // Le module doit etre en pending (pas en stock/claimed)
+
       if (existingModule.status === "dissociated") {
         existingModule.status = "pending";
       }
+
       await existingModule.save();
+      console.log("Module updated with new code:", newClaimCode);
 
-      await existingModule.addAuditLog(
-        "code_generated",
-        req.user._id,
-        "Nouveau code claim généré",
-        { claimCode: newClaimCode, ipAddress: req.ip },
-      );
-
+      // Retourner le code COMPLET (pas masque) pour les modules existants aussi
       return res.json({
         success: true,
-        message: "Nouveau code claim généré pour le module existant",
-        data: formatModule(existingModule),
+        message: "Module existant avec nouveau code claim",
+        data: {
+          id: existingModule._id,
+          serialNumber: existingModule.serialNumber,
+          macAddress: existingModule.macAddress,
+          deviceName: existingModule.deviceName,
+          firmwareVersion: existingModule.firmwareVersion,
+          status: existingModule.status,
+          claimCode: newClaimCode, // Code COMPLET
+          claimCodeExpiresAt: existingModule.claimCodeExpiresAt,
+          claimCodeUsedAt: existingModule.claimCodeUsedAt,
+          lastPing: existingModule.lastPing,
+          installationDate: existingModule.installationDate,
+          createdAt: existingModule.createdAt,
+          updatedAt: existingModule.updatedAt,
+        },
       });
     }
 
-    // Creer un nouveau module avec code claim - statut 'pending'
     const claimCode = Module.generateClaimCode();
-    const module = await Module.create({
-      serialNumber,
-      macAddress,
-      deviceName,
-      firmwareVersion,
+    console.log("Creating new module with code:", claimCode);
+
+    const mod = await Module.create({
+      serialNumber: serial,
+      macAddress: mac,
+      deviceName: name,
+      firmwareVersion: fw,
       claimCode,
       claimCodeExpiresAt: new Date(Date.now() + CLAIM_CODE_TTL_MS),
-      status: "pending", // Statut par defaut simplifie
+      status: "pending",
     });
 
-    await module.addAuditLog(
-      "created",
-      req.user._id,
-      "Module créé avec code claim",
-      { claimCode, ipAddress: req.ip },
-    );
+    console.log("Module created:", mod._id);
 
+    // Retourner le code COMPLET lors de la generation (pas masque)
     res.status(201).json({
       success: true,
       message: "Module créé avec code claim",
-      data: formatModule(module),
+      data: {
+        id: mod._id,
+        serialNumber: mod.serialNumber,
+        macAddress: mod.macAddress,
+        deviceName: mod.deviceName,
+        firmwareVersion: mod.firmwareVersion,
+        status: mod.status,
+        claimCode: claimCode, // Code COMPLET pas masque
+        claimCodeExpiresAt: mod.claimCodeExpiresAt,
+        claimCodeUsedAt: mod.claimCodeUsedAt,
+        lastPing: mod.lastPing,
+        installationDate: mod.installationDate,
+        createdAt: mod.createdAt,
+        updatedAt: mod.updatedAt,
+      },
     });
   } catch (err) {
     console.error("[GENERATE CLAIM CODE ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la génération du code claim",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Claim un module et l'associer a un poulailler en une seule etape
- * @route   POST /api/admin/modules/claim
- * @access  Private/Admin
- *
- * FLUX SIMPLIFIE (fusion claim + associate):
- * - Verifie le code claim
- * - Associe directement au poulailler specifie
- * - Passe le module a 'associated'
- *
- * @security
- *   - Rate limiting: 10 tentatives / IP / 5 min
- *   - Code claim a usage unique
- *   - Code expire apres 180 jours
- *   - Transaction atomique
- */
 exports.claimModule = async (req, res) => {
-  // Verification rate limiting
-  const clientIp = req.ip || req.connection.remoteAddress;
-  if (checkRateLimit(clientIp)) {
-    console.warn(`[RATE LIMIT] Trop de tentatives de claim depuis ${clientIp}`);
-    return res.status(429).json({
-      success: false,
-      error: "Trop de tentatives. Veuillez patienter 5 minutes.",
-    });
-  }
-
-  // Validation du code claim ET poulaillerId
   const { error, value } = claimModuleSchema.validate(req.body);
   if (error) {
-    return res.status(400).json({ success: false, error: "Format invalide" });
+    return res
+      .status(400)
+      .json({ success: false, error: error.details[0].message });
   }
 
-  const { claimCode, poulaillerId } = value;
+  const code = value.claimCode.toUpperCase().trim();
+  const poulaierId = value.poulaillerId;
+
+  console.log("\n========== CLAIM MODULE ==========");
+  console.log("Claim code received:", code);
+  console.log("Poulailler ID:", poulaierId);
 
   try {
-    // Rechercher le module avec le code claim
-    const module = await Module.findOne({ claimCode: claimCode.toUpperCase() });
+    // Recherche avec expression régulière pour être insensible à la casse
+    const mod = await Module.findOne({
+      claimCode: { $regex: new RegExp(`^${code}$`, "i") },
+    });
 
-    if (!module) {
-      console.warn(
-        `[CLAIM] Code claim invalide: ${claimCode} from ${clientIp}`,
+    console.log("Module found:", mod ? mod.serialNumber : "NONE");
+
+    if (!mod) {
+      // Debug: essayer de trouver des modules avec des codes similaires
+      const allPendingModules = await Module.find({
+        status: { $in: ["pending", "dissociated"] },
+      })
+        .select("claimCode serialNumber status")
+        .limit(5);
+      console.log(
+        "Available pending modules:",
+        allPendingModules.map((m) => ({
+          serial: m.serialNumber,
+          code: m.claimCode,
+          status: m.status,
+        })),
       );
+
       return res
         .status(404)
-        .json({ success: false, error: "Code claim invalide" });
+        .json({ success: false, error: "Code claim invalide ou introuvable" });
     }
 
-    // Verifier si deja utilise
-    if (module.claimCodeUsedAt) {
+    // Vérifier si le code a déjà été utilisé
+    if (mod.claimCodeUsedAt) {
       return res
         .status(400)
         .json({ success: false, error: "Ce code claim a déjà été utilisé" });
     }
 
-    // Verifier l'expiration
-    if (module.isClaimCodeExpired()) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Ce code claim a expiré" });
+    // CORRECTION: Vérifier si le code claim a expiré
+    if (mod.claimCodeExpiresAt && new Date() > mod.claimCodeExpiresAt) {
+      return res.status(400).json({
+        success: false,
+        error: "Ce code claim a expiré. Veuillez en générer un nouveau.",
+      });
     }
 
-    // Verifier le poulailler
-    const poulailler = await Poulailler.findById(poulaillerId);
-    if (!poulailler) {
+    const poulaier = await Poulailler.findById(poulaierId);
+    if (!poulaier) {
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
     }
 
-    // Verifier que le poulailler est en attente de module
-    if (poulailler.status !== "en_attente_module") {
-      return res.status(400).json({
-        success: false,
-        error: "Ce poulailler n'est pas en attente d'un module",
-      });
+    // CORRECTION: Vérifier que l'utilisateur est bien le propriétaire du poulailler
+    // ou qu'il est admin (req.user doit contenir le user id)
+    const userId = req.user?.id || req.user?._id;
+    if (
+      userId &&
+      poulaier.owner &&
+      poulaier.owner.toString() !== userId.toString()
+    ) {
+      // Vérifier si l'utilisateur est admin (role admin)
+      if (req.user?.role !== "admin") {
+        return res.status(403).json({
+          success: false,
+          error: "Vous n'êtes pas propriétaire de ce poulailler",
+        });
+      }
     }
 
-    // Transaction atomique pour claim + association
+    // Utiliser une transaction pour éviter les race conditions
     const session = await Module.startSession();
     session.startTransaction();
 
     try {
-      // Marquer le code comme utilise ET associer directement
-      module.claimCodeUsedAt = new Date();
-      module.poulailler = poulaillerId;
-      module.owner = poulailler.owner;
-      module.status = "associated"; // Directly to associated!
-      module.installationDate = new Date();
-      await module.save({ session });
+      mod.claimCodeUsedAt = new Date();
+      mod.poulailler = poulaierId;
+      mod.owner = poulaier.owner;
+      mod.status = "associated";
+      mod.installationDate = new Date();
+      await mod.save({ session });
 
-      // Mettre a jour le poulailler
-      poulailler.moduleId = module._id;
-      poulailler.status = "connecte";
-      await poulailler.save({ session });
+      poulaier.moduleId = mod._id;
+      poulaier.status = "connecte";
+      await poulaier.save({ session });
 
       await session.commitTransaction();
       session.endSession();
 
-      // Log d'audit
-      await module.addAuditLog(
-        "associated",
-        req.user._id,
-        `Module réclamé et associé au poulailler ${poulailler.name}`,
-        { poulaillerId, claimCode, ipAddress: clientIp },
-      );
-
-      console.log(
-        `[CLAIM+ASSOCIATE] Module ${module.serialNumber} reclame et associe a ${poulailler.name}`,
-      );
-
       res.json({
         success: true,
         message: "Module réclamé et associé avec succès",
-        data: formatModule(module),
+        data: formatModule(mod),
       });
     } catch (err) {
       await session.abortTransaction();
@@ -531,20 +345,10 @@ exports.claimModule = async (req, res) => {
     }
   } catch (err) {
     console.error("[CLAIM MODULE ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la réclamation du module",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Creer un nouveau module (sans code claim)
- * @route   POST /api/admin/modules
- * @access  Private/Admin
- */
 exports.createModule = async (req, res) => {
   const { error, value } = createModuleSchema.validate(req.body);
   if (error) {
@@ -553,466 +357,244 @@ exports.createModule = async (req, res) => {
       .json({ success: false, error: error.details[0].message });
   }
 
-  const { serialNumber, macAddress, deviceName, firmwareVersion } = value;
-
   try {
-    const existingModule = await Module.findOne({
-      $or: [{ serialNumber }, { macAddress }],
+    const mod = await Module.create({
+      serialNumber: value.serialNumber.toUpperCase(),
+      macAddress: value.macAddress.toUpperCase(),
+      deviceName: value.deviceName,
+      firmwareVersion: value.firmwareVersion,
+      status: "pending",
     });
-    if (existingModule) {
-      return res.status(409).json({
-        success: false,
-        error: "Ce numéro de série ou MAC existe déjà",
-      });
-    }
-
-    const module = await Module.create({
-      serialNumber,
-      macAddress,
-      deviceName,
-      firmwareVersion,
-      status: "pending", // Statut par defaut simplifie
-    });
-
-    await module.addAuditLog(
-      "created",
-      req.user._id,
-      "Module créé sans code claim",
-      { ipAddress: req.ip },
-    );
 
     res.status(201).json({
       success: true,
       message: "Module créé avec succès",
-      data: formatModule(module),
+      data: formatModule(mod),
     });
   } catch (err) {
     console.error("[CREATE MODULE ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de la création du module" });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Mettre a jour un module
- * @route   PUT /api/admin/modules/:id
- * @access  Private/Admin
- */
 exports.updateModule = async (req, res) => {
-  const { error, value } = updateModuleSchema.validate(req.body);
-  if (error) {
-    return res
-      .status(400)
-      .json({ success: false, error: error.details[0].message });
-  }
-
   try {
-    const module = await Module.findById(req.params.id);
-    if (!module) {
+    const mod = await Module.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!mod) {
       return res
         .status(404)
         .json({ success: false, error: "Module non trouvé" });
     }
 
-    const { deviceName, firmwareVersion } = value;
-    if (deviceName !== undefined) module.deviceName = deviceName;
-    if (firmwareVersion !== undefined) module.firmwareVersion = firmwareVersion;
-
-    await module.save();
-
-    res.json({
-      success: true,
-      message: "Module mis à jour avec succès",
-      data: formatModule(module),
-    });
+    res.json({ success: true, data: formatModule(mod) });
   } catch (err) {
     console.error("[UPDATE MODULE ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la mise à jour du module",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Associer un module a un poulailler (methode alternative)
- * @route   PUT /api/admin/modules/:id/associate
- * @access  Private/Admin
- * @security Transaction atomique
- */
 exports.associateModule = async (req, res) => {
-  const { error, value } = associateSchema.validate(req.body);
-  if (error) {
-    return res
-      .status(400)
-      .json({ success: false, error: error.details[0].message });
-  }
-
-  const { poulaillerId } = value;
-  const clientIp = req.ip || req.connection.remoteAddress;
+  const { poulaillerId } = req.body;
 
   try {
-    const module = await Module.findById(req.params.id);
-    if (!module) {
+    const mod = await Module.findById(req.params.id);
+    if (!mod) {
       return res
         .status(404)
         .json({ success: false, error: "Module non trouvé" });
     }
 
-    // Le module doit etre en pending
-    if (module.status !== "pending") {
-      return res.status(400).json({
-        success: false,
-        error: "Le module doit être en attente pour être associé",
-      });
+    if (mod.status !== "pending") {
+      return res
+        .status(400)
+        .json({ success: false, error: "Le module doit être en attente" });
     }
 
-    const poulailler = await Poulailler.findById(poulaillerId);
-    if (!poulailler) {
+    const poulaier = await Poulailler.findById(poulaillerId);
+    if (!poulaier) {
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
     }
 
-    if (poulailler.status !== "en_attente_module") {
-      return res.status(400).json({
-        success: false,
-        error: "Ce poulailler n'est pas en attente d'un module",
-      });
-    }
+    mod.poulailler = poulaillerId;
+    mod.owner = poulaier.owner;
+    mod.status = "associated";
+    mod.installationDate = new Date();
+    await mod.save();
 
-    if (poulailler.moduleId) {
-      return res.status(400).json({
-        success: false,
-        error: "Ce poulailler a déjà un module associé",
-      });
-    }
+    poulaier.moduleId = mod._id;
+    poulaier.status = "connecte";
+    await poulaier.save();
 
-    const session = await Module.startSession();
-    session.startTransaction();
-
-    try {
-      module.poulailler = poulaillerId;
-      module.owner = poulailler.owner;
-      module.status = "associated";
-      module.installationDate = new Date();
-      await module.save({ session });
-
-      poulailler.moduleId = module._id;
-      poulailler.status = "connecte";
-      await poulailler.save({ session });
-
-      await session.commitTransaction();
-      session.endSession();
-
-      await module.addAuditLog(
-        "associated",
-        req.user._id,
-        `Module associé au poulailler ${poulailler.name}`,
-        { poulaillerId, ipAddress: clientIp },
-      );
-
-      res.json({
-        success: true,
-        message: "Module associé avec succès",
-        data: formatModule(module),
-      });
-    } catch (err) {
-      await session.abortTransaction();
-      session.endSession();
-      throw err;
-    }
+    res.json({
+      success: true,
+      message: "Module associé avec succès",
+      data: formatModule(mod),
+    });
   } catch (err) {
     console.error("[ASSOCIATE MODULE ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de l'association du module",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Dissocier un module d'un poulailler
- * @route   PUT /api/admin/modules/:id/dissociate
- * @access  Private/Admin
- *
- * FLUX SIMPLIFIE:
- * - Passe le module a 'dissociated'
- * - Genere un nouveau code claim pour reutilisation future
- *
- * @security
- *   - Confirmation double (flag confirm + motif obligatoire)
- *   - Log d'audit complet
- */
 exports.dissociateModule = async (req, res) => {
   const { error, value } = dissociateSchema.validate(req.body);
   if (error) {
-    return res.status(400).json({
-      success: false,
-      error:
-        "Motif de dissociation obligatoire (10-500 caractères) et confirmation requise",
-    });
+    return res
+      .status(400)
+      .json({ success: false, error: error.details[0].message });
   }
 
-  const { reason, confirm } = value;
-  const clientIp = req.ip || req.connection.remoteAddress;
-
-  if (!confirm) {
-    return res.status(400).json({
-      success: false,
-      error: "Confirmation requise pour la dissociation",
-    });
-  }
+  const { reason } = value;
 
   try {
-    const module = await Module.findById(req.params.id);
-    if (!module) {
+    const mod = await Module.findById(req.params.id);
+    if (!mod) {
       return res
         .status(404)
         .json({ success: false, error: "Module non trouvé" });
     }
 
-    if (!module.poulailler || module.status !== "associated") {
-      return res.status(400).json({
-        success: false,
-        error: "Ce module n'est pas associé à un poulailler",
-      });
+    if (!mod.poulailler || mod.status !== "associated") {
+      return res
+        .status(400)
+        .json({ success: false, error: "Ce module n'est pas associé" });
     }
 
-    const poulaillerId = module.poulailler;
-    const poulailler = await Poulailler.findById(poulaillerId);
+    const oldPoulaierId = mod.poulailler;
 
-    // Transaction atomique
-    const session = await Module.startSession();
-    session.startTransaction();
+    const newClaimCode = Module.generateClaimCode();
 
-    try {
-      // Sauvegarder l'ancien code claim
-      module.previousClaimCode = module.claimCode;
-      // Generer un nouveau code claim pour reutilisation
-      module.claimCode = Module.generateClaimCode();
-      module.claimCodeExpiresAt = new Date(Date.now() + CLAIM_CODE_TTL_MS);
-      module.claimCodeUsedAt = null;
-      module.poulailler = null;
-      module.owner = null;
-      module.status = "dissociated"; // Nouveau statut!
-      module.dissociationReason = reason;
-      module.dissociatedAt = new Date();
-      await module.save({ session });
+    mod.previousClaimCode = mod.claimCode;
+    mod.claimCode = newClaimCode;
+    mod.claimCodeExpiresAt = new Date(Date.now() + CLAIM_CODE_TTL_MS);
+    mod.claimCodeUsedAt = null;
+    mod.poulailler = null;
+    mod.owner = null;
+    mod.status = "dissociated";
+    mod.dissociationReason = reason;
+    mod.dissociatedAt = new Date();
+    await mod.save();
 
-      // Mettre a jour le poulailler
-      if (poulailler) {
-        poulailler.moduleId = null;
-        poulailler.status = "en_attente_module";
-        await poulailler.save({ session });
-      }
+    await Poulailler.findByIdAndUpdate(oldPoulaierId, {
+      moduleId: null,
+      status: "en_attente_module",
+    });
 
-      await session.commitTransaction();
-      session.endSession();
-
-      await module.addAuditLog(
-        "dissociated",
-        req.user._id,
-        `Module dissocié. Motif: ${reason}. Nouveau code: ${module.claimCode}`,
-        { poulaillerId, ipAddress: clientIp },
-      );
-
-      console.log(
-        `[DISSOCIATE] Module ${module.serialNumber} dissocie. Nouveau code: ${module.claimCode}`,
-      );
-
-      res.json({
-        success: true,
-        message:
-          "Module dissocié. Un nouveau code claim a été généré pour réutilisation.",
-        data: formatModule(module),
-      });
-    } catch (err) {
-      await session.abortTransaction();
-      session.endSession();
-      throw err;
-    }
+    res.json({
+      success: true,
+      message: "Module dissocié. Nouveau code claim généré.",
+      data: formatModule(mod),
+    });
   } catch (err) {
     console.error("[DISSOCIATE MODULE ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la dissociation du module",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Supprimer un module
- * @route   DELETE /api/admin/modules/:id
- * @access  Private/Admin
- */
 exports.deleteModule = async (req, res) => {
   try {
-    const module = await Module.findById(req.params.id);
-    if (!module) {
+    const mod = await Module.findById(req.params.id);
+    if (!mod) {
       return res
         .status(404)
         .json({ success: false, error: "Module non trouvé" });
     }
 
-    if (module.status === "associated" && module.poulailler) {
-      return res.status(400).json({
-        success: false,
-        error:
-          "Impossible de supprimer un module associé. Veuillez d'abord le dissocier.",
-      });
-    }
-
-    if (module.poulailler) {
-      await Poulailler.findByIdAndUpdate(module.poulailler, {
-        moduleId: null,
-        status: "en_attente_module",
-      });
+    if (mod.status === "associated") {
+      return res
+        .status(400)
+        .json({ success: false, error: "Dissociez d'abord le module" });
     }
 
     await Module.findByIdAndDelete(req.params.id);
 
-    res.json({ success: true, message: "Module supprimé avec succès" });
+    res.json({ success: true, message: "Module supprimé" });
   } catch (err) {
     console.error("[DELETE MODULE ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la suppression du module",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Obtenir les modules disponibles (en attente)
- * @route   GET /api/admin/modules/available
- * @access  Private/Admin
- */
 exports.getAvailableModules = async (req, res) => {
   try {
-    const modules = await Module.find({
+    const mods = await Module.find({
       status: "pending",
       claimCode: { $ne: null },
-    }).select("serialNumber deviceName status claimCode");
+    }).select("serialNumber deviceName status");
 
-    res.json({ success: true, data: modules });
+    res.json({ success: true, data: mods });
   } catch (err) {
     console.error("[GET AVAILABLE MODULES ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la récupération des modules disponibles",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Decoder le code QR et extraire les informations de claim
- * @route   POST /api/admin/modules/decode-qr
- * @access  Private/Admin
- */
 exports.decodeQRCode = async (req, res) => {
   const { qrData } = req.body;
 
   if (!qrData) {
     return res
       .status(400)
-      .json({ success: false, error: "Donnees QR code requises" });
+      .json({ success: false, error: "Données QR requises" });
   }
 
   try {
-    let claimCode = qrData;
-    let serialNumber = null;
+    let claimCode = qrData.trim();
 
-    // Parser l'URL si presente: smartpoultry://claim?v=1&c=CODECLAIM&s=SERIAL-MAC
-    if (qrData.startsWith("smartpoultry://")) {
+    if (qrData.startsWith("smartpoultry://") || qrData.includes("?")) {
       try {
-        const url = new URL(qrData);
+        const url = new URL(
+          qrData.startsWith("smartpoultry://")
+            ? qrData
+            : "smartpoultry://" + qrData,
+        );
         claimCode = url.searchParams.get("c") || claimCode;
-        serialNumber = url.searchParams.get("s") || serialNumber;
-      } catch (e) {
-        // Format non standard
-      }
+      } catch (e) {}
     }
 
-    // Verifier le format du code claim
-    const claimCodePattern = /^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
-    if (!claimCodePattern.test(claimCode.toUpperCase())) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Format de code claim invalide" });
-    }
+    claimCode = claimCode.toUpperCase();
 
-    const module = await Module.findOne({
-      claimCode: claimCode.toUpperCase(),
-    }).select(
+    const mod = await Module.findOne({ claimCode }).select(
       "serialNumber deviceName status claimCodeUsedAt claimCodeExpiresAt",
     );
 
-    if (!module) {
+    if (!mod) {
       return res
         .status(404)
-        .json({
-          success: false,
-          error: "Aucun module trouvé avec ce code claim",
-        });
+        .json({ success: false, error: "Aucun module trouvé" });
     }
 
-    if (module.claimCodeUsedAt) {
-      return res.status(400).json({
-        success: false,
-        error: "Ce code claim a déjà été utilisé",
-        data: {
-          serialNumber: module.serialNumber,
-          deviceName: module.deviceName,
-          status: module.status,
-        },
-      });
+    if (mod.claimCodeUsedAt) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Code déjà utilisé" });
     }
 
-    if (module.isClaimCodeExpired()) {
-      return res.status(400).json({
-        success: false,
-        error: "Ce code claim a expiré",
-        data: {
-          serialNumber: module.serialNumber,
-          deviceName: module.deviceName,
-        },
-      });
+    if (mod.claimCodeExpiresAt && new Date() > mod.claimCodeExpiresAt) {
+      return res.status(400).json({ success: false, error: "Code expiré" });
     }
 
     res.json({
       success: true,
-      message: "Code QR valide",
       data: {
-        claimCode: module.claimCode,
-        serialNumber: module.serialNumber,
-        deviceName: module.deviceName,
-        status: module.status,
+        claimCode: mod.claimCode,
+        serialNumber: mod.serialNumber,
+        deviceName: mod.deviceName,
+        status: mod.status,
       },
     });
   } catch (err) {
-    console.error("[DECODE QR CODE ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors du decodage du code QR" });
+    console.error("[DECODE QR ERROR]", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-/**
- * @desc    Obtenir les poulaillers en attente de module
- * @route   GET /api/admin/modules/pending-poulaillers
- * @access  Private/Admin
- */
 exports.getPendingPoulaillers = async (req, res) => {
   try {
     const poulaillers = await Poulailler.find({
@@ -1020,7 +602,7 @@ exports.getPendingPoulaillers = async (req, res) => {
       isArchived: false,
     })
       .populate({ path: "owner", select: "firstName lastName email" })
-      .select("name type animalCount owner status");
+      .select("name type animalCount owner");
 
     res.json({
       success: true,
@@ -1040,11 +622,6 @@ exports.getPendingPoulaillers = async (req, res) => {
     });
   } catch (err) {
     console.error("[GET PENDING POULAILLERS ERROR]", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: "Erreur lors de la récupération des poulaillers",
-      });
+    res.status(500).json({ success: false, error: err.message });
   }
 };

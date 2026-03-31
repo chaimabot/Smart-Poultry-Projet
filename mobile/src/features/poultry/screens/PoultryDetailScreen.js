@@ -2,885 +2,1999 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
-  Dimensions,
   Animated,
   Platform,
-  Image,
-  Alert,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { MaterialIcons, Ionicons, FontAwesome5 } from "@expo/vector-icons";
-import { useTheme } from "../../../context/ThemeContext";
-import { BlurView } from "expo-blur";
-import { LinearGradient as LG } from "expo-linear-gradient";
-import { LineChart } from "react-native-chart-kit";
+import { MaterialIcons, Ionicons } from "@expo/vector-icons";
+import mqtt from "mqtt";
+import { getPoultryById, getAlerts } from "../../../services/poultry";
 
-// Services
-import {
-  getMonitoringData,
-  getPoultryById,
-  deletePoultry,
-} from "../../../services/poultry";
-import Toast from "../../../components/Toast";
-import ActuatorControl from "../../../components/ActuatorControl";
-import MeasurementHistory from "../../../components/MeasurementHistory";
+// ── Config ────────────────────────────────────────────────────────────────────
 
-const { width } = Dimensions.get("window");
+const BROKER_URL =
+  "wss://372f445aface456abb82e44117d9d92b.s1.eu.hivemq.cloud:8884/mqtt";
+const MQTT_USER = "backend2";
+const MQTT_PASS = "Smartpoultry2026";
+
+const SENSOR_THRESHOLDS = {
+  temperature: { warn: 30, danger: 35 },
+  humidity: { warn: 70, danger: 80 },
+  co2: { warn: 1000, danger: 2000 },
+  nh3: { warn: 20, danger: 35 },
+  dust: { warn: 150, danger: 250 },
+};
+
+const SENSOR_CONFIG = [
+  {
+    name: "Température",
+    value: "--",
+    unit: "°C",
+    status: "normal",
+    icon: "thermostat",
+    key: "temperature",
+  },
+  {
+    name: "Humidité",
+    value: "--",
+    unit: "%",
+    status: "normal",
+    icon: "water-drop",
+    key: "humidity",
+  },
+  {
+    name: "CO2",
+    value: "--",
+    unit: "ppm",
+    status: "normal",
+    icon: "co2",
+    key: "co2",
+  },
+  {
+    name: "NH3",
+    value: "--",
+    unit: "ppm",
+    status: "normal",
+    icon: "warning",
+    key: "nh3",
+  },
+  {
+    name: "Poussière",
+    value: "--",
+    unit: "µg/m³",
+    status: "normal",
+    icon: "grain",
+    key: "dust",
+  },
+  {
+    name: "Niveau eau",
+    value: "--",
+    unit: "%",
+    status: "normal",
+    icon: "water",
+    key: "water_level",
+  },
+];
+
+const STATUS_COLORS = { normal: "#22C55E", warn: "#F59E0B", danger: "#EF4444" };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function calculateSensorStatus(key, value) {
+  const numVal = Number(value);
+  if (isNaN(numVal)) return "normal";
+  const t = SENSOR_THRESHOLDS[key];
+  if (!t) return "normal";
+  if (numVal >= t.danger) return "danger";
+  if (numVal >= t.warn) return "warn";
+  return "normal";
+}
+
+function formatTime(date) {
+  return date.toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+
+// ── Écran principal ───────────────────────────────────────────────────────────
 
 export default function PoultryDetailScreen({ route, navigation }) {
-  const { poultryId, poultryName } = route.params || {};
-  const { darkMode, colors } = useTheme();
+  const { poultryId, poultryName } = route?.params || {};
   const insets = useSafeAreaInsets();
 
-  // State
+  const mqttClientRef = useRef(null);
+  const pulseAnimRef = useRef(new Animated.Value(1));
+  const pulseAnim = pulseAnimRef.current;
+
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [data, setData] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [alertCount, setAlertCount] = useState(0);
   const [poultryInfo, setPoultryInfo] = useState({
-    name: poultryName || "Poulailler",
-    location: "Chargement...",
+    name: poultryName || "Poulailler Principal",
+    location: "",
     animalCount: 0,
-    photoUrl: null,
   });
+  const [sensors, setSensors] = useState(SENSOR_CONFIG);
   const [actuators, setActuators] = useState({
-    door: {
-      status: "Fermée",
-      mode: "Auto",
-      icon: "door-front",
-      color: "#10b981",
-    },
-    ventilation: {
-      status: "Arrêt",
-      mode: "Auto",
-      icon: "toys",
-      color: "#3b82f6",
-    },
-  });
-  const [toast, setToast] = useState({
-    visible: false,
-    message: "",
-    type: "success",
+    fan: false,
+    lamp: false,
+    fanAuto: true,
+    lampAuto: true,
+    door: false,
   });
 
-  // State pour le toggle du graphique
-  const [selectedChart, setSelectedChart] = useState("temp");
+  // ── Feeder state ─────────────────────────────────────────────────────────
+  const [feeder, setFeeder] = useState({
+    schedules: [
+      { id: 1, hour: 8, minute: 0, enabled: true },
+      { id: 2, hour: 14, minute: 0, enabled: true },
+      { id: 3, hour: 20, minute: 0, enabled: true },
+    ],
+    durationSec: 5,
+    tempConditionEnabled: false,
+    tempThreshold: 30,
+    lastDistribution: null,
+    isDistributing: false,
+  });
 
-  // Padding dynamique
-  const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
+  // ── Door state ───────────────────────────────────────────────────────────
+  const [doorMode, setDoorMode] = useState("horaire"); // "horaire" | "manu"
+  const [doorSchedule, setDoorSchedule] = useState({
+    openHour: 7,
+    openMinute: 0,
+    closeHour: 18,
+    closeMinute: 0,
+  });
 
-  // Animation live indicator
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  // ── Animation pulse ──────────────────────────────────────────────────────
 
   useEffect(() => {
-    Animated.loop(
+    const anim = Animated.loop(
       Animated.sequence([
         Animated.timing(pulseAnim, {
-          toValue: 1.2,
-          duration: 1000,
+          toValue: 1.4,
+          duration: 800,
           useNativeDriver: true,
         }),
         Animated.timing(pulseAnim, {
           toValue: 1,
-          duration: 1000,
+          duration: 800,
           useNativeDriver: true,
         }),
       ]),
-    ).start();
-  }, [pulseAnim]);
+    );
+    anim.start();
+    return () => anim.stop();
+  }, []);
 
-  const fetchData = useCallback(async () => {
+  // ── Fetch infos API ──────────────────────────────────────────────────────
+
+  const fetchPoultryInfo = useCallback(async () => {
+    if (!poultryId) return;
     try {
-      setLoading(true);
-      const poultryRes = await getPoultryById(poultryId);
-      if (poultryRes.success && poultryRes.data) {
+      const data = await getPoultryById(poultryId);
+      if (data) {
         setPoultryInfo({
-          name: poultryRes.data.name,
-          location: poultryRes.data.location || "Non spécifié",
-          animalCount: poultryRes.data.animalCount || 0,
-          photoUrl: poultryRes.data.photoUrl,
+          name: data.name || poultryName || "Poulailler",
+          location: data.location || "",
+          animalCount: data.animalCount || 0,
         });
-      }
-
-      const res = await getMonitoringData(poultryId);
-      if (res.success && res.data) {
-        const getVal = (field) => {
-          const val = res.data[field];
-          if (val && typeof val.current === "number") return val.current;
-          if (typeof val === "number") return val;
-          return 0;
-        };
-
-        setData({
-          temperature: getVal("temperature").toFixed(1),
-          humidity: getVal("humidity").toFixed(1),
-          co2: getVal("co2").toFixed(0),
-          nh3: getVal("nh3").toFixed(1),
-          dust: getVal("dust").toFixed(0),
-          waterLevel: getVal("waterLevel") || 85,
-          status: "online",
-          lastUpdated: new Date(
-            res.data.timestamp || Date.now(),
-          ).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-          history: res.data.history || [],
-        });
-
-        if (res.data.actuatorStates) {
-          setActuators({
-            door: {
-              status:
-                res.data.actuatorStates.door === "open" ? "Ouverte" : "Fermée",
-              mode: "Auto",
-              icon: "door-front",
-              color:
-                res.data.actuatorStates.door === "open" ? "#10b981" : "#64748b",
-            },
-            ventilation: {
-              status:
-                res.data.actuatorStates.ventilation === "on"
-                  ? "Actif"
-                  : "Arrêt",
-              mode: "Auto",
-              icon: "toys",
-              color:
-                res.data.actuatorStates.ventilation === "on"
-                  ? "#3b82f6"
-                  : "#64748b",
-            },
-          });
-        }
       }
     } catch (e) {
-      console.log("Monitoring fetch error", e);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      console.warn("[API] getPoultryById error:", e.message);
+    }
+    try {
+      const alerts = await getAlerts(poultryId);
+      if (Array.isArray(alerts)) setAlertCount(alerts.length);
+    } catch (e) {
+      console.warn("[API] getAlerts error:", e.message);
     }
   }, [poultryId]);
 
+  // ── Connexion MQTT ───────────────────────────────────────────────────────
+
+  const ESP_POUAILLER_ID = "POULAILLER_001";
+
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
+    if (!poultryId) {
+      setLoading(false);
+      return;
+    }
+
+    fetchPoultryInfo();
+
+    const client = mqtt.connect(BROKER_URL, {
+      username: MQTT_USER,
+      password: MQTT_PASS,
+      reconnectPeriod: 3000,
+      keepalive: 60,
+      clientId: "mobile_" + poultryId + "_" + Date.now(),
+      rejectUnauthorized: true,
+    });
+
+    mqttClientRef.current = client;
+
+    client.on("connect", () => {
+      setIsConnected(true);
+      setLoading(false);
+      client.subscribe("poulailler/+/measures", (e) => {
+        if (e) console.error("[MQTT] sub measures:", e);
+      });
+      client.subscribe("poulailler/+/status", (e) => {
+        if (e) console.error("[MQTT] sub status:", e);
+      });
+      client.subscribe("poulailler/+/feeder/status", (e) => {
+        if (e) console.error("[MQTT] sub feeder/status:", e);
+      });
+    });
+
+    client.on("message", (topic, message) => {
+      try {
+        const data = JSON.parse(message.toString());
+
+        if (topic.includes("/measures")) {
+          setSensors((prev) => {
+            const updated = prev.map((sensor) => {
+              const raw = data[sensor.key];
+              if (raw === undefined || raw === null) return sensor;
+              const numVal = Number(raw);
+              return {
+                ...sensor,
+                value: isNaN(numVal) ? "--" : numVal.toFixed(1),
+                status: calculateSensorStatus(sensor.key, numVal),
+              };
+            });
+            setAlertCount(updated.filter((s) => s.status !== "normal").length);
+            return updated;
+          });
+        }
+
+        if (topic.includes("/status") && !topic.includes("feeder")) {
+          setActuators((prev) => ({
+            ...prev,
+            fan: data.fan ?? prev.fan,
+            lamp: data.lamp ?? prev.lamp,
+            fanAuto: data.fanAuto ?? prev.fanAuto,
+            lampAuto: data.lampAuto ?? prev.lampAuto,
+            door: data.door ?? prev.door,
+          }));
+        }
+
+        if (topic.includes("/feeder/status")) {
+          if (data.lastDistribution) {
+            setFeeder((prev) => ({
+              ...prev,
+              lastDistribution: new Date(data.lastDistribution),
+            }));
+          }
+        }
+      } catch (e) {
+        console.error("[MQTT] parse error:", e.message);
+      }
+    });
+
+    client.on("disconnect", () => setIsConnected(false));
+    client.on("offline", () => setIsConnected(false));
+    client.on("error", (e) => {
+      console.error("[MQTT] error:", e.message);
+      setIsConnected(false);
+    });
+
+    return () => {
+      client.end(true);
+      mqttClientRef.current = null;
+    };
+  }, [poultryId]);
+
+  // ── Publish commandes ────────────────────────────────────────────────────
+
+  const publishCommand = useCallback((command, value) => {
+    const client = mqttClientRef.current;
+    if (!client || !client.connected) return;
+
+    let topic = `poulailler/${ESP_POUAILLER_ID}/commands`;
+    let payload = { command, value, timestamp: new Date().toISOString() };
+
+    if (command === "fanAuto") {
+      topic = `poulailler/${ESP_POUAILLER_ID}/commands/fan`;
+      payload = { mode: value ? "auto" : "manual" };
+    } else if (command === "fan") {
+      topic = `poulailler/${ESP_POUAILLER_ID}/commands/fan`;
+      payload = { mode: "manual", action: value ? "on" : "off" };
+    } else if (command === "lampAuto") {
+      topic = `poulailler/${ESP_POUAILLER_ID}/commands/lamp`;
+      payload = { mode: value ? "auto" : "manual" };
+    } else if (command === "lamp") {
+      topic = `poulailler/${ESP_POUAILLER_ID}/commands/lamp`;
+      payload = { mode: "manual", action: value ? "on" : "off" };
+    } else if (command === "door") {
+      topic = `poulailler/${ESP_POUAILLER_ID}/commands/door`;
+      payload = { action: value ? "open" : "close" };
+    }
+
+    client.publish(topic, JSON.stringify(payload), { qos: 1 });
+  }, []);
+
+  // ── Distributeur ─────────────────────────────────────────────────────────
+
+  const distributeFood = useCallback(
+    (triggeredBy = "manual") => {
+      const client = mqttClientRef.current;
+
+      // Vérification condition température
+      if (feeder.tempConditionEnabled) {
+        const tempSensor = sensors.find((s) => s.key === "temperature");
+        const currentTemp = parseFloat(tempSensor?.value);
+        if (!isNaN(currentTemp) && currentTemp >= feeder.tempThreshold) {
+          console.warn(
+            `[FEEDER] Bloqué — temp ${currentTemp}°C >= seuil ${feeder.tempThreshold}°C`,
+          );
+          return;
+        }
+      }
+
+      if (!client || !client.connected) {
+        console.warn("[FEEDER] MQTT non connecté");
+        return;
+      }
+
+      const topic = `poulailler/${ESP_POUAILLER_ID}/commands/feeder`;
+      const payload = {
+        action: "distribute",
+        durationSec: feeder.durationSec,
+        triggeredBy,
+        timestamp: new Date().toISOString(),
+      };
+
+      client.publish(topic, JSON.stringify(payload), { qos: 1 });
+
+      const now = new Date();
+      setFeeder((prev) => ({
+        ...prev,
+        isDistributing: true,
+        lastDistribution: now,
+      }));
+
+      setTimeout(() => {
+        setFeeder((prev) => ({ ...prev, isDistributing: false }));
+      }, feeder.durationSec * 1000);
+
+      console.log("[FEEDER] Published:", topic, payload);
+    },
+    [feeder, sensors],
+  );
+
+  // Vérificateur d'horaires (tourne toutes les 30 secondes)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      feeder.schedules.forEach((schedule) => {
+        if (
+          schedule.enabled &&
+          now.getHours() === schedule.hour &&
+          now.getMinutes() === schedule.minute &&
+          now.getSeconds() < 30
+        ) {
+          distributeFood("schedule");
+        }
+      });
+
+      // [DOOR] Check scheduled door times every 30s
+      if (doorMode === "horaire") {
+        const nowHour = now.getHours();
+        const nowMinute = now.getMinutes();
+
+        // Check if current time matches open time
+        if (
+          nowHour === doorSchedule.openHour &&
+          nowMinute === doorSchedule.openMinute &&
+          now.getSeconds() < 30
+        ) {
+          publishCommand("door", true);
+          console.log("[DOOR] Scheduled OPEN triggered");
+        }
+
+        // Check if current time matches close time
+        if (
+          nowHour === doorSchedule.closeHour &&
+          nowMinute === doorSchedule.closeMinute &&
+          now.getSeconds() < 30
+        ) {
+          publishCommand("door", false);
+          console.log("[DOOR] Scheduled CLOSE triggered");
+        }
+      }
+    }, 30000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [feeder.schedules, doorMode, doorSchedule, publishCommand]);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchData();
-  };
+  // ── Helpers horaires ──────────────────────────────────────────────────────
 
-  const handleDelete = () => {
-    Alert.alert(
-      "Supprimer le poulailler",
-      "Êtes-vous sûr ? Cette action est irréversible.",
-      [
-        { text: "Annuler", style: "cancel" },
-        {
-          text: "Supprimer",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const res = await deletePoultry(poultryId);
-              if (res) {
-                setToast({
-                  visible: true,
-                  message: "Poulailler supprimé",
-                  type: "success",
-                });
-                setTimeout(() => navigation.goBack(), 1500);
-              }
-            } catch (error) {
-              setToast({
-                visible: true,
-                message: "Impossible de supprimer",
-                type: "error",
-              });
-            }
-          },
-        },
+  const addSchedule = () => {
+    setFeeder((prev) => ({
+      ...prev,
+      schedules: [
+        ...prev.schedules,
+        { id: Date.now(), hour: 12, minute: 0, enabled: true },
       ],
-    );
+    }));
   };
 
-  const currentText = darkMode ? colors.white : colors.slate900;
-  const currentBg = darkMode ? colors.slate950 : colors.slate50;
+  const removeSchedule = (id) => {
+    setFeeder((prev) => ({
+      ...prev,
+      schedules: prev.schedules.filter((s) => s.id !== id),
+    }));
+  };
+
+  const updateSchedule = (id, field, value) => {
+    setFeeder((prev) => ({
+      ...prev,
+      schedules: prev.schedules.map((s) =>
+        s.id === id ? { ...s, [field]: value } : s,
+      ),
+    }));
+  };
+
+  // ── Handlers Ventilateur ─────────────────────────────────────────────────
+
+  const toggleFanAuto = () => {
+    const v = !actuators.fanAuto;
+    publishCommand("fanAuto", v);
+    setActuators((p) => ({ ...p, fanAuto: v }));
+  };
+
+  const setFan = (v) => {
+    publishCommand("fan", v);
+    setActuators((p) => ({ ...p, fan: v }));
+  };
+
+  // ── Handlers Lampe ───────────────────────────────────────────────────────
+
+  const toggleLampAuto = () => {
+    const v = !actuators.lampAuto;
+    publishCommand("lampAuto", v);
+    setActuators((p) => ({ ...p, lampAuto: v }));
+  };
+
+  const setLamp = (v) => {
+    publishCommand("lamp", v);
+    setActuators((p) => ({ ...p, lamp: v }));
+  };
+
+  // ── Handlers Porte ───────────────────────────────────────────────────────
+
+  const toggleDoor = (v) => {
+    publishCommand("door", v);
+    setActuators((p) => ({ ...p, door: v }));
+  };
+
+  // ── Refresh ──────────────────────────────────────────────────────────────
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchPoultryInfo();
+    setRefreshing(false);
+  }, [fetchPoultryInfo]);
+
+  // ── Loading ──────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <SafeAreaView
+        style={{
+          flex: 1,
+          backgroundColor: "#fff",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+      >
+        <ActivityIndicator size="large" color="#22C55E" />
+        <Text
+          style={{
+            marginTop: 12,
+            color: "#94A3B8",
+            fontSize: 13,
+            fontWeight: "500",
+          }}
+        >
+          Connexion MQTT...
+        </Text>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <SafeAreaView
-      style={[styles.container, { backgroundColor: currentBg }]}
-      edges={["left", "right"]}
-    >
-      <StatusBar style={darkMode ? "light" : "dark"} />
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: dynamicPaddingBottom },
-        ]}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+    <SafeAreaView style={{ flex: 1, backgroundColor: "#F8FAFC" }}>
+      <StatusBar barStyle="dark-content" />
+
+      {/* Header */}
+      <View
+        style={{
+          backgroundColor: "#fff",
+          paddingTop: Platform.OS === "ios" ? insets.top + 8 : 12,
+          paddingBottom: 14,
+          paddingHorizontal: 20,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          borderBottomWidth: 1,
+          borderBottomColor: "#F1F5F9",
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 2 },
+          shadowOpacity: 0.05,
+          shadowRadius: 8,
+          elevation: 3,
+        }}
       >
-        {/* Hero Section */}
-        <View style={styles.heroContainer}>
-          {poultryInfo.photoUrl ? (
-            <Image
-              source={{ uri: poultryInfo.photoUrl }}
-              style={styles.heroImage}
+        <TouchableOpacity
+          onPress={() => navigation.goBack()}
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 12,
+            backgroundColor: "#F1F5F9",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Ionicons name="arrow-back" size={20} color="#1E293B" />
+        </TouchableOpacity>
+
+        <View style={{ flex: 1, alignItems: "center", marginHorizontal: 12 }}>
+          <Text
+            style={{ fontSize: 16, fontWeight: "800", color: "#1E293B" }}
+            numberOfLines={1}
+          >
+            {poultryInfo.name}
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 5,
+              marginTop: 2,
+            }}
+          >
+            <Animated.View
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: 3.5,
+                backgroundColor: isConnected ? "#22C55E" : "#EF4444",
+                transform: [{ scale: isConnected ? pulseAnim : 1 }],
+              }}
             />
-          ) : (
-            <LG
-              colors={["#134e4a", "#065f46", "#022c22"]}
-              style={styles.heroImage}
-            />
-          )}
-
-          <LG
-            colors={["transparent", "rgba(0,0,0,0.7)"]}
-            style={StyleSheet.absoluteFill}
-          />
-
-          <View style={[styles.headerActions, { paddingTop: insets.top + 8 }]}>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => navigation.goBack()}
-            >
-              <BlurView intensity={40} style={StyleSheet.absoluteFill} />
-              <Ionicons name="arrow-back" size={22} color="#fff" />
-            </TouchableOpacity>
-
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <TouchableOpacity
-                style={styles.iconButton}
-                onPress={() =>
-                  navigation.navigate("AlertSettings", { poultryId })
-                }
-              >
-                <BlurView intensity={40} style={StyleSheet.absoluteFill} />
-                <Ionicons name="notifications-outline" size={22} color="#fff" />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.iconButton}
-                onPress={handleDelete}
-              >
-                <BlurView intensity={40} style={StyleSheet.absoluteFill} />
-                <Ionicons name="trash-outline" size={22} color="#ef4444" />
-              </TouchableOpacity>
-            </View>
+            <Text style={{ fontSize: 11, color: "#94A3B8", fontWeight: "500" }}>
+              {isConnected ? "MQTT connecté" : "Hors ligne"}
+            </Text>
           </View>
         </View>
 
-        {/* Content */}
-        <View style={styles.contentContainer}>
-          {/* Summary Card */}
-          <View
-            style={[
-              styles.summaryCard,
-              { backgroundColor: darkMode ? colors.slate800 : colors.white },
-            ]}
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <TouchableOpacity
+            onPress={() =>
+              navigation.navigate("Alerts", {
+                poultryId,
+                poultryName: poultryInfo.name,
+              })
+            }
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 12,
+              backgroundColor: "#F1F5F9",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
           >
-            <View style={styles.summaryInfo}>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.poultryNameText, { color: currentText }]}>
-                  {poultryInfo.name}
-                </Text>
-                <View style={styles.locationRow}>
-                  <MaterialIcons name="location-on" size={14} color="#94a3b8" />
-                  <Text style={styles.locationText}>
-                    {poultryInfo.location}
-                  </Text>
-                </View>
-              </View>
-
+            <Ionicons name="notifications-outline" size={20} color="#1E293B" />
+            {alertCount > 0 && (
               <View
-                style={[
-                  styles.birdCountBadge,
-                  {
-                    backgroundColor: darkMode
-                      ? "rgba(34,197,94,0.15)"
-                      : "#f0fdf4",
-                  },
-                ]}
-              >
-                <Text style={styles.birdCountText}>
-                  {poultryInfo.animalCount}
-                </Text>
-                <Text style={{ fontSize: 18 }}>🐔</Text>
-              </View>
-            </View>
-
-            {/* Live indicator */}
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 6,
-                marginTop: 12,
-              }}
-            >
-              <Animated.View
                 style={{
+                  position: "absolute",
+                  top: 7,
+                  right: 7,
                   width: 8,
                   height: 8,
                   borderRadius: 4,
-                  backgroundColor: "#22c55e",
-                  transform: [{ scale: pulseAnim }],
+                  backgroundColor: "#EF4444",
+                  borderWidth: 1.5,
+                  borderColor: "#fff",
+                }}
+              />
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() =>
+              navigation.navigate("ThresholdConfig", {
+                poultryId,
+                poultryName: poultryInfo.name,
+              })
+            }
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 12,
+              backgroundColor: "#F0FDF4",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <MaterialIcons name="tune" size={20} color="#22C55E" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Scroll */}
+      <ScrollView
+        contentContainerStyle={{
+          paddingTop: 20,
+          paddingBottom: 40,
+          paddingHorizontal: 16,
+        }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#22C55E"
+          />
+        }
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero */}
+        <View style={[card, { marginBottom: 20 }]}>
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+            }}
+          >
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{
+                  fontSize: 18,
+                  fontWeight: "800",
+                  color: "#1E293B",
+                  marginBottom: 4,
+                }}
+              >
+                {poultryInfo.name}
+              </Text>
+              {!!poultryInfo.location && (
+                <Text
+                  style={{ fontSize: 12, color: "#94A3B8", fontWeight: "500" }}
+                >
+                  📍 {poultryInfo.location}
+                </Text>
+              )}
+            </View>
+            <View
+              style={{
+                backgroundColor: isConnected ? "#F0FDF4" : "#FEF2F2",
+                borderRadius: 12,
+                paddingHorizontal: 12,
+                paddingVertical: 6,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                marginLeft: 12,
+              }}
+            >
+              <View
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: 3.5,
+                  backgroundColor: isConnected ? "#22C55E" : "#EF4444",
                 }}
               />
               <Text
-                style={{ fontSize: 12, color: "#94a3b8", fontWeight: "600" }}
+                style={{
+                  fontSize: 11,
+                  fontWeight: "700",
+                  color: isConnected ? "#22C55E" : "#EF4444",
+                }}
               >
-                {data?.lastUpdated
-                  ? `Mis à jour ${data.lastUpdated}`
-                  : "En ligne"}
+                {isConnected ? "Actif" : "Inactif"}
               </Text>
             </View>
           </View>
-
-          {loading && !refreshing ? (
-            <View style={styles.loaderContainer}>
-              <ActivityIndicator size="large" color="#22c55e" />
-              <Text style={[styles.loaderText, { color: currentText }]}>
-                Synchronisation...
+          {poultryInfo.animalCount > 0 && (
+            <View
+              style={{
+                marginTop: 14,
+                paddingTop: 14,
+                borderTopWidth: 1,
+                borderTopColor: "#F1F5F9",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <MaterialIcons name="egg" size={16} color="#94A3B8" />
+              <Text
+                style={{ fontSize: 13, color: "#64748B", fontWeight: "600" }}
+              >
+                {poultryInfo.animalCount} animaux
               </Text>
             </View>
-          ) : (
-            <>
-              {/* Grille des capteurs */}
-              <View style={styles.grid}>
-                {/* Température */}
-                <View
-                  style={[
-                    styles.gridCard,
-                    {
-                      backgroundColor: darkMode
-                        ? colors.slate800
-                        : colors.white,
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <MaterialIcons
-                      name="thermostat"
-                      size={18}
-                      color="#ef4444"
-                    />
-                    <Text style={styles.cardLabel}>TEMPÉRATURE</Text>
-                  </View>
-                  <View style={styles.valueRow}>
-                    <Text style={[styles.valueText, { color: currentText }]}>
-                      {data?.temperature || "24.5"}
-                    </Text>
-                    <Text style={styles.valueUnit}>°C</Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: "rgba(34,197,94,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: "#22c55e" }]}>
-                      OPTIMAL
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Humidité */}
-                <View
-                  style={[
-                    styles.gridCard,
-                    {
-                      backgroundColor: darkMode
-                        ? colors.slate800
-                        : colors.white,
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <MaterialIcons
-                      name="water-drop"
-                      size={18}
-                      color="#3b82f6"
-                    />
-                    <Text style={styles.cardLabel}>HUMIDITÉ</Text>
-                  </View>
-                  <View style={styles.valueRow}>
-                    <Text style={[styles.valueText, { color: currentText }]}>
-                      {data?.humidity || "62"}
-                    </Text>
-                    <Text style={styles.valueUnit}>%</Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: "rgba(59,130,246,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: "#3b82f6" }]}>
-                      NORMAL
-                    </Text>
-                  </View>
-                </View>
-
-                {/* CO₂ */}
-                <View
-                  style={[
-                    styles.gridCard,
-                    {
-                      backgroundColor: darkMode
-                        ? colors.slate800
-                        : colors.white,
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <MaterialIcons name="air" size={18} color="#f97316" />
-                    <Text style={styles.cardLabel}>CO₂</Text>
-                  </View>
-                  <View style={styles.valueRow}>
-                    <Text style={[styles.valueText, { color: currentText }]}>
-                      {data?.co2 || "950"}
-                    </Text>
-                    <Text style={styles.valueUnit}>ppm</Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: "rgba(34,197,94,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: "#22c55e" }]}>
-                      BON
-                    </Text>
-                  </View>
-                </View>
-
-                {/* NH₃ */}
-                <View
-                  style={[
-                    styles.gridCard,
-                    {
-                      backgroundColor: darkMode
-                        ? colors.slate800
-                        : colors.white,
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <MaterialIcons name="science" size={18} color="#a855f7" />
-                    <Text style={styles.cardLabel}>NH₃</Text>
-                  </View>
-                  <View style={styles.valueRow}>
-                    <Text style={[styles.valueText, { color: currentText }]}>
-                      {data?.nh3 || "8.5"}
-                    </Text>
-                    <Text style={styles.valueUnit}>ppm</Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: "rgba(34,197,94,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: "#22c55e" }]}>
-                      BON
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Poussière */}
-                <View
-                  style={[
-                    styles.gridCard,
-                    {
-                      backgroundColor: darkMode
-                        ? colors.slate800
-                        : colors.white,
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <MaterialIcons name="blur-on" size={18} color="#f59e0b" />
-                    <Text style={styles.cardLabel}>POUSSIÈRE</Text>
-                  </View>
-                  <View style={styles.valueRow}>
-                    <Text style={[styles.valueText, { color: currentText }]}>
-                      {data?.dust || "45"}
-                    </Text>
-                    <Text style={styles.valueUnit}>µg/m³</Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: "rgba(34,197,94,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: "#22c55e" }]}>
-                      FAIBLE
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Niveau d'eau */}
-                <View
-                  style={[
-                    styles.gridCard,
-                    {
-                      backgroundColor: darkMode
-                        ? colors.slate800
-                        : colors.white,
-                    },
-                  ]}
-                >
-                  <View style={styles.cardHeader}>
-                    <MaterialIcons name="water" size={18} color="#06b6d4" />
-                    <Text style={styles.cardLabel}>NIVEAU EAU</Text>
-                  </View>
-                  <View style={styles.valueRow}>
-                    <Text style={[styles.valueText, { color: currentText }]}>
-                      {data?.waterLevel || "85"}
-                    </Text>
-                    <Text style={styles.valueUnit}>%</Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: "rgba(34,197,94,0.15)" },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: "#22c55e" }]}>
-                      SUFFISANT
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Tendance 24h avec toggle complet */}
-              <View
-                style={[
-                  styles.panel,
-                  {
-                    backgroundColor: darkMode ? colors.slate800 : colors.white,
-                  },
-                ]}
-              >
-                <View style={styles.chartHeader}>
-                  <Text style={[styles.panelTitle, { color: currentText }]}>
-                    Tendance 24h
-                  </Text>
-                  <View style={{ height: 12 }} />
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                    <View style={styles.periodToggle}>
-                      {[
-                        { key: "temp", label: "Temp" },
-                        { key: "humid", label: "Hum" },
-                        { key: "co2", label: "CO₂" },
-                        { key: "nh3", label: "NH₃" },
-                        { key: "dust", label: "Poussière" },
-                        { key: "water", label: "Eau" },
-                      ].map((item) => (
-                        <TouchableOpacity
-                          key={item.key}
-                          style={[
-                            styles.toggleBtn,
-                            selectedChart === item.key &&
-                              styles.toggleBtnActive,
-                          ]}
-                          onPress={() => setSelectedChart(item.key)}
-                        >
-                          <Text
-                            style={[
-                              styles.toggleText,
-                              selectedChart === item.key && {
-                                color: "#fff",
-                              },
-                            ]}
-                          >
-                            {item.label}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </View>
-                  </ScrollView>
-                </View>
-
-                <LineChart
-                  data={{
-                    labels: ["00h", "04h", "08h", "12h", "16h", "20h"],
-                    datasets: [
-                      {
-                        data:
-                          data?.history?.length > 0
-                            ? data.history
-                            : [20, 25, 28, 24, 22, 26],
-                        color: (opacity = 1) =>
-                          selectedChart === "temp"
-                            ? `rgba(34, 197, 94, ${opacity})`
-                            : selectedChart === "humid"
-                              ? `rgba(59, 130, 246, ${opacity})`
-                              : selectedChart === "co2"
-                                ? `rgba(249, 115, 22, ${opacity})`
-                                : selectedChart === "nh3"
-                                  ? `rgba(139, 92, 246, ${opacity})`
-                                  : selectedChart === "dust"
-                                    ? `rgba(245, 158, 11, ${opacity})`
-                                    : `rgba(6, 182, 212, ${opacity})`,
-                        strokeWidth: 3,
-                      },
-                    ],
-                  }}
-                  width={width - 56}
-                  height={220}
-                  withVerticalLines={false}
-                  withHorizontalLines={false}
-                  chartConfig={{
-                    backgroundColor: "transparent",
-                    backgroundGradientFrom: darkMode ? "#1e293b" : "#ffffff",
-                    backgroundGradientTo: darkMode ? "#1e293b" : "#ffffff",
-                    decimalPlaces: 0,
-                    color: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
-                    labelColor: () => "#94a3b8",
-                    propsForDots: { r: "4", strokeWidth: "2" },
-                    style: { borderRadius: 16 },
-                  }}
-                  bezier
-                  style={styles.chart}
-                />
-              </View>
-
-              {/* Actionneurs */}
-              <ActuatorControl
-                actuators={actuators}
-                poultryId={poultryId}
-                darkMode={darkMode}
-                colors={colors}
-              />
-
-              {/* Espace entre ActuatorControl et MeasurementHistory */}
-              <View style={{ height: 32 }} />
-
-              {/* Historique */}
-              <MeasurementHistory
-                poultryId={poultryId}
-                darkMode={darkMode}
-                colors={colors}
-              />
-
-              {/* Espace entre historique et boutons */}
-              <View style={{ height: 32 }} />
-
-              {/* Boutons d'action */}
-              <View style={styles.actionButtonsContainer}>
-                <TouchableOpacity
-                  style={styles.solidBtn}
-                  onPress={() =>
-                    navigation.navigate("AlertSettings", { poultryId })
-                  }
-                >
-                  <LG
-                    colors={["#22c55e", "#16a34a"]}
-                    style={StyleSheet.absoluteFill}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                  />
-                  <Ionicons name="settings-outline" size={20} color="#fff" />
-                  <Text style={styles.solidBtnText}>
-                    Configuration des seuils
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.outlineBtn}
-                  onPress={() => navigation.navigate("History", { poultryId })}
-                >
-                  <Ionicons name="time-outline" size={20} color="#22C55E" />
-                  <Text style={styles.outlineBtnText}>Historique complet</Text>
-                </TouchableOpacity>
-              </View>
-            </>
           )}
         </View>
-      </ScrollView>
 
-      <Toast
-        visible={toast.visible}
-        message={toast.message}
-        type={toast.type}
-        onHide={() => setToast((prev) => ({ ...prev, visible: false }))}
-      />
+        {/* Capteurs */}
+        <SectionLabel>Capteurs temps réel</SectionLabel>
+        <View
+          style={{
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 10,
+            marginBottom: 24,
+          }}
+        >
+          {sensors.map((sensor, i) => {
+            const col = STATUS_COLORS[sensor.status] || STATUS_COLORS.normal;
+            return (
+              <View key={i} style={[card, { flexBasis: "47%", flexGrow: 1 }]}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    marginBottom: 12,
+                  }}
+                >
+                  <View
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 10,
+                      backgroundColor: col + "18",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <MaterialIcons name={sensor.icon} size={18} color={col} />
+                  </View>
+                  <View
+                    style={{
+                      backgroundColor: col + "18",
+                      borderRadius: 20,
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 9,
+                        fontWeight: "700",
+                        textTransform: "uppercase",
+                        letterSpacing: 0.5,
+                        color: col,
+                      }}
+                    >
+                      {sensor.status === "normal"
+                        ? "OK"
+                        : sensor.status === "warn"
+                          ? "Attn."
+                          : "Danger"}
+                    </Text>
+                  </View>
+                </View>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "flex-end",
+                    gap: 3,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 26,
+                      fontWeight: "800",
+                      color: "#1E293B",
+                      lineHeight: 30,
+                    }}
+                  >
+                    {sensor.value}
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "600",
+                      color: "#94A3B8",
+                      marginBottom: 2,
+                    }}
+                  >
+                    {sensor.unit}
+                  </Text>
+                </View>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    fontWeight: "600",
+                    color: "#94A3B8",
+                    marginTop: 4,
+                  }}
+                >
+                  {sensor.name}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Actionneurs */}
+        <SectionLabel>Actionneurs</SectionLabel>
+        <View style={{ gap: 10, marginBottom: 24 }}>
+          {/* ── Ventilateur ── */}
+          <View style={card}>
+            <View style={[row, { marginBottom: actuators.fanAuto ? 0 : 14 }]}>
+              <IconBox bg="#F0FDF4">
+                <MaterialIcons name="cyclone" size={22} color="#22C55E" />
+              </IconBox>
+              <View style={{ flex: 1 }}>
+                <Text style={label}>Ventilateur</Text>
+                <Text style={sub}>
+                  {actuators.fanAuto
+                    ? "Auto — CO2 / Température"
+                    : `Manuel — ${actuators.fan ? "● En marche" : "○ Arrêté"}`}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={toggleFanAuto}
+                disabled={!isConnected}
+                style={{ opacity: isConnected ? 1 : 0.5 }}
+              >
+                <Segment
+                  options={["AUTO", "MANU"]}
+                  selected={actuators.fanAuto ? 0 : 1}
+                />
+              </TouchableOpacity>
+            </View>
+
+            {!actuators.fanAuto && (
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => setFan(true)}
+                  disabled={!isConnected || actuators.fan}
+                  style={{
+                    flex: 1,
+                    padding: 11,
+                    borderRadius: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    backgroundColor: actuators.fan ? "#F0FDF4" : "#22C55E",
+                    borderWidth: 1,
+                    borderColor: "#22C55E40",
+                    opacity: isConnected && !actuators.fan ? 1 : 0.5,
+                  }}
+                >
+                  <MaterialIcons
+                    name="play-arrow"
+                    size={16}
+                    color={actuators.fan ? "#22C55E" : "#fff"}
+                  />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: actuators.fan ? "#22C55E" : "#fff",
+                    }}
+                  >
+                    Démarrer
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setFan(false)}
+                  disabled={!isConnected || !actuators.fan}
+                  style={{
+                    flex: 1,
+                    padding: 11,
+                    borderRadius: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    backgroundColor: "#F8FAFC",
+                    borderWidth: 1,
+                    borderColor: "#F1F5F9",
+                    opacity: isConnected && actuators.fan ? 1 : 0.5,
+                  }}
+                >
+                  <MaterialIcons name="stop" size={16} color="#EF4444" />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: "#EF4444",
+                    }}
+                  >
+                    Arrêter
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* ── Lampe Chauffante ── */}
+          <View style={card}>
+            <View style={[row, { marginBottom: actuators.lampAuto ? 0 : 14 }]}>
+              <IconBox bg="#FFFBEB">
+                <MaterialIcons name="lightbulb" size={22} color="#F59E0B" />
+              </IconBox>
+              <View style={{ flex: 1 }}>
+                <Text style={label}>Lampe Chauffante</Text>
+                <Text
+                  style={[
+                    sub,
+                    !actuators.lampAuto && {
+                      color: actuators.lamp ? "#22C55E" : "#94A3B8",
+                      fontWeight: "700",
+                    },
+                  ]}
+                >
+                  {actuators.lampAuto
+                    ? "Auto — Température"
+                    : actuators.lamp
+                      ? "● Allumée"
+                      : "○ Éteinte"}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={toggleLampAuto}
+                disabled={!isConnected}
+                style={{ opacity: isConnected ? 1 : 0.5 }}
+              >
+                <Segment
+                  options={["AUTO", "MANU"]}
+                  selected={actuators.lampAuto ? 0 : 1}
+                />
+              </TouchableOpacity>
+            </View>
+
+            {!actuators.lampAuto && (
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => setLamp(true)}
+                  disabled={!isConnected || actuators.lamp}
+                  style={{
+                    flex: 1,
+                    padding: 11,
+                    borderRadius: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    backgroundColor: actuators.lamp ? "#FFFBEB" : "#F59E0B",
+                    borderWidth: 1,
+                    borderColor: "#F59E0B40",
+                    opacity: isConnected && !actuators.lamp ? 1 : 0.5,
+                  }}
+                >
+                  <MaterialIcons
+                    name="lightbulb"
+                    size={16}
+                    color={actuators.lamp ? "#F59E0B" : "#fff"}
+                  />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: actuators.lamp ? "#F59E0B" : "#fff",
+                    }}
+                  >
+                    Allumer
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setLamp(false)}
+                  disabled={!isConnected || !actuators.lamp}
+                  style={{
+                    flex: 1,
+                    padding: 11,
+                    borderRadius: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    backgroundColor: "#F8FAFC",
+                    borderWidth: 1,
+                    borderColor: "#F1F5F9",
+                    opacity: isConnected && actuators.lamp ? 1 : 0.5,
+                  }}
+                >
+                  <MaterialIcons
+                    name="lightbulb-outline"
+                    size={16}
+                    color="#94A3B8"
+                  />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: "#64748B",
+                    }}
+                  >
+                    Éteindre
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* ── Porte ── */}
+          <View style={card}>
+            <View style={[row, { marginBottom: 14 }]}>
+              <IconBox bg="#F8FAFC">
+                <MaterialIcons name="door-front" size={22} color="#64748B" />
+              </IconBox>
+              <View style={{ flex: 1 }}>
+                <Text style={label}>Porte Automatique</Text>
+                <Text
+                  style={[
+                    sub,
+                    { color: actuators.door ? "#22C55E" : "#94A3B8" },
+                  ]}
+                >
+                  {actuators.door ? "● Ouverte" : "○ Fermée"}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() =>
+                  setDoorMode(doorMode === "horaire" ? "manu" : "horaire")
+                }
+                disabled={!isConnected}
+                style={{ opacity: isConnected ? 1 : 0.5 }}
+              >
+                <Segment
+                  options={["HORAIRE", "MANU"]}
+                  selected={doorMode === "horaire" ? 0 : 1}
+                />
+              </TouchableOpacity>
+            </View>
+
+            {/* Mode HORAIRE: Time schedule display */}
+            {doorMode === "horaire" && (
+              <View style={{ marginBottom: 14 }}>
+                <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+                  {[
+                    { label: "Ouverture", key: "open" },
+                    { label: "Fermeture", key: "close" },
+                  ].map((item) => (
+                    <View
+                      key={item.key}
+                      style={{
+                        flex: 1,
+                        backgroundColor: "#F8FAFC",
+                        borderRadius: 12,
+                        padding: 12,
+                        borderWidth: 1,
+                        borderColor: "#F1F5F9",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 9,
+                          fontWeight: "700",
+                          color: "#94A3B8",
+                          textTransform: "uppercase",
+                          marginBottom: 8,
+                        }}
+                      >
+                        {item.label}
+                      </Text>
+
+                      {/* Hour and Minute spinners */}
+                      <View
+                        style={{ flexDirection: "row", alignItems: "center", gap: 3 }}
+                      >
+                        {/* Hour */}
+                        <View style={{ alignItems: "center", flex: 1 }}>
+                          <TouchableOpacity
+                            onPress={() => {
+                              if (item.key === "open") {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  openHour: (p.openHour + 1) % 24,
+                                }));
+                              } else {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  closeHour: (p.closeHour + 1) % 24,
+                                }));
+                              }
+                            }}
+                          >
+                            <MaterialIcons
+                              name="keyboard-arrow-up"
+                              size={16}
+                              color="#64748B"
+                            />
+                          </TouchableOpacity>
+                          <Text
+                            style={{
+                              fontSize: 20,
+                              fontWeight: "800",
+                              color: "#1E293B",
+                              width: 32,
+                              textAlign: "center",
+                            }}
+                          >
+                            {pad(
+                              item.key === "open"
+                                ? doorSchedule.openHour
+                                : doorSchedule.closeHour
+                            )}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => {
+                              if (item.key === "open") {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  openHour: (p.openHour - 1 + 24) % 24,
+                                }));
+                              } else {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  closeHour: (p.closeHour - 1 + 24) % 24,
+                                }));
+                              }
+                            }}
+                          >
+                            <MaterialIcons
+                              name="keyboard-arrow-down"
+                              size={16}
+                              color="#64748B"
+                            />
+                          </TouchableOpacity>
+                        </View>
+
+                        <Text
+                          style={{
+                            fontSize: 20,
+                            fontWeight: "800",
+                            color: "#1E293B",
+                          }}
+                        >
+                          :
+                        </Text>
+
+                        {/* Minute */}
+                        <View style={{ alignItems: "center", flex: 1 }}>
+                          <TouchableOpacity
+                            onPress={() => {
+                              if (item.key === "open") {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  openMinute: (p.openMinute + 5) % 60,
+                                }));
+                              } else {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  closeMinute: (p.closeMinute + 5) % 60,
+                                }));
+                              }
+                            }}
+                          >
+                            <MaterialIcons
+                              name="keyboard-arrow-up"
+                              size={16}
+                              color="#64748B"
+                            />
+                          </TouchableOpacity>
+                          <Text
+                            style={{
+                              fontSize: 20,
+                              fontWeight: "800",
+                              color: "#1E293B",
+                              width: 32,
+                              textAlign: "center",
+                            }}
+                          >
+                            {pad(
+                              item.key === "open"
+                                ? doorSchedule.openMinute
+                                : doorSchedule.closeMinute
+                            )}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => {
+                              if (item.key === "open") {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  openMinute: (p.openMinute - 5 + 60) % 60,
+                                }));
+                              } else {
+                                setDoorSchedule((p) => ({
+                                  ...p,
+                                  closeMinute: (p.closeMinute - 5 + 60) % 60,
+                                }));
+                              }
+                            }}
+                          >
+                            <MaterialIcons
+                              name="keyboard-arrow-down"
+                              size={16}
+                              color="#64748B"
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                <View
+                  style={{
+                    backgroundColor: "#F0FDF4",
+                    borderRadius: 12,
+                    padding: 10,
+                    borderWidth: 1,
+                    borderColor: "#22C55E30",
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 6,
+                  }}
+                >
+                  <MaterialIcons
+                    name="info"
+                    size={16}
+                    color="#22C55E"
+                  />
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      fontWeight: "500",
+                      color: "#22C55E",
+                      flex: 1,
+                    }}
+                  >
+                    La porte s'ouvrira/fermera automatiquement aux horaires définis
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Mode MANU: Buttons only */}
+            {doorMode === "manu" && (
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => toggleDoor(true)}
+                  disabled={!isConnected}
+                  style={{
+                    flex: 1,
+                    padding: 11,
+                    borderRadius: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    backgroundColor: "#F0FDF4",
+                    borderWidth: 1,
+                    borderColor: "#22C55E40",
+                    opacity: isConnected ? 1 : 0.5,
+                  }}
+                >
+                  <MaterialIcons name="lock-open" size={16} color="#22C55E" />
+                  <Text
+                    style={{ fontSize: 12, fontWeight: "700", color: "#22C55E" }}
+                  >
+                    Ouvrir
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => toggleDoor(false)}
+                  disabled={!isConnected}
+                  style={{
+                    flex: 1,
+                    padding: 11,
+                    borderRadius: 12,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    backgroundColor: "#F8FAFC",
+                    borderWidth: 1,
+                    borderColor: "#F1F5F9",
+                    opacity: isConnected ? 1 : 0.5,
+                  }}
+                >
+                  <MaterialIcons name="lock" size={16} color="#94A3B8" />
+                  <Text
+                    style={{ fontSize: 12, fontWeight: "700", color: "#64748B" }}
+                  >
+                    Fermer
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* ═══════════════════════════════════════════════════════════════════ */}
+        {/* Distributeur de nourriture                                        */}
+        {/* ═══════════════════════════════════════════════════════════════════ */}
+        <SectionLabel>Distributeur de nourriture</SectionLabel>
+        <View style={[card, { marginBottom: 24 }]}>
+          {/* En-tête */}
+          <View style={[row, { marginBottom: 16 }]}>
+            <IconBox bg="#FFF7ED">
+              <MaterialIcons name="set-meal" size={22} color="#F97316" />
+            </IconBox>
+            <View style={{ flex: 1 }}>
+              <Text style={label}>Alimentation automatique</Text>
+              <Text style={sub}>
+                {feeder.lastDistribution
+                  ? `Dernière : ${formatTime(feeder.lastDistribution)}`
+                  : "Aucune distribution aujourd'hui"}
+              </Text>
+            </View>
+            {feeder.isDistributing && (
+              <View
+                style={{
+                  backgroundColor: "#FFF7ED",
+                  borderRadius: 12,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                <ActivityIndicator size="small" color="#F97316" />
+                <Text
+                  style={{ fontSize: 10, fontWeight: "700", color: "#F97316" }}
+                >
+                  En cours...
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Durée configurable */}
+          <View
+            style={{
+              backgroundColor: "#F8FAFC",
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 14,
+              borderWidth: 1,
+              borderColor: "#F1F5F9",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 9,
+                fontWeight: "700",
+                color: "#94A3B8",
+                textTransform: "uppercase",
+                marginBottom: 8,
+              }}
+            >
+              Durée de distribution
+            </Text>
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 12 }}
+            >
+              <TouchableOpacity
+                onPress={() =>
+                  setFeeder((p) => ({
+                    ...p,
+                    durationSec: Math.max(1, p.durationSec - 1),
+                  }))
+                }
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  backgroundColor: "#F1F5F9",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <MaterialIcons name="remove" size={20} color="#64748B" />
+              </TouchableOpacity>
+              <Text
+                style={{
+                  fontSize: 26,
+                  fontWeight: "800",
+                  color: "#1E293B",
+                  flex: 1,
+                  textAlign: "center",
+                }}
+              >
+                {feeder.durationSec}s
+              </Text>
+              <TouchableOpacity
+                onPress={() =>
+                  setFeeder((p) => ({
+                    ...p,
+                    durationSec: Math.min(30, p.durationSec + 1),
+                  }))
+                }
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  backgroundColor: "#F1F5F9",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <MaterialIcons name="add" size={20} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+            <Text
+              style={{
+                fontSize: 10,
+                color: "#94A3B8",
+                textAlign: "center",
+                marginTop: 6,
+                fontWeight: "500",
+              }}
+            >
+              Durée d'activation du moteur (1 – 30 sec)
+            </Text>
+          </View>
+
+          {/* Condition température */}
+          <TouchableOpacity
+            onPress={() =>
+              setFeeder((p) => ({
+                ...p,
+                tempConditionEnabled: !p.tempConditionEnabled,
+              }))
+            }
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 10,
+              marginBottom: 14,
+              padding: 12,
+              backgroundColor: feeder.tempConditionEnabled
+                ? "#FFF7ED"
+                : "#F8FAFC",
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: feeder.tempConditionEnabled
+                ? "#F97316" + "40"
+                : "#F1F5F9",
+            }}
+          >
+            <MaterialIcons
+              name="thermostat"
+              size={18}
+              color={feeder.tempConditionEnabled ? "#F97316" : "#94A3B8"}
+            />
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: "700",
+                  color: feeder.tempConditionEnabled ? "#F97316" : "#64748B",
+                }}
+              >
+                Condition température
+              </Text>
+              <Text style={sub}>
+                Bloquer si temp. ≥ {feeder.tempThreshold}°C
+              </Text>
+            </View>
+            <Toggle value={feeder.tempConditionEnabled} />
+          </TouchableOpacity>
+
+          {/* Seuil température — visible si condition activée */}
+          {feeder.tempConditionEnabled && (
+            <View
+              style={{
+                backgroundColor: "#FFF7ED",
+                borderRadius: 12,
+                padding: 12,
+                marginBottom: 14,
+                borderWidth: 1,
+                borderColor: "#F97316" + "30",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <MaterialIcons
+                name="device-thermostat"
+                size={16}
+                color="#F97316"
+              />
+              <Text
+                style={{
+                  fontSize: 12,
+                  fontWeight: "600",
+                  color: "#64748B",
+                  flex: 1,
+                }}
+              >
+                Seuil de blocage
+              </Text>
+              <TouchableOpacity
+                onPress={() =>
+                  setFeeder((p) => ({
+                    ...p,
+                    tempThreshold: Math.max(20, p.tempThreshold - 1),
+                  }))
+                }
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 8,
+                  backgroundColor: "#F1F5F9",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <MaterialIcons name="remove" size={16} color="#64748B" />
+              </TouchableOpacity>
+              <Text
+                style={{
+                  fontSize: 18,
+                  fontWeight: "800",
+                  color: "#F97316",
+                  minWidth: 58,
+                  textAlign: "center",
+                }}
+              >
+                {feeder.tempThreshold}°C
+              </Text>
+              <TouchableOpacity
+                onPress={() =>
+                  setFeeder((p) => ({
+                    ...p,
+                    tempThreshold: Math.min(45, p.tempThreshold + 1),
+                  }))
+                }
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 8,
+                  backgroundColor: "#F1F5F9",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <MaterialIcons name="add" size={16} color="#64748B" />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Séparateur */}
+          <View
+            style={{ height: 1, backgroundColor: "#F1F5F9", marginBottom: 14 }}
+          />
+
+          {/* Horaires */}
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 10,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 9,
+                fontWeight: "700",
+                color: "#94A3B8",
+                textTransform: "uppercase",
+              }}
+            >
+              Horaires programmés ({feeder.schedules.length})
+            </Text>
+            <TouchableOpacity
+              onPress={addSchedule}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 4,
+                backgroundColor: "#F0FDF4",
+                paddingHorizontal: 10,
+                paddingVertical: 5,
+                borderRadius: 20,
+                borderWidth: 1,
+                borderColor: "#22C55E40",
+              }}
+            >
+              <MaterialIcons name="add" size={14} color="#22C55E" />
+              <Text
+                style={{ fontSize: 10, fontWeight: "700", color: "#22C55E" }}
+              >
+                Ajouter
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {feeder.schedules.length === 0 && (
+            <View
+              style={{
+                alignItems: "center",
+                paddingVertical: 20,
+                backgroundColor: "#F8FAFC",
+                borderRadius: 12,
+                marginBottom: 14,
+              }}
+            >
+              <MaterialIcons name="schedule" size={28} color="#CBD5E1" />
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: "#94A3B8",
+                  marginTop: 8,
+                  fontWeight: "500",
+                }}
+              >
+                Aucun horaire programmé
+              </Text>
+            </View>
+          )}
+
+          {feeder.schedules.map((schedule) => (
+            <View
+              key={schedule.id}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 8,
+                backgroundColor: schedule.enabled ? "#F0FDF4" : "#F8FAFC",
+                padding: 10,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: schedule.enabled ? "#22C55E30" : "#F1F5F9",
+              }}
+            >
+              {/* Toggle activé */}
+              <TouchableOpacity
+                onPress={() =>
+                  updateSchedule(schedule.id, "enabled", !schedule.enabled)
+                }
+              >
+                <Toggle value={schedule.enabled} />
+              </TouchableOpacity>
+
+              {/* Heure — boutons +/- */}
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 3 }}
+              >
+                <View style={{ alignItems: "center" }}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      updateSchedule(
+                        schedule.id,
+                        "hour",
+                        (schedule.hour + 1) % 24,
+                      )
+                    }
+                  >
+                    <MaterialIcons
+                      name="keyboard-arrow-up"
+                      size={16}
+                      color="#64748B"
+                    />
+                  </TouchableOpacity>
+                  <Text
+                    style={{
+                      fontSize: 18,
+                      fontWeight: "800",
+                      color: schedule.enabled ? "#1E293B" : "#94A3B8",
+                      width: 28,
+                      textAlign: "center",
+                    }}
+                  >
+                    {pad(schedule.hour)}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() =>
+                      updateSchedule(
+                        schedule.id,
+                        "hour",
+                        (schedule.hour - 1 + 24) % 24,
+                      )
+                    }
+                  >
+                    <MaterialIcons
+                      name="keyboard-arrow-down"
+                      size={16}
+                      color="#64748B"
+                    />
+                  </TouchableOpacity>
+                </View>
+
+                <Text
+                  style={{
+                    fontSize: 18,
+                    fontWeight: "800",
+                    color: schedule.enabled ? "#1E293B" : "#94A3B8",
+                    marginBottom: 2,
+                  }}
+                >
+                  :
+                </Text>
+
+                {/* Minutes */}
+                <View style={{ alignItems: "center" }}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      updateSchedule(
+                        schedule.id,
+                        "minute",
+                        (schedule.minute + 5) % 60,
+                      )
+                    }
+                  >
+                    <MaterialIcons
+                      name="keyboard-arrow-up"
+                      size={16}
+                      color="#64748B"
+                    />
+                  </TouchableOpacity>
+                  <Text
+                    style={{
+                      fontSize: 18,
+                      fontWeight: "800",
+                      color: schedule.enabled ? "#1E293B" : "#94A3B8",
+                      width: 28,
+                      textAlign: "center",
+                    }}
+                  >
+                    {pad(schedule.minute)}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() =>
+                      updateSchedule(
+                        schedule.id,
+                        "minute",
+                        (schedule.minute - 5 + 60) % 60,
+                      )
+                    }
+                  >
+                    <MaterialIcons
+                      name="keyboard-arrow-down"
+                      size={16}
+                      color="#64748B"
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Label */}
+              <Text
+                style={{
+                  flex: 1,
+                  fontSize: 11,
+                  fontWeight: "600",
+                  color: schedule.enabled ? "#22C55E" : "#94A3B8",
+                  marginLeft: 4,
+                }}
+              >
+                {schedule.enabled ? "● Actif" : "○ Désactivé"}
+              </Text>
+
+              {/* Supprimer */}
+              <TouchableOpacity
+                onPress={() => removeSchedule(schedule.id)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 8,
+                  backgroundColor: "#FEF2F2",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <MaterialIcons
+                  name="delete-outline"
+                  size={16}
+                  color="#EF4444"
+                />
+              </TouchableOpacity>
+            </View>
+          ))}
+
+          {/* Séparateur */}
+          <View
+            style={{
+              height: 1,
+              backgroundColor: "#F1F5F9",
+              marginVertical: 14,
+            }}
+          />
+
+          {/* Bouton Distribution manuelle immédiate */}
+          <TouchableOpacity
+            onPress={() => distributeFood("manual")}
+            disabled={!isConnected || feeder.isDistributing}
+            style={{
+              padding: 14,
+              borderRadius: 14,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              backgroundColor:
+                !isConnected || feeder.isDistributing ? "#F1F5F9" : "#F97316",
+              opacity: !isConnected || feeder.isDistributing ? 0.6 : 1,
+            }}
+          >
+            {feeder.isDistributing ? (
+              <ActivityIndicator size="small" color="#F97316" />
+            ) : (
+              <MaterialIcons
+                name="restaurant"
+                size={18}
+                color={!isConnected ? "#94A3B8" : "#fff"}
+              />
+            )}
+            <Text
+              style={{
+                fontSize: 13,
+                fontWeight: "800",
+                color:
+                  !isConnected || feeder.isDistributing ? "#94A3B8" : "#fff",
+              }}
+            >
+              {feeder.isDistributing
+                ? `Distribution... (${feeder.durationSec}s)`
+                : "Distribuer maintenant"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  scrollContent: { flexGrow: 1, paddingBottom: 110 },
-  heroContainer: { height: 320, width: "100%", position: "relative" },
-  heroImage: { width: "100%", height: "100%", resizeMode: "cover" },
-  headerActions: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-  },
-  iconButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  contentContainer: { marginTop: -48, paddingHorizontal: 16 },
-  summaryCard: {
-    borderRadius: 20,
-    padding: 24,
-    shadowColor: "#22C55E",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.05,
-    shadowRadius: 20,
-    elevation: 10,
-    marginBottom: 20,
-  },
-  summaryInfo: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-  },
-  poultryNameText: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
-  locationRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 4,
-  },
-  locationText: { fontSize: 14, color: "#94a3b8", fontWeight: "500" },
-  birdCountBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  birdCountText: { fontSize: 18, fontWeight: "800", color: "#22C55E" },
-  loaderContainer: {
-    height: 300,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  loaderText: { marginTop: 12, fontSize: 14, fontWeight: "600" },
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 20,
-  },
-  gridCard: {
-    width: (width - 44) / 2,
-    padding: 16,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
-  },
-  cardHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 10,
-  },
-  cardLabel: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: "#64748b",
-    letterSpacing: 0.5,
-  },
-  valueRow: { flexDirection: "row", alignItems: "baseline", gap: 4 },
-  valueText: { fontSize: 26, fontWeight: "800" },
-  valueUnit: { fontSize: 14, fontWeight: "700", color: "#64748b" },
-  statusPill: {
-    marginTop: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 20,
-    alignSelf: "flex-start",
-  },
-  statusPillText: { fontSize: 10, fontWeight: "800" },
-  chartHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 12,
-    flexWrap: "wrap",
-  },
-  periodToggle: { flexDirection: "row", gap: 6 },
-  toggleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: "#f1f5f9",
-  },
-  toggleBtnActive: { backgroundColor: "#22C55E" },
-  toggleText: { fontSize: 11, fontWeight: "600", color: "#64748b" },
-  panel: {
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 20,
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  panelHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  panelTitle: { fontSize: 16, fontWeight: "700" },
-  panelSubtitle: { fontSize: 12, fontWeight: "700", color: "#94a3b8" },
-  chart: { marginLeft: -16 },
-  sectionHeader: { marginBottom: 16, marginTop: 10 },
-  sectionTitle: { fontSize: 18, fontWeight: "800" },
-  actionButtonsContainer: { gap: 12 },
-  solidBtn: {
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#22C55E",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    elevation: 4,
-    shadowColor: "#22C55E",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    overflow: "hidden",
-  },
-  solidBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
-  outlineBtn: {
-    height: 56,
-    borderRadius: 28,
-    borderWidth: 2,
-    borderColor: "#22C55E",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-  },
-  outlineBtnText: { color: "#22C55E", fontSize: 15, fontWeight: "700" },
-});
+// ── Micro-composants ──────────────────────────────────────────────────────────
+
+function SectionLabel({ children }) {
+  return (
+    <Text
+      style={{
+        fontSize: 11,
+        fontWeight: "700",
+        letterSpacing: 1.2,
+        textTransform: "uppercase",
+        color: "#94A3B8",
+        marginBottom: 12,
+      }}
+    >
+      {children}
+    </Text>
+  );
+}
+
+function IconBox({ bg, children }) {
+  return (
+    <View
+      style={{
+        width: 42,
+        height: 42,
+        borderRadius: 12,
+        backgroundColor: bg,
+        alignItems: "center",
+        justifyContent: "center",
+        marginRight: 12,
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
+function Segment({ options, selected }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        backgroundColor: "#F1F5F9",
+        borderRadius: 20,
+        padding: 3,
+        gap: 2,
+      }}
+    >
+      {options.map((opt, i) => (
+        <View
+          key={i}
+          style={{
+            paddingHorizontal: 10,
+            paddingVertical: 5,
+            borderRadius: 16,
+            backgroundColor: selected === i ? "#22C55E" : "transparent",
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 10,
+              fontWeight: "700",
+              color: selected === i ? "#fff" : "#94A3B8",
+            }}
+          >
+            {opt}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function Toggle({ value }) {
+  return (
+    <View style={{ width: 46, height: 26 }}>
+      <View
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: value ? "#22C55E" : "#E2E8F0",
+          borderRadius: 13,
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          width: 20,
+          height: 20,
+          left: value ? 22 : 3,
+          top: 3,
+          borderRadius: 10,
+          backgroundColor: "#fff",
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 1 },
+          shadowOpacity: 0.15,
+          shadowRadius: 3,
+          elevation: 2,
+        }}
+      />
+    </View>
+  );
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+const card = {
+  backgroundColor: "#fff",
+  borderRadius: 16,
+  padding: 16,
+  borderWidth: 1,
+  borderColor: "#F1F5F9",
+  shadowColor: "#000",
+  shadowOffset: { width: 0, height: 1 },
+  shadowOpacity: 0.05,
+  shadowRadius: 8,
+  elevation: 2,
+};
+const row = { flexDirection: "row", alignItems: "center" };
+const label = { fontSize: 14, fontWeight: "700", color: "#1E293B" };
+const sub = { fontSize: 11, color: "#94A3B8", fontWeight: "500", marginTop: 2 };

@@ -24,7 +24,8 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem("adminToken");
       localStorage.removeItem("adminUser");
-      window.location.href = "/login";
+      // Redirect to root (login page) instead of /login
+      window.location.href = "/";
     }
     return Promise.reject(error);
   },
@@ -36,9 +37,39 @@ export const authAPI = {
 
 export const dashboardAPI = {
   getStats: () => api.get("/admin/dashboard/stats"),
+  getAlertesChart: (period = "7d") =>
+    api.get(`/admin/dashboard/alertes-chart?period=${period}`),
+  getModulesActivity: () => api.get("/admin/dashboard/modules-activity"),
+  getAlertesRecentes: (limit = 5) =>
+    api.get(`/admin/dashboard/alertes-recentes?limit=${limit}`),
+  getPoulaillersCritiques: (limit = 5) =>
+    api.get(`/admin/dashboard/poulaillers-critiques?limit=${limit}`),
+  getActiviteRecente: (limit = 5) =>
+    api.get(`/admin/dashboard/activite-recente?limit=${limit}`),
 };
 
-export const eleveursAPI = {};
+export const eleveursAPI = {
+  // Inviter un nouvel eleveur
+  invite: (data) => api.post("/admin/eleveurs/invite", data),
+
+  // Obtenir la liste des eleveurs
+  getAll: (params) => api.get("/admin/eleveurs", { params }),
+
+  // Obtenir un eleveur par ID
+  getById: (id) => api.get(`/admin/eleveurs/${id}`),
+
+  // Mettre a jour un eleveur
+  update: (id, data) => api.put(`/admin/eleveurs/${id}`, data),
+
+  // Basculer le statut (activer/desactiver)
+  toggleStatus: (id) => api.put(`/admin/eleveurs/${id}/toggle-status`),
+
+  // Supprimer un eleveur
+  delete: (id) => api.delete(`/admin/eleveurs/${id}`),
+
+  // Renoyer l'invitation
+  resendInvite: (id) => api.post(`/adm in/eleveurs/${id}/resend-invite`),
+};
 
 export const modulesAPI = {
   // Liste des modules avec pagination et filtres
@@ -120,6 +151,9 @@ export const rapportsAPI = {
 export const logsAPI = {
   getAll: (params) => api.get("/admin/logs", { params }),
   getStats: () => api.get("/admin/logs/stats"),
+  export: (params) => api.get("/admin/logs/export", { params }),
+  cleanup: (olderThanDays) =>
+    api.delete("/admin/logs/cleanup", { data: { olderThanDays } }),
 };
 
 export const parametresAPI = {
@@ -134,6 +168,7 @@ export const utilisateursAPI = {
   getById: (id) => api.get(`/admin/utilisateurs/${id}`),
   toggleStatus: (id) => api.put(`/admin/utilisateurs/${id}/toggle-status`),
   delete: (id) => api.delete(`/admin/utilisateurs/${id}`),
+  inviteAdmin: (data) => api.post("/admin/utilisateurs/invite-admin", data),
 };
 
 export default api;

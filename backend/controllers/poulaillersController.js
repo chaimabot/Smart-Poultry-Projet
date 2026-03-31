@@ -1,8 +1,36 @@
 const Poulailler = require("../models/Poulailler");
+
 const Measure = require("../models/Measure");
 const Command = require("../models/Command");
 const SystemConfig = require("../models/SystemConfig");
 const Joi = require("joi");
+const mqttService = require("../services/mqttService");
+
+// FIX: BUG5 - Sync config thresholds to ESP32 after controlActuator
+
+async function syncConfig(poulaillerId, mqttService) {
+  try {
+    const poulailler = await Poulailler.findById(poulaillerId);
+    if (!poulailler) return;
+
+    const mqttClient = mqttService.getMqttClient();
+    if (mqttClient && mqttClient.connected) {
+      const id = poulailler.uniqueCode || poulailler._id;
+      const topic = `poulailler/${id}/config`;
+      const config = {
+        tempMax: poulailler.thresholds.temperatureMax || 28,
+        co2Max: poulailler.thresholds.co2Max || 2000,
+        nh3Max: poulailler.thresholds.nh3Max || 50,
+        airQualityMin: poulailler.thresholds.dustMax || 70, // map dust to airQuality
+        fanMode: poulailler.actuatorStates?.ventilation?.mode || "manual",
+      };
+      mqttClient.publish(topic, JSON.stringify(config), { qos: 1 });
+      console.log(`[SYNC CONFIG] ${topic}:`, config);
+    }
+  } catch (err) {
+    console.error("[SYNC CONFIG] Error:", err.message);
+  }
+}
 
 // Validation Joi pour la création/mise à jour de poulailler
 const poulaillerSchema = Joi.object({
@@ -383,7 +411,7 @@ exports.resetThresholds = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les mesures actuelles (simulées)
+// @desc    Obtenir les mesures actuelles (depuis MQTT ou dernière mesure)
 // @route   GET /api/poulaillers/:id/current-measures
 // @access  Private
 exports.getCurrentMeasures = async (req, res) => {
@@ -396,18 +424,42 @@ exports.getCurrentMeasures = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
 
-    const data = {
-      temperature: { current: 15 + Math.random() * 20, trend: "up" },
-      humidity: { current: 30 + Math.random() * 50, trend: "down" },
-      co2: { current: Math.floor(300 + Math.random() * 1800) },
-      nh3: { current: 2 + Math.random() * 30 },
-      dust: { current: Math.floor(10 + Math.random() * 200) },
-      waterLevel: { current: Math.floor(5 + Math.random() * 95) },
-      timestamp: new Date(),
-      actuatorStates: poulailler.actuatorStates,
-    };
+    if (poulailler.owner.toString() !== req.user.id) {
+      return res
+        .status(403)
+        .json({ success: false, error: "Accès non autorisé" });
+    }
 
-    res.status(200).json({ success: true, data });
+    // Utiliser les vraies mesures depuis lastMonitoring (syncronisées via MQTT)
+    if (poulailler.lastMonitoring && poulailler.lastMonitoring.timestamp) {
+      const data = {
+        temperature: {
+          current: poulailler.lastMonitoring.temperature,
+          trend: "stable",
+        },
+        humidity: {
+          current: poulailler.lastMonitoring.humidity,
+          trend: "stable",
+        },
+        co2: { current: poulailler.lastMonitoring.co2 },
+        nh3: { current: poulailler.lastMonitoring.nh3 },
+        dust: { current: poulailler.lastMonitoring.dust },
+        waterLevel: { current: poulailler.lastMonitoring.waterLevel },
+        timestamp: poulailler.lastMonitoring.timestamp,
+        actuatorStates: poulailler.actuatorStates,
+        status: "connected",
+      };
+      return res.status(200).json({ success: true, data });
+    }
+
+    // Si aucune mesure, retourner null avec status "not_connected"
+    res.status(200).json({
+      success: true,
+      data: null,
+      message:
+        "Aucune mesure disponible. Le module ESP32 n'est pas encore connecté.",
+      status: "not_connected",
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
@@ -502,6 +554,7 @@ exports.getMonitoringData = async (req, res) => {
         actuatorStates: {
           door: poulailler.actuatorStates.door.status,
           ventilation: poulailler.actuatorStates.ventilation.status,
+          lamp: poulailler.actuatorStates.lamp.status, // ← ajouter
         },
         history: history.map((m) => m.temperature ?? 0),
         historyFull: history,
@@ -526,10 +579,11 @@ exports.controlActuator = async (req, res) => {
         .json({ success: false, error: "actuator et state sont requis" });
     }
 
-    const validActuators = ["door", "ventilation"];
+    const validActuators = ["door", "ventilation", "lamp"];
     const validStates = {
       door: ["open", "closed"],
       ventilation: ["on", "off"],
+      lamp: ["on", "off"],
     };
 
     if (!validActuators.includes(actuator)) {
@@ -566,11 +620,51 @@ exports.controlActuator = async (req, res) => {
     }
     await poulailler.save();
 
+    // Publier MQTT vers ESP32 (format exact)
+    // Publier MQTT vers ESP32
+    const mqttClient = mqttService.getMqttClient();
+    if (mqttClient && mqttClient.connected) {
+      const poulaillerId = poulailler.uniqueCode || "POULAILLER_001";
+
+      //  CORRIGÉ — chaque actionneur a son propre topic
+      const topicMap = {
+        door: "door",
+        ventilation: "fan",
+        lamp: "lamp", // ← était "fan" avant, bug corrigé
+      };
+
+      const espTopic = `poulailler/${poulaillerId}/commands/${topicMap[actuator]}`;
+
+      const actionMapLocal = {
+        door: { open: "ouvrir", closed: "fermer" },
+        ventilation: { on: "demarrer", off: "arreter" },
+        lamp: { on: "on", off: "off" },
+      };
+
+      const mqttPayload = {
+        mode: mode || "manual",
+        action: actionMapLocal[actuator][state],
+      };
+
+      console.log(
+        `[MQTT PAYLOAD] actuator=${actuator} state=${state} action="${actionMapLocal[actuator][state]}"`,
+      ); // DEBUG
+      mqttClient.publish(espTopic, JSON.stringify(mqttPayload), { qos: 1 });
+      console.log(`[MQTT→ESP32] ${espTopic}: ${JSON.stringify(mqttPayload)}`);
+    } else {
+      console.warn("[MQTT] Client non connecté pour commande", actuator);
+    }
+
     const actionMap = {
       door: { open: "ouvrir", closed: "fermer" },
       ventilation: { on: "demarrer", off: "arreter" },
+      lamp: { on: "allumer", off: "eteindre" },
     };
-    const typeMap = { door: "porte", ventilation: "ventilateur" };
+    const typeMap = {
+      door: "porte",
+      ventilation: "ventilateur",
+      lamp: "lampe",
+    };
 
     await Command.create({
       poulailler: poulailler._id,
@@ -580,6 +674,9 @@ exports.controlActuator = async (req, res) => {
       source: "mobile-app",
       status: "sent",
     });
+
+    // FIX: BUG5 Sync thresholds after actuator control
+    await syncConfig(req.params.id, mqttService);
 
     res.status(200).json({
       success: true,

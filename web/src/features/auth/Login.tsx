@@ -1,5 +1,5 @@
 // src/features/auth/Login.tsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
@@ -7,11 +7,20 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [enable2FA, setEnable2FA] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
   const navigate = useNavigate();
+
+  // Check if user is already logged in
+  useEffect(() => {
+    const token = localStorage.getItem("adminToken");
+    const user = localStorage.getItem("adminUser");
+    if (token && user) {
+      // Already logged in, redirect to dashboard
+      navigate("/dashboard");
+    }
+  }, [navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +47,7 @@ export default function Login() {
         console.log("Authentification réussie ! Token stocké :", token);
 
         // Redirection vers le dashboard admin
-        navigate("/dashboard"); // ← Change ici si ton chemin est différent
+        navigate("/dashboard");
       } else {
         setError("Réponse inattendue du serveur");
       }
@@ -174,27 +183,6 @@ export default function Login() {
                   </span>
                 </button>
               </div>
-            </div>
-
-            {/* Toggle 2FA */}
-            <div className="flex items-center justify-between py-2">
-              <div>
-                <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-                  Authentification à deux facteurs
-                </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Application d'authentification requise
-                </p>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="sr-only peer"
-                  checked={enable2FA}
-                  onChange={() => setEnable2FA(!enable2FA)}
-                />
-                <div className="w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary peer-checked:after:border-white" />
-              </label>
             </div>
 
             {/* Bouton Soumettre */}

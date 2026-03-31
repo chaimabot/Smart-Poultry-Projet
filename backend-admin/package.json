@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node app.js",
     "dev": "nodemon app.js",
-    "seed": "node seeder.js"
+    "seed": "node seeder.js",
+    "create-admin": "node scripts/create-first-admin.js",
+    "create-indexes": "node scripts/create-indexes.js"
   },
   "keywords": [],
   "author": "",

@@ -1,40 +1,43 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const commandSchema = new mongoose.Schema({
+const commandSchema = new mongoose.Schema(
+  {
     poulailler: {
-        type: mongoose.Schema.ObjectId,
-        ref: 'Poulailler',
-        required: true
+      type: mongoose.Schema.ObjectId,
+      ref: "Poulailler",
+      required: true,
     },
     typeActionneur: {
-        type: String,
-        enum: ['porte', 'ventilateur'],
-        required: true
+      type: String,
+      enum: ["porte", "ventilateur", "lampe"], // ✅ ajouter 'lampe'
+      required: true,
     },
     action: {
-        type: String,
-        required: true // e.g., 'ouvrir', 'fermer', 'demarrer', 'arreter'
+      type: String,
+      required: true, // e.g., 'ouvrir', 'fermer', 'demarrer', 'arreter'
     },
     issuedBy: {
-        type: String, // 'system', 'user', 'scheduler'
-        default: 'system'
+      type: String, // 'system', 'user', 'scheduler'
+      default: "system",
     },
     issuedAt: {
-        type: Date,
-        default: Date.now
+      type: Date,
+      default: Date.now,
     },
     executedAt: {
-        type: Date,
-        default: null
+      type: Date,
+      default: null,
     },
     status: {
-        type: String,
-        enum: ['pending', 'sent', 'executed', 'failed'],
-        default: 'pending'
+      type: String,
+      enum: ["pending", "sent", "executed", "failed"],
+      default: "pending",
     },
-    source: String // e.g., 'mobile-app', 'automated-rule'
-}, {
-    timestamps: true
-});
+    source: String, // e.g., 'mobile-app', 'automated-rule'
+  },
+  {
+    timestamps: true,
+  },
+);
 
-module.exports = mongoose.model('Command', commandSchema);
+module.exports = mongoose.model("Command", commandSchema);

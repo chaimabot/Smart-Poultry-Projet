@@ -5,6 +5,7 @@ const Joi = require("joi");
 const bcrypt = require("bcryptjs");
 const Poulailler = require("../models/Poulailler");
 const emailService = require("../services/emailService");
+const logService = require("../services/logService");
 
 // Validation schemas
 const inviteSchema = Joi.object({
@@ -126,6 +127,14 @@ exports.inviteEleveur = async (req, res) => {
       // On continue même si l'email échoue
     }
 
+    // Log: qui a invité et qui a été invité
+    await logService.userCreated(
+      req.user?._id, // L'admin qui invite
+      user._id, // Le nouvel utilisateur invité
+      email, // Email du nouvel utilisateur
+      req.ip || req.connection?.remoteAddress,
+    );
+
     res.status(201).json({
       success: true,
       message: "Invitation envoyée avec succès",
@@ -202,7 +211,7 @@ exports.resendInvite = async (req, res) => {
   }
 };
 
-// @desc    Vérifier le token d'invitation (page publique)
+// @desc    Vérifier le token d'invitation (page publique) - pour eleveurs ET admins
 // @route   GET /api/admin/eleveurs/verify-invite
 // @access  Public
 exports.verifyInvite = async (req, res) => {
@@ -231,6 +240,7 @@ exports.verifyInvite = async (req, res) => {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        role: user.role, // Retourne le rôle pour permettre la redirection appropriée
       },
     });
   } catch (err) {
@@ -266,9 +276,8 @@ exports.completeInvite = async (req, res) => {
         .json({ success: false, error: "Lien expiré ou invalide" });
     }
 
-    // Hasher le mot de passe
-    const salt = await bcrypt.genSalt(10);
-    user.password = await bcrypt.hash(password, salt);
+    // Don't hash here - the model's pre-save hook will do it automatically
+    user.password = password;
     user.firstName = firstName;
     user.lastName = lastName;
     user.phone = phone || null;
@@ -494,6 +503,14 @@ exports.deleteEleveur = async (req, res) => {
         error: "Cet utilisateur n'est pas un élèveur",
       });
     }
+
+    // Log: qui a supprimé et qui a été supprimé
+    await logService.userDeleted(
+      req.user?._id,
+      eleveur._id,
+      eleveur.email,
+      req.ip || req.connection?.remoteAddress,
+    );
 
     // SUPPRIMER DÉFINITIVEMENT les poulaillers associés
     console.log(

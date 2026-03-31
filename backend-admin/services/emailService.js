@@ -35,18 +35,25 @@ async function getTransporter() {
   return transporter;
 }
 
-exports.sendInviteEmail = async (email, token, firstName) => {
+exports.sendInviteEmail = async (email, token, firstName, role = "eleveur") => {
   try {
     const transport = await getTransporter();
-    const resetLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/setup-password?token=${token}`;
+    const resetLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/definir-mot-de-passe/${token}`;
+
+    const roleLabel = role === "admin" ? "administrateur" : "éleveur";
+    const accountType =
+      role === "admin" ? "compte administrateur" : "compte élèveur";
 
     const mailOptions = {
       from: `"Smart Poultry Admin" <${process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@smartpoultry.com"}>`,
       to: email,
-      subject: "Activez votre compte Smart Poultry",
+      subject:
+        role === "admin"
+          ? "Activez votre compte Administrateur Smart Poultry"
+          : "Activez votre compte Smart Poultry",
       html: `
         <h2>Bonjour${firstName ? " " + firstName : ""},</h2>
-        <p>Un compte éleveur a été créé pour vous sur Smart Poultry.</p>
+        <p>Un ${accountType} a été créé pour vous sur Smart Poultry.</p>
         <p>Cliquez sur le lien ci-dessous pour définir votre mot de passe et activer votre compte :</p>
         <p style="margin: 20px 0;">
           <a href="${resetLink}" style="background:#0066cc; color:white; padding:12px 24px; text-decoration:none; border-radius:6px;">
@@ -66,6 +73,8 @@ exports.sendInviteEmail = async (email, token, firstName) => {
       email,
       "- Message ID:",
       info.messageId,
+      "- Role:",
+      role,
     );
 
     return { success: true, messageId: info.messageId };
