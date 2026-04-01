@@ -61,6 +61,7 @@ export default function DashboardScreen({ navigation }) {
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [allAlerts, setAllAlerts] = useState([]);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [poultryNotifications, setPoultryNotifications] = useState({}); // { poultryId: {unreadCount, lastDanger, lastWarn} }
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
@@ -150,6 +151,55 @@ export default function DashboardScreen({ navigation }) {
       console.error("Erreur globale fetchAllAlerts:", e);
     } finally {
       setLoadingAlerts(false);
+    }
+  };
+
+  // Load notification summary for each poulailler
+  const loadPoultryNotifications = async () => {
+    if (poultryList.length === 0) return;
+
+    try {
+      const notifData = {};
+      for (const poultry of poultryList) {
+        try {
+          const alerts = await getAlerts(poultry.id);
+          if (Array.isArray(alerts)) {
+            const unreadAlerts = alerts.filter((a) => !a.read);
+            const dangersorted = alerts
+              .filter((a) => a.severity === "danger")
+              .sort(
+                (a, b) =>
+                  new Date(b.timestamp) - new Date(a.timestamp)
+              );
+            const warns = alerts
+              .filter((a) => a.severity === "warn")
+              .sort(
+                (a, b) =>
+                  new Date(b.timestamp) - new Date(a.timestamp)
+              );
+
+            notifData[poultry.id] = {
+              unreadCount: unreadAlerts.length,
+              dangerCount: dangersorted.filter((a) => !a.read).length,
+              warnCount: warns.filter((a) => !a.read).length,
+              lastDanger: dangersorted[0] || null,
+              lastWarn: warns[0] || null,
+            };
+          }
+        } catch (err) {
+          console.error(`Error loading notifications for ${poultry.id}:`, err);
+          notifData[poultry.id] = {
+            unreadCount: 0,
+            dangerCount: 0,
+            warnCount: 0,
+            lastDanger: null,
+            lastWarn: null,
+          };
+        }
+      }
+      setPoultryNotifications(notifData);
+    } catch (error) {
+      console.error("Error loading poultry notifications:", error);
     }
   };
 

@@ -588,8 +588,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                   { label: "Total", value: stats.total, color: "#64748b" },
                   { label: "Non lues", value: stats.unread, color: "#ef4444" },
                   {
-                    label: "Critiques",
-                    value: stats.critical,
+                    label: "Danger",
+                    value: stats.danger || 0,
                     color: "#f97316",
                   },
                 ].map((s) => (
@@ -673,20 +673,32 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               alerts.map((item) => {
                 const isRead = item.isRead || item.read;
                 // Support new alert system: icon emoji + new severity levels
-                const iconEmoji = item.icon || (item.severity === "danger" ? "🔴" : item.severity === "warn" ? "⚠️" : "✅");
-                const severityColor = 
-                  item.severity === "danger" ? "#ef4444" :
-                  item.severity === "warn" ? "#f97316" :
-                  "#22C55E";
+                const iconEmoji =
+                  item.icon ||
+                  (item.severity === "danger"
+                    ? "🔴"
+                    : item.severity === "warn"
+                      ? "⚠️"
+                      : "✅");
+                const severityColor =
+                  item.severity === "danger"
+                    ? "#ef4444"
+                    : item.severity === "warn"
+                      ? "#f97316"
+                      : "#22C55E";
                 const severityLabel =
-                  item.severity === "danger" ? "DANGER" :
-                  item.severity === "warn" ? "AVERTISSEMENT" :
-                  "INFO";
+                  item.severity === "danger"
+                    ? "DANGER"
+                    : item.severity === "warn"
+                      ? "AVERTISSEMENT"
+                      : "INFO";
                 const severityBgColor =
-                  item.severity === "danger" ? "#ef444420" :
-                  item.severity === "warn" ? "#f9731620" :
-                  "#22C55E20";
-                
+                  item.severity === "danger"
+                    ? "#ef444420"
+                    : item.severity === "warn"
+                      ? "#f9731620"
+                      : "#22C55E20";
+
                 // Fallback to old system if needed
                 const isCrit =
                   item.severity === "critical" || item.type === "CRITIQUE";
@@ -694,7 +706,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                   icon: "warning",
                   color: "#f59e0b",
                 };
-                
+
                 return (
                   <TouchableOpacity
                     key={item._id}
@@ -708,7 +720,11 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                           backgroundColor: cardBg,
                           borderColor: isRead
                             ? borderCol
-                            : item.severity ? severityColor + "30" : (isCrit ? "#ef444430" : "#f9731630"),
+                            : item.severity
+                              ? severityColor + "30"
+                              : isCrit
+                                ? "#ef444430"
+                                : "#f9731630",
                         },
                         isRead && { opacity: 0.55 },
                       ]}
@@ -750,17 +766,31 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                             style={[
                               styles.severityBadge,
                               {
-                                backgroundColor: item.severity ? severityBgColor : (isCrit ? "#ef444420" : "#f9731620"),
+                                backgroundColor: item.severity
+                                  ? severityBgColor
+                                  : isCrit
+                                    ? "#ef444420"
+                                    : "#f9731620",
                               },
                             ]}
                           >
                             <Text
                               style={[
                                 styles.severityText,
-                                { color: item.severity ? severityColor : (isCrit ? "#ef4444" : "#f97316") },
+                                {
+                                  color: item.severity
+                                    ? severityColor
+                                    : isCrit
+                                      ? "#ef4444"
+                                      : "#f97316",
+                                },
                               ]}
                             >
-                              {item.severity ? severityLabel : (isCrit ? "CRITIQUE" : "ATTENTION")}
+                              {item.severity
+                                ? severityLabel
+                                : isCrit
+                                  ? "CRITIQUE"
+                                  : "ATTENTION"}
                             </Text>
                           </View>
                           <Text style={[styles.alertTime, { color: subCol }]}>
