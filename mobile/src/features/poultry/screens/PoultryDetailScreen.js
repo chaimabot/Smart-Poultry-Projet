@@ -458,7 +458,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setFan = (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
-    setTimeout(() => fetchPoultryInfo(), 2000);
+    setShowNotifPopup(true);
+    setTimeout(async () => {
+      await fetchPoultryInfo();
+      setTimeout(() => setShowNotifPopup(false), 500);
+    }, 1000);
   };
 
   // ── Handlers Lampe ───────────────────────────────────────────────────────
@@ -472,7 +476,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setLamp = (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
-    setTimeout(() => fetchPoultryInfo(), 2000);
+    setShowNotifPopup(true);
+    setTimeout(async () => {
+      await fetchPoultryInfo();
+      setTimeout(() => setShowNotifPopup(false), 500);
+    }, 1000);
   };
 
   // ── Handlers Porte ───────────────────────────────────────────────────────
@@ -480,6 +488,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const toggleDoor = (v) => {
     publishCommand("door", v);
     setActuators((p) => ({ ...p, door: v }));
+    setShowNotifPopup(true);
+    setTimeout(async () => {
+      await fetchPoultryInfo();
+      setTimeout(() => setShowNotifPopup(false), 500);
+    }, 1000);
   };
 
   // ── Mark all read ────────────────────────────────────────────────────────
