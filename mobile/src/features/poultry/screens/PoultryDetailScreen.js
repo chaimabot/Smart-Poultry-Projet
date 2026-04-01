@@ -19,7 +19,6 @@ import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import mqtt from "mqtt";
 import { getPoultryById, getAlerts } from "../../../services/poultry";
 import { createActuatorAlert } from "../../../services/poultry";
-import Toast from "../../../components/Toast";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -127,11 +126,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const [isConnected, setIsConnected] = useState(false);
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
-  const [toast, setToast] = useState({
-    visible: false,
-    message: "",
-    type: "success",
-  });
+  const [showNotifPopup, setShowNotifPopup] = useState(false);
   const [poultryInfo, setPoultryInfo] = useState({
     name: poultryName || "Poulailler Principal",
     location: "",
@@ -464,12 +459,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setFan = (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
-    setToast({
-      visible: true,
-      message: v ? "🌀 Ventilateur activé" : "Ventilateur désactivé",
-      type: "info",
-    });
     createActuatorAlert(poultryId, "fan", v);
+    setShowNotifPopup(true);
     setTimeout(async () => {
       await fetchPoultryInfo();
     }, 1000);
@@ -486,12 +477,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setLamp = (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
-    setToast({
-      visible: true,
-      message: v ? "💡 Lampe chauffante activée" : "Lampe chauffante désactivée",
-      type: "info",
-    });
     createActuatorAlert(poultryId, "lamp", v);
+    setShowNotifPopup(true);
     setTimeout(async () => {
       await fetchPoultryInfo();
     }, 1000);
@@ -502,12 +489,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const toggleDoor = (v) => {
     publishCommand("door", v);
     setActuators((p) => ({ ...p, door: v }));
-    setToast({
-      visible: true,
-      message: v ? "🚪 Porte ouverte" : "Porte fermée",
-      type: "info",
-    });
     createActuatorAlert(poultryId, "door", v);
+    setShowNotifPopup(true);
     setTimeout(async () => {
       await fetchPoultryInfo();
     }, 1000);
@@ -627,14 +610,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
         <View style={{ flexDirection: "row", gap: 8 }}>
           {/* Bouton Notification */}
           <TouchableOpacity
-            onPress={() => {
-              if (poultryId) {
-                navigation.navigate("AlertSettingsScreen", {
-                  poultryId,
-                  poultryName: poultryInfo.name || "Poulailler",
-                });
-              }
-            }}
+            onPress={() => setShowNotifPopup(true)}
             style={{
               width: 38,
               height: 38,
@@ -1925,13 +1901,23 @@ export default function PoultryDetailScreen({ route, navigation }) {
         </View>
       </ScrollView>
 
-      {/* ── Toast Notification ────────────────────────────────────────────── */}
-      <Toast
-        visible={toast.visible}
-        message={toast.message}
-        type={toast.type}
-        onHide={() => setToast({ ...toast, visible: false })}
-      />
+      {/* ── Notification Popup ─────────────────────────────────────────────── */}
+      {showNotifPopup && (
+        <NotificationPopup
+          alerts={alerts}
+          onClose={() => setShowNotifPopup(false)}
+          onMarkAllRead={markAllRead}
+          onViewAll={() => {
+            setShowNotifPopup(false);
+            if (poultryId) {
+              navigation.navigate("AlertSettingsScreen", {
+                poultryId,
+                poultryName: poultryInfo.name || "Poulailler",
+              });
+            }
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }
