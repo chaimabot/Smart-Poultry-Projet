@@ -17,8 +17,7 @@ import {
 } from "react-native-safe-area-context";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import mqtt from "mqtt";
-import { getPoultryById, getAlerts } from "../../../services/poultry";
-import { createActuatorAlert } from "../../../services/poultry";
+import { getPoultryById, getAlerts, createActuatorAlert, markAlertAsRead } from "../../../services/poultry";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -186,6 +185,18 @@ export default function PoultryDetailScreen({ route, navigation }) {
   }, []);
 
   // ── Fetch infos API ──────────────────────────────────────────────────────
+
+  const fetchAlerts = useCallback(async () => {
+    try {
+      const alertsData = await getAlerts(poultryId);
+      if (alertsData?.success && Array.isArray(alertsData.data)) {
+        setAlerts(alertsData.data);
+        setAlertCount(alertsData.data.filter((a) => !a.read).length);
+      }
+    } catch (e) {
+      console.warn("[API] fetchAlerts error:", e.message);
+    }
+  }, [poultryId]);
 
   const fetchPoultryInfo = useCallback(async () => {
     if (!poultryId) return;
@@ -456,14 +467,12 @@ export default function PoultryDetailScreen({ route, navigation }) {
     setActuators((p) => ({ ...p, fanAuto: v }));
   };
 
-  const setFan = (v) => {
+  const setFan = async (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
-    createActuatorAlert(poultryId, "fan", v);
+    await createActuatorAlert(poultryId, "fan", v);
+    await fetchAlerts();
     setShowNotifPopup(true);
-    setTimeout(async () => {
-      await fetchPoultryInfo();
-    }, 1000);
   };
 
   // ── Handlers Lampe ───────────────────────────────────────────────────────
@@ -474,27 +483,32 @@ export default function PoultryDetailScreen({ route, navigation }) {
     setActuators((p) => ({ ...p, lampAuto: v }));
   };
 
-  const setLamp = (v) => {
+  const setLamp = async (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
-    createActuatorAlert(poultryId, "lamp", v);
+    await createActuatorAlert(poultryId, "lamp", v);
+    await fetchAlerts();
     setShowNotifPopup(true);
-    setTimeout(async () => {
-      await fetchPoultryInfo();
-    }, 1000);
   };
 
   // ── Handlers Porte ───────────────────────────────────────────────────────
 
-  const toggleDoor = (v) => {
+  const toggleDoor = async (v) => {
     publishCommand("door", v);
     setActuators((p) => ({ ...p, door: v }));
-    createActuatorAlert(poultryId, "door", v);
+    await createActuatorAlert(poultryId, "door", v);
+    await fetchAlerts();
     setShowNotifPopup(true);
-    setTimeout(async () => {
-      await fetchPoultryInfo();
-    }, 1000);
   };
+
+  const markAllRead = useCallback(async () => {
+    try {
+      await markAlertAsRead(poultryId);
+      await fetchAlerts();
+    } catch (e) {
+      console.warn("[API] markAllRead error:", e.message);
+    }
+  }, [poultryId, fetchAlerts]);
 
   // ── Mark all read ────────────────────────────────────────────────────────
 
