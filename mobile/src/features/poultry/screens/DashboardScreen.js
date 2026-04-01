@@ -30,7 +30,6 @@ import { useFocusEffect } from "@react-navigation/native";
 import {
   getPoultries,
   getPoultriesSummary,
-  getCriticalPoultries,
   deletePoultry,
   archivePoultry,
   getAlerts,
@@ -39,6 +38,36 @@ import {
 import { getUserData } from "../../../services/auth";
 
 const { width } = Dimensions.get("window");
+
+// ── Capteurs réels : DHT22 / MQ-135 / HC-SR04 ────────────────────────────────
+// temperature, humidity, co2, nh3, waterLevel (pas de dust)
+
+/**
+ * Retourne un message lisible depuis une alerte.
+ * Évite d'afficher "undefined" quelles que soient les données reçues.
+ */
+const resolveAlertMessage = (alert) => {
+  if (alert.message && !alert.message.includes("undefined")) {
+    return alert.message;
+  }
+  const labels = {
+    temperature: "Température",
+    humidity: "Humidité",
+    co2: "CO₂",
+    nh3: "NH₃",
+    waterLevel: "Niveau d'eau",
+  };
+  if (alert.parameter && labels[alert.parameter]) {
+    const sev = alert.severity === "danger" ? "critique" : "avertissement";
+    return `${labels[alert.parameter]} — ${sev}`;
+  }
+  if (alert.type === "door") return "Événement porte détecté";
+  if (alert.type === "mqtt")
+    return alert.key?.includes("disconnect")
+      ? "Connexion MQTT perdue"
+      : "Reconnexion MQTT établie";
+  return "Alerte système";
+};
 
 export default function DashboardScreen({ navigation }) {
   const { darkMode, colors } = useTheme();
@@ -57,14 +86,15 @@ export default function DashboardScreen({ navigation }) {
     type: "success",
   });
 
-  // État pour le panneau de notifications
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [allAlerts, setAllAlerts] = useState([]);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
-  const [poultryNotifications, setPoultryNotifications] = useState({}); // { poultryId: {unreadCount, lastDanger, lastWarn} }
+  // { poultryId: { unreadCount, dangerCount, warnCount, lastDanger, lastWarn } }
+  const [poultryNotifications, setPoultryNotifications] = useState({});
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
+  // ── Fetch poultries ─────────────────────────────────────────────────────────
   const fetchPoultries = async () => {
     try {
       setLoading(true);
@@ -90,8 +120,8 @@ export default function DashboardScreen({ navigation }) {
             type: p.type,
             location: p.location || "Zone Élevage 1",
             count: p.animalCount || 0,
-            temp: p.lastMonitoring?.temperature?.toFixed(1) || "24.5",
-            humid: p.lastMonitoring?.humidity?.toFixed(0) || "62",
+            temp: p.lastMonitoring?.temperature?.toFixed(1) || "—",
+            humid: p.lastMonitoring?.humidity?.toFixed(0) || "—",
             isCritical: p.isCritical || false,
             image:
               p.photoUrl ||
@@ -108,32 +138,24 @@ export default function DashboardScreen({ navigation }) {
     }
   };
 
-  // Charger les alertes de TOUS les poulaillers + ajouter le nom
+  // ── Fetch all alerts (modal notifications) ──────────────────────────────────
   const fetchAllAlerts = async () => {
-    if (poultryList.length === 0) {
-      console.log("Aucun poulailler → pas d'alerte");
-      return;
-    }
-
+    if (poultryList.length === 0) return;
     try {
       setLoadingAlerts(true);
-      console.log("Chargement alertes pour", poultryList.length, "poulaillers");
-
       const alertsPromises = poultryList.map(async (p) => {
         try {
           const res = await getAlerts(p.id);
-          console.log(`Alertes pour ${p.name} (${p.id}):`, res);
-
-          if (res?.success && res.data) {
+          if (res?.success && Array.isArray(res.data)) {
             return res.data.map((alert) => ({
               ...alert,
-              poultryName: p.name, // ← Nom du poulailler
+              message: resolveAlertMessage(alert),
+              poultryName: p.name,
               poultryId: p.id,
             }));
           }
           return [];
-        } catch (err) {
-          console.log(`Erreur alertes pour ${p.name}:`, err);
+        } catch {
           return [];
         }
       });
@@ -141,53 +163,48 @@ export default function DashboardScreen({ navigation }) {
       const allResults = await Promise.all(alertsPromises);
       const alerts = allResults
         .flat()
-        .filter((a) => !a.isRead && !a.read)
+        .filter((a) => a.isRead !== true && a.read !== true)
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
         .slice(0, 20);
 
-      console.log("Alertes finales non lues :", alerts.length, alerts);
       setAllAlerts(alerts);
     } catch (e) {
-      console.error("Erreur globale fetchAllAlerts:", e);
+      console.error("fetchAllAlerts:", e);
     } finally {
       setLoadingAlerts(false);
     }
   };
 
-  // Load notification summary for each poulailler
+  // ── Load notification summary per poulailler (badge sur chaque carte) ────────
   const loadPoultryNotifications = async () => {
     if (poultryList.length === 0) return;
-
     try {
       const notifData = {};
       for (const poultry of poultryList) {
         try {
-          const alerts = await getAlerts(poultry.id);
-          if (Array.isArray(alerts)) {
-            const unreadAlerts = alerts.filter((a) => !a.read);
-            const dangersorted = alerts
-              .filter((a) => a.severity === "danger")
-              .sort(
-                (a, b) =>
-                  new Date(b.timestamp) - new Date(a.timestamp)
-              );
-            const warns = alerts
-              .filter((a) => a.severity === "warn")
-              .sort(
-                (a, b) =>
-                  new Date(b.timestamp) - new Date(a.timestamp)
-              );
+          const res = await getAlerts(poultry.id);
+          // getAlerts retourne { success, data: [...] }
+          const alerts =
+            res?.success && Array.isArray(res.data) ? res.data : [];
 
-            notifData[poultry.id] = {
-              unreadCount: unreadAlerts.length,
-              dangerCount: dangersorted.filter((a) => !a.read).length,
-              warnCount: warns.filter((a) => !a.read).length,
-              lastDanger: dangersorted[0] || null,
-              lastWarn: warns[0] || null,
-            };
-          }
-        } catch (err) {
-          console.error(`Error loading notifications for ${poultry.id}:`, err);
+          const unread = alerts.filter(
+            (a) => a.read !== true && a.isRead !== true,
+          );
+          const dangers = alerts
+            .filter((a) => a.severity === "danger")
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          const warns = alerts
+            .filter((a) => a.severity === "warn")
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+          notifData[poultry.id] = {
+            unreadCount: unread.length,
+            dangerCount: unread.filter((a) => a.severity === "danger").length,
+            warnCount: unread.filter((a) => a.severity === "warn").length,
+            lastDanger: dangers[0] || null,
+            lastWarn: warns[0] || null,
+          };
+        } catch {
           notifData[poultry.id] = {
             unreadCount: 0,
             dangerCount: 0,
@@ -199,7 +216,7 @@ export default function DashboardScreen({ navigation }) {
       }
       setPoultryNotifications(notifData);
     } catch (error) {
-      console.error("Error loading poultry notifications:", error);
+      console.error("loadPoultryNotifications:", error);
     }
   };
 
@@ -209,10 +226,10 @@ export default function DashboardScreen({ navigation }) {
     }, []),
   );
 
-  // Charger les alertes dès que la liste est prête + quand le modal s'ouvre
   useEffect(() => {
     if (poultryList.length > 0) {
       fetchAllAlerts();
+      loadPoultryNotifications(); // ← appelé ici
     }
   }, [poultryList]);
 
@@ -220,13 +237,14 @@ export default function DashboardScreen({ navigation }) {
     if (notificationsVisible && poultryList.length > 0) {
       fetchAllAlerts();
     }
-  }, [notificationsVisible, poultryList]);
+  }, [notificationsVisible]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     fetchPoultries();
   }, []);
 
+  // ── Menu actions ────────────────────────────────────────────────────────────
   const handleMenuPress = (poultryId) => {
     Alert.alert("Actions", "Sélectionnez une action", [
       { text: "Annuler", style: "cancel" },
@@ -241,19 +259,18 @@ export default function DashboardScreen({ navigation }) {
   };
 
   const handleModifyPoultry = (poultryId) => {
-    const poultryToEdit = poultryList.find((p) => p.id === poultryId);
-    if (poultryToEdit) {
+    const p = poultryList.find((x) => x.id === poultryId);
+    if (p)
       navigation.navigate("AddPoultry", {
         poultry: {
-          id: poultryToEdit.id,
-          name: poultryToEdit.name,
-          type: poultryToEdit.type,
-          location: poultryToEdit.location,
-          count: poultryToEdit.count,
-          image: poultryToEdit.image,
+          id: p.id,
+          name: p.name,
+          type: p.type,
+          location: p.location,
+          count: p.count,
+          image: p.image,
         },
       });
-    }
   };
 
   const handleArchivePoultry = async (poultryId) => {
@@ -273,7 +290,7 @@ export default function DashboardScreen({ navigation }) {
               });
               setPoultryList((prev) => prev.filter((p) => p.id !== poultryId));
             }
-          } catch (e) {
+          } catch {
             setToast({ visible: true, message: "Erreur", type: "error" });
           } finally {
             setActionInProgress(null);
@@ -302,7 +319,7 @@ export default function DashboardScreen({ navigation }) {
               setPoultryList((prev) => prev.filter((p) => p.id !== poultryId));
               fetchPoultries();
             }
-          } catch (e) {
+          } catch {
             setToast({ visible: true, message: "Erreur", type: "error" });
           } finally {
             setActionInProgress(null);
@@ -321,22 +338,23 @@ export default function DashboardScreen({ navigation }) {
         ),
       );
     } catch (e) {
-      console.log("Erreur mark as read:", e);
+      console.log("mark as read:", e);
     }
   };
 
+  // ── Filters ─────────────────────────────────────────────────────────────────
   const getFilteredPoultry = () => {
     let filtered = poultryList;
-    if (activeFilter === "alerts") {
+    if (activeFilter === "alerts")
       filtered = filtered.filter((p) => p.isCritical);
-    } else if (activeFilter === "connected") {
+    if (activeFilter === "connected")
       filtered = filtered.filter((p) => !p.isCritical);
-    }
     if (searchQuery) {
+      const q = searchQuery.toLowerCase();
       filtered = filtered.filter(
         (p) =>
-          p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          p.location.toLowerCase().includes(searchQuery.toLowerCase()),
+          p.name.toLowerCase().includes(q) ||
+          p.location.toLowerCase().includes(q),
       );
     }
     return filtered;
@@ -349,7 +367,7 @@ export default function DashboardScreen({ navigation }) {
     <View style={styles.container}>
       <StatusBar style="dark" />
       <SafeAreaView style={styles.safeArea}>
-        {/* Header */}
+        {/* ── Header ──────────────────────────────────────────────────────── */}
         <View style={styles.topHeader}>
           <Text style={styles.topHeaderTitle}>Mes Poulaillers</Text>
           <View style={styles.headerIcons}>
@@ -360,7 +378,6 @@ export default function DashboardScreen({ navigation }) {
               <Ionicons name="archive-outline" size={24} color="#334155" />
             </TouchableOpacity>
 
-            {/* Bouton notifications */}
             <TouchableOpacity
               style={styles.iconBtn}
               onPress={() => setNotificationsVisible(true)}
@@ -438,71 +455,46 @@ export default function DashboardScreen({ navigation }) {
             style={styles.filterContainer}
             contentContainerStyle={styles.filterContent}
           >
-            <TouchableOpacity
-              style={[
-                styles.filterChip,
-                activeFilter === "all" && styles.filterChipActive,
-              ]}
-              onPress={() => setActiveFilter("all")}
-            >
-              <Ionicons
-                name="grid-outline"
-                size={16}
-                color={activeFilter === "all" ? "#FFF" : "#64748B"}
-              />
-              <Text
+            {[
+              {
+                key: "all",
+                icon: "grid-outline",
+                label: `Tous (${stats.total})`,
+              },
+              {
+                key: "connected",
+                icon: "pulse-outline",
+                label: `Connectés (${stats.active})`,
+              },
+              {
+                key: "alerts",
+                icon: "alert-circle-outline",
+                label: `Alertes (${stats.alerts})`,
+              },
+            ].map(({ key, icon, label }) => (
+              <TouchableOpacity
+                key={key}
                 style={[
-                  styles.filterChipText,
-                  activeFilter === "all" && styles.filterChipTextActive,
+                  styles.filterChip,
+                  activeFilter === key && styles.filterChipActive,
                 ]}
+                onPress={() => setActiveFilter(key)}
               >
-                Tous ({stats.total})
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.filterChip,
-                activeFilter === "connected" && styles.filterChipActive,
-              ]}
-              onPress={() => setActiveFilter("connected")}
-            >
-              <Ionicons
-                name="pulse-outline"
-                size={16}
-                color={activeFilter === "connected" ? "#FFF" : "#64748B"}
-              />
-              <Text
-                style={[
-                  styles.filterChipText,
-                  activeFilter === "connected" && styles.filterChipTextActive,
-                ]}
-              >
-                Connectés ({stats.active})
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.filterChip,
-                activeFilter === "alerts" && styles.filterChipActive,
-              ]}
-              onPress={() => setActiveFilter("alerts")}
-            >
-              <Ionicons
-                name="alert-circle-outline"
-                size={16}
-                color={activeFilter === "alerts" ? "#FFF" : "#64748B"}
-              />
-              <Text
-                style={[
-                  styles.filterChipText,
-                  activeFilter === "alerts" && styles.filterChipTextActive,
-                ]}
-              >
-                Alertes ({stats.alerts})
-              </Text>
-            </TouchableOpacity>
+                <Ionicons
+                  name={icon}
+                  size={16}
+                  color={activeFilter === key ? "#FFF" : "#64748B"}
+                />
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    activeFilter === key && styles.filterChipTextActive,
+                  ]}
+                >
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </ScrollView>
 
           {/* Stats */}
@@ -533,7 +525,7 @@ export default function DashboardScreen({ navigation }) {
             />
           </View>
 
-          {/* Section */}
+          {/* Section header */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Vos Unités</Text>
             <TouchableOpacity
@@ -546,7 +538,7 @@ export default function DashboardScreen({ navigation }) {
             </TouchableOpacity>
           </View>
 
-          {/* Cards list */}
+          {/* Cards */}
           {filteredPoultry.length === 0 ? (
             <View
               style={[
@@ -588,6 +580,7 @@ export default function DashboardScreen({ navigation }) {
                   { backgroundColor: darkMode ? "#1e293b" : "#fff" },
                 ]}
               >
+                {/* Image */}
                 <View style={styles.cardImageContainer}>
                   <Image
                     source={{ uri: item.image }}
@@ -607,6 +600,7 @@ export default function DashboardScreen({ navigation }) {
                 </View>
 
                 <View style={styles.cardContent}>
+                  {/* Header */}
                   <View style={styles.cardHeaderRow}>
                     <View>
                       <Text
@@ -665,6 +659,71 @@ export default function DashboardScreen({ navigation }) {
                     </TouchableOpacity>
                   </View>
 
+                  {/* ── Notification summary block ── */}
+                  {(() => {
+                    const notif = poultryNotifications[item.id];
+                    if (!notif || notif.unreadCount === 0) return null;
+
+                    const isDanger = notif.dangerCount > 0;
+                    const lastAlert = isDanger
+                      ? notif.lastDanger
+                      : notif.lastWarn;
+                    const msg = lastAlert
+                      ? resolveAlertMessage(lastAlert)
+                      : null;
+
+                    return (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          backgroundColor: isDanger ? "#FEF2F2" : "#FFF7ED",
+                          borderRadius: 12,
+                          padding: 10,
+                          marginBottom: 12,
+                          gap: 8,
+                        }}
+                      >
+                        <MaterialIcons
+                          name={isDanger ? "error-outline" : "warning-amber"}
+                          size={16}
+                          color={isDanger ? "#EF4444" : "#F97316"}
+                        />
+                        <Text
+                          style={{
+                            flex: 1,
+                            fontSize: 11,
+                            fontWeight: "600",
+                            color: isDanger ? "#EF4444" : "#F97316",
+                          }}
+                          numberOfLines={1}
+                        >
+                          {msg ||
+                            (isDanger ? "Alerte critique" : "Avertissement")}
+                        </Text>
+                        <View
+                          style={{
+                            backgroundColor: isDanger ? "#EF4444" : "#F97316",
+                            borderRadius: 10,
+                            paddingHorizontal: 6,
+                            paddingVertical: 2,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: "#fff",
+                              fontSize: 10,
+                              fontWeight: "800",
+                            }}
+                          >
+                            {notif.unreadCount}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })()}
+
+                  {/* Metrics — DHT22 : temp + humidity */}
                   <View style={styles.metricsRow}>
                     <View
                       style={[
@@ -698,7 +757,7 @@ export default function DashboardScreen({ navigation }) {
                             },
                           ]}
                         >
-                          {item.temp}°C
+                          {item.temp !== "—" ? `${item.temp}°C` : "—"}
                         </Text>
                       </View>
                     </View>
@@ -734,12 +793,13 @@ export default function DashboardScreen({ navigation }) {
                             },
                           ]}
                         >
-                          {item.humid}%
+                          {item.humid !== "—" ? `${item.humid}%` : "—"}
                         </Text>
                       </View>
                     </View>
                   </View>
 
+                  {/* Footer */}
                   <View
                     style={[
                       styles.cardFooter,
@@ -766,7 +826,7 @@ export default function DashboardScreen({ navigation }) {
                     <Text
                       style={[
                         styles.footerUpdateText,
-                        { color: darkMode ? colors.slate500 : colors.slate500 },
+                        { color: colors.slate500 },
                       ]}
                     >
                       Mis à jour il y a {item.lastUpdated}
@@ -793,7 +853,7 @@ export default function DashboardScreen({ navigation }) {
         <DashboardBottomNav navigation={navigation} alertCount={stats.alerts} />
       </SafeAreaView>
 
-      {/* MODAL NOTIFICATIONS */}
+      {/* ── MODAL NOTIFICATIONS ─────────────────────────────────────────────── */}
       <Modal visible={notificationsVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View
@@ -821,106 +881,161 @@ export default function DashboardScreen({ navigation }) {
                 <View style={{ padding: 40, alignItems: "center" }}>
                   <ActivityIndicator size="large" color="#22C55E" />
                 </View>
-              ) : allAlerts.length === 0 ? (
-                <View style={{ padding: 40, alignItems: "center" }}>
-                  <Ionicons
-                    name="notifications-off-outline"
-                    size={40}
-                    color="#94a3b8"
-                  />
-                  <Text
-                    style={[
-                      styles.emptyText,
-                      { color: "#94a3b8", marginTop: 12 },
-                    ]}
-                  >
-                    Aucune alerte non lue
-                  </Text>
-                </View>
               ) : (
-                allAlerts.map((alert) => {
-                  const isRead = alert.isRead || alert.read;
-                  const isCrit =
-                    alert.severity === "critical" || alert.type === "CRITIQUE";
+                (() => {
+                  // Grouper par poulailler → une ligne par poulailler
+                  const grouped = {};
+                  allAlerts.forEach((alert) => {
+                    const pid = alert.poultryId;
+                    if (!grouped[pid]) {
+                      grouped[pid] = {
+                        poultryId: pid,
+                        poultryName: alert.poultryName || "Poulailler",
+                        unreadCount: 0,
+                        latest: null,
+                      };
+                    }
+                    grouped[pid].unreadCount += 1;
+                    // Garder la plus récente
+                    if (
+                      !grouped[pid].latest ||
+                      new Date(alert.createdAt) >
+                        new Date(grouped[pid].latest.createdAt)
+                    ) {
+                      grouped[pid].latest = alert;
+                    }
+                  });
 
-                  return (
-                    <TouchableOpacity
-                      key={alert._id}
-                      onPress={() => {
-                        if (!isRead) handleMarkAlertAsRead(alert._id);
-                        navigation.navigate("PoultryDetail", {
-                          poultryId: alert.poultryId,
-                          poultryName: alert.poultryName,
-                        });
-                        setNotificationsVisible(false);
-                      }}
-                      activeOpacity={isRead ? 1 : 0.7}
-                      style={[
-                        styles.alertItem,
-                        { backgroundColor: darkMode ? "#0f172a" : "#f8fafc" },
-                        isRead && { opacity: 0.5 },
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.alertIcon,
-                          {
-                            backgroundColor: isCrit ? "#ef444420" : "#f9731620",
-                          },
-                        ]}
-                      >
-                        <MaterialIcons
-                          name={isCrit ? "error" : "warning"}
-                          size={20}
-                          color={isCrit ? "#ef4444" : "#f97316"}
+                  const rows = Object.values(grouped);
+
+                  if (rows.length === 0) {
+                    return (
+                      <View style={{ padding: 40, alignItems: "center" }}>
+                        <Ionicons
+                          name="notifications-off-outline"
+                          size={40}
+                          color="#94a3b8"
                         />
-                      </View>
-
-                      <View style={{ flex: 1 }}>
-                        {/* Nom du poulailler */}
-                        <Text
-                          style={{
-                            fontSize: 13,
-                            fontWeight: "700",
-                            color: darkMode ? "#94a3b8" : "#64748b",
-                            marginBottom: 4,
-                          }}
-                        >
-                          {alert.poultryName || "Poulailler inconnu"}
-                        </Text>
-
                         <Text
                           style={[
-                            styles.alertMsg,
+                            styles.emptyText,
+                            { color: "#94a3b8", marginTop: 12 },
+                          ]}
+                        >
+                          Aucune alerte non lue
+                        </Text>
+                      </View>
+                    );
+                  }
+
+                  return rows.map(
+                    ({ poultryId, poultryName, unreadCount, latest }) => {
+                      const isDanger = latest?.severity === "danger";
+                      const iconColor = isDanger ? "#ef4444" : "#f97316";
+                      const iconBg = isDanger ? "#ef444420" : "#f9731620";
+                      const iconName = isDanger ? "error" : "warning";
+                      const msg = resolveAlertMessage(latest);
+
+                      return (
+                        <TouchableOpacity
+                          key={poultryId}
+                          onPress={() => {
+                            navigation.navigate("PoultryDetail", {
+                              poultryId,
+                              poultryName,
+                            });
+                            setNotificationsVisible(false);
+                          }}
+                          activeOpacity={0.7}
+                          style={[
+                            styles.alertItem,
                             {
-                              color: darkMode ? colors.white : colors.slate900,
+                              backgroundColor: darkMode ? "#0f172a" : "#f8fafc",
                             },
                           ]}
                         >
-                          {alert.message || alert.type || "Alerte système"}
-                        </Text>
+                          {/* Icône severité */}
+                          <View
+                            style={[
+                              styles.alertIcon,
+                              { backgroundColor: iconBg },
+                            ]}
+                          >
+                            <MaterialIcons
+                              name={iconName}
+                              size={20}
+                              color={iconColor}
+                            />
+                          </View>
 
-                        <Text style={[styles.alertTime, { color: "#94a3b8" }]}>
-                          {new Date(alert.createdAt).toLocaleString("fr-FR", {
-                            day: "2-digit",
-                            month: "2-digit",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </Text>
-                      </View>
+                          {/* Contenu */}
+                          <View style={{ flex: 1 }}>
+                            <Text
+                              style={{
+                                fontSize: 13,
+                                fontWeight: "700",
+                                color: darkMode ? "#94a3b8" : "#64748b",
+                                marginBottom: 3,
+                              }}
+                            >
+                              {poultryName}
+                            </Text>
+                            <Text
+                              style={[
+                                styles.alertMsg,
+                                {
+                                  color: darkMode
+                                    ? colors.white
+                                    : colors.slate900,
+                                },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {msg}
+                            </Text>
+                            <Text
+                              style={[styles.alertTime, { color: "#94a3b8" }]}
+                            >
+                              {new Date(latest.createdAt).toLocaleString(
+                                "fr-FR",
+                                {
+                                  day: "2-digit",
+                                  month: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                },
+                              )}
+                            </Text>
+                          </View>
 
-                      {!isRead && (
-                        <View
-                          style={[
-                            styles.unreadDot,
-                            { backgroundColor: isCrit ? "#ef4444" : "#f97316" },
-                          ]}
-                        />
-                      )}
-                    </TouchableOpacity>
+                          {/* Badge count non lues */}
+                          <View
+                            style={{
+                              backgroundColor: iconColor,
+                              borderRadius: 12,
+                              minWidth: 24,
+                              height: 24,
+                              alignItems: "center",
+                              justifyContent: "center",
+                              paddingHorizontal: 6,
+                              marginLeft: 8,
+                            }}
+                          >
+                            <Text
+                              style={{
+                                color: "#fff",
+                                fontSize: 11,
+                                fontWeight: "800",
+                              }}
+                            >
+                              {unreadCount}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    },
                   );
-                })
+                })()
               )}
             </ScrollView>
           </View>
@@ -937,6 +1052,7 @@ export default function DashboardScreen({ navigation }) {
   );
 }
 
+// ── StatCard ──────────────────────────────────────────────────────────────────
 const StatCard = ({ label, value, icon, trend, color, iconColor }) => (
   <View style={styles.statCard}>
     <View style={[styles.statIconContainer, { backgroundColor: color }]}>
@@ -957,6 +1073,7 @@ const StatCard = ({ label, value, icon, trend, color, iconColor }) => (
   </View>
 );
 
+// ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAF9" },
   safeArea: { flex: 1 },
@@ -1200,8 +1317,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   emptyStateBtnText: { color: "#fff", fontWeight: "600" },
-
-  // Modal styles
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",

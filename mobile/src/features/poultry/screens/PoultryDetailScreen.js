@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Animated,
   Platform,
+  Modal,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -124,6 +125,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const [isConnected, setIsConnected] = useState(false);
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
+  const [showNotifPopup, setShowNotifPopup] = useState(false);
   const [poultryInfo, setPoultryInfo] = useState({
     name: poultryName || "Poulailler Principal",
     location: "",
@@ -153,7 +155,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   });
 
   // ── Door state ───────────────────────────────────────────────────────────
-  const [doorMode, setDoorMode] = useState("horaire"); // "horaire" | "manu"
+  const [doorMode, setDoorMode] = useState("horaire");
   const [doorSchedule, setDoorSchedule] = useState({
     openHour: 7,
     openMinute: 0,
@@ -199,12 +201,10 @@ export default function PoultryDetailScreen({ route, navigation }) {
       console.warn("[API] getPoultryById error:", e.message);
     }
     try {
-      // Fetch alerts with full details
       const alertsData = await getAlerts(poultryId);
-      if (Array.isArray(alertsData)) {
-        setAlerts(alertsData);
-        const unreadCount = alertsData.filter((a) => !a.read).length;
-        setAlertCount(unreadCount);
+      if (alertsData?.success && Array.isArray(alertsData.data)) {
+        setAlerts(alertsData.data);
+        setAlertCount(alertsData.data.filter((a) => !a.read).length);
       }
     } catch (e) {
       console.warn("[API] getAlerts error:", e.message);
@@ -264,7 +264,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 status: calculateSensorStatus(sensor.key, numVal),
               };
             });
-            setAlertCount(updated.filter((s) => s.status !== "normal").length);
             return updated;
           });
         }
@@ -341,7 +340,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
     (triggeredBy = "manual") => {
       const client = mqttClientRef.current;
 
-      // Vérification condition température
       if (feeder.tempConditionEnabled) {
         const tempSensor = sensors.find((s) => s.key === "temperature");
         const currentTemp = parseFloat(tempSensor?.value);
@@ -378,13 +376,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
       setTimeout(() => {
         setFeeder((prev) => ({ ...prev, isDistributing: false }));
       }, feeder.durationSec * 1000);
-
-      console.log("[FEEDER] Published:", topic, payload);
     },
     [feeder, sensors],
   );
 
-  // Vérificateur d'horaires (tourne toutes les 30 secondes)
+  // Vérificateur d'horaires
   useEffect(() => {
     const interval = setInterval(() => {
       const now = new Date();
@@ -399,29 +395,24 @@ export default function PoultryDetailScreen({ route, navigation }) {
         }
       });
 
-      // [DOOR] Check scheduled door times every 30s
       if (doorMode === "horaire") {
         const nowHour = now.getHours();
         const nowMinute = now.getMinutes();
 
-        // Check if current time matches open time
         if (
           nowHour === doorSchedule.openHour &&
           nowMinute === doorSchedule.openMinute &&
           now.getSeconds() < 30
         ) {
           publishCommand("door", true);
-          console.log("[DOOR] Scheduled OPEN triggered");
         }
 
-        // Check if current time matches close time
         if (
           nowHour === doorSchedule.closeHour &&
           nowMinute === doorSchedule.closeMinute &&
           now.getSeconds() < 30
         ) {
           publishCommand("door", false);
-          console.log("[DOOR] Scheduled CLOSE triggered");
         }
       }
     }, 30000);
@@ -467,6 +458,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setFan = (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
+    setTimeout(() => fetchPoultryInfo(), 2000);
   };
 
   // ── Handlers Lampe ───────────────────────────────────────────────────────
@@ -480,6 +472,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setLamp = (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
+    setTimeout(() => fetchPoultryInfo(), 2000);
   };
 
   // ── Handlers Porte ───────────────────────────────────────────────────────
@@ -488,6 +481,13 @@ export default function PoultryDetailScreen({ route, navigation }) {
     publishCommand("door", v);
     setActuators((p) => ({ ...p, door: v }));
   };
+
+  // ── Mark all read ────────────────────────────────────────────────────────
+
+  const markAllRead = useCallback(() => {
+    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+    setAlertCount(0);
+  }, []);
 
   // ── Refresh ──────────────────────────────────────────────────────────────
 
@@ -594,13 +594,9 @@ export default function PoultryDetailScreen({ route, navigation }) {
         </View>
 
         <View style={{ flexDirection: "row", gap: 8 }}>
+          {/* Bouton Notification */}
           <TouchableOpacity
-            onPress={() =>
-              navigation.navigate("Alerts", {
-                poultryId,
-                poultryName: poultryInfo.name,
-              })
-            }
+            onPress={() => setShowNotifPopup(true)}
             style={{
               width: 38,
               height: 38,
@@ -608,23 +604,42 @@ export default function PoultryDetailScreen({ route, navigation }) {
               backgroundColor: "#F1F5F9",
               alignItems: "center",
               justifyContent: "center",
+              position: "relative",
             }}
+            activeOpacity={0.7}
           >
-            <Ionicons name="notifications-outline" size={20} color="#1E293B" />
+            <Ionicons
+              name={alertCount > 0 ? "notifications" : "notifications-outline"}
+              size={22}
+              color="#1E293B"
+            />
             {alertCount > 0 && (
               <View
                 style={{
                   position: "absolute",
-                  top: 7,
-                  right: 7,
-                  width: 8,
-                  height: 8,
-                  borderRadius: 4,
+                  top: 6,
+                  right: 6,
+                  minWidth: 16,
+                  height: 16,
+                  borderRadius: 8,
                   backgroundColor: "#EF4444",
                   borderWidth: 1.5,
                   borderColor: "#fff",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
-              />
+              >
+                <Text
+                  style={{
+                    color: "#fff",
+                    fontSize: 9,
+                    fontWeight: "700",
+                    lineHeight: 13,
+                  }}
+                >
+                  {alertCount > 99 ? "99+" : alertCount}
+                </Text>
+              </View>
             )}
           </TouchableOpacity>
 
@@ -1082,10 +1097,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
               </TouchableOpacity>
             </View>
 
-            {/* Mode HORAIRE: Time schedule display */}
             {doorMode === "horaire" && (
               <View style={{ marginBottom: 14 }}>
-                <View style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}>
+                <View
+                  style={{ flexDirection: "row", gap: 10, marginBottom: 14 }}
+                >
                   {[
                     { label: "Ouverture", key: "open" },
                     { label: "Fermeture", key: "close" },
@@ -1112,12 +1128,13 @@ export default function PoultryDetailScreen({ route, navigation }) {
                       >
                         {item.label}
                       </Text>
-
-                      {/* Hour and Minute spinners */}
                       <View
-                        style={{ flexDirection: "row", alignItems: "center", gap: 3 }}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 3,
+                        }}
                       >
-                        {/* Hour */}
                         <View style={{ alignItems: "center", flex: 1 }}>
                           <TouchableOpacity
                             onPress={() => {
@@ -1152,7 +1169,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
                             {pad(
                               item.key === "open"
                                 ? doorSchedule.openHour
-                                : doorSchedule.closeHour
+                                : doorSchedule.closeHour,
                             )}
                           </Text>
                           <TouchableOpacity
@@ -1188,7 +1205,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                           :
                         </Text>
 
-                        {/* Minute */}
                         <View style={{ alignItems: "center", flex: 1 }}>
                           <TouchableOpacity
                             onPress={() => {
@@ -1223,7 +1239,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
                             {pad(
                               item.key === "open"
                                 ? doorSchedule.openMinute
-                                : doorSchedule.closeMinute
+                                : doorSchedule.closeMinute,
                             )}
                           </Text>
                           <TouchableOpacity
@@ -1265,11 +1281,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
                     gap: 6,
                   }}
                 >
-                  <MaterialIcons
-                    name="info"
-                    size={16}
-                    color="#22C55E"
-                  />
+                  <MaterialIcons name="info" size={16} color="#22C55E" />
                   <Text
                     style={{
                       fontSize: 11,
@@ -1278,13 +1290,13 @@ export default function PoultryDetailScreen({ route, navigation }) {
                       flex: 1,
                     }}
                   >
-                    La porte s'ouvrira/fermera automatiquement aux horaires définis
+                    La porte s'ouvrira/fermera automatiquement aux horaires
+                    définis
                   </Text>
                 </View>
               </View>
             )}
 
-            {/* Mode MANU: Buttons only */}
             {doorMode === "manu" && (
               <View style={{ flexDirection: "row", gap: 8 }}>
                 <TouchableOpacity
@@ -1306,7 +1318,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 >
                   <MaterialIcons name="lock-open" size={16} color="#22C55E" />
                   <Text
-                    style={{ fontSize: 12, fontWeight: "700", color: "#22C55E" }}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: "#22C55E",
+                    }}
                   >
                     Ouvrir
                   </Text>
@@ -1331,7 +1347,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 >
                   <MaterialIcons name="lock" size={16} color="#94A3B8" />
                   <Text
-                    style={{ fontSize: 12, fontWeight: "700", color: "#64748B" }}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: "700",
+                      color: "#64748B",
+                    }}
                   >
                     Fermer
                   </Text>
@@ -1341,9 +1361,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
           </View>
         </View>
 
-        {/* ═══════════════════════════════════════════════════════════════════ */}
-        {/* Distributeur de nourriture                                        */}
-        {/* ═══════════════════════════════════════════════════════════════════ */}
+        {/* Distributeur de nourriture */}
         <SectionLabel>Distributeur de nourriture</SectionLabel>
         <View style={[card, { marginBottom: 24 }]}>
           {/* En-tête */}
@@ -1513,7 +1531,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
             <Toggle value={feeder.tempConditionEnabled} />
           </TouchableOpacity>
 
-          {/* Seuil température — visible si condition activée */}
           {feeder.tempConditionEnabled && (
             <View
               style={{
@@ -1593,7 +1610,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
             </View>
           )}
 
-          {/* Séparateur */}
           <View
             style={{ height: 1, backgroundColor: "#F1F5F9", marginBottom: 14 }}
           />
@@ -1679,7 +1695,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 borderColor: schedule.enabled ? "#22C55E30" : "#F1F5F9",
               }}
             >
-              {/* Toggle activé */}
               <TouchableOpacity
                 onPress={() =>
                   updateSchedule(schedule.id, "enabled", !schedule.enabled)
@@ -1688,7 +1703,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 <Toggle value={schedule.enabled} />
               </TouchableOpacity>
 
-              {/* Heure — boutons +/- */}
               <View
                 style={{ flexDirection: "row", alignItems: "center", gap: 3 }}
               >
@@ -1747,7 +1761,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                   :
                 </Text>
 
-                {/* Minutes */}
                 <View style={{ alignItems: "center" }}>
                   <TouchableOpacity
                     onPress={() =>
@@ -1793,7 +1806,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 </View>
               </View>
 
-              {/* Label */}
               <Text
                 style={{
                   flex: 1,
@@ -1806,7 +1818,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 {schedule.enabled ? "● Actif" : "○ Désactivé"}
               </Text>
 
-              {/* Supprimer */}
               <TouchableOpacity
                 onPress={() => removeSchedule(schedule.id)}
                 style={{
@@ -1827,7 +1838,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
             </View>
           ))}
 
-          {/* Séparateur */}
           <View
             style={{
               height: 1,
@@ -1836,7 +1846,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             }}
           />
 
-          {/* Bouton Distribution manuelle immédiate */}
+          {/* Bouton Distribution manuelle */}
           <TouchableOpacity
             onPress={() => distributeFood("manual")}
             disabled={!isConnected || feeder.isDistributing}
@@ -1874,124 +1884,346 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 : "Distribuer maintenant"}
             </Text>
           </TouchableOpacity>
+        </View>
+      </ScrollView>
 
-          {/* ══════════════════════════════════════════════════════════════ */}
-          {/* ALERTS / NOTIFICATIONS */}
-          {/* ══════════════════════════════════════════════════════════════ */}
-          
-          {alerts.length > 0 && (
-            <>
-              <View
+      {/* ── Notification Popup ─────────────────────────────────────────────── */}
+      {showNotifPopup && (
+        <NotificationPopup
+          alerts={alerts}
+          onClose={() => setShowNotifPopup(false)}
+          onMarkAllRead={markAllRead}
+          onViewAll={() => {
+            setShowNotifPopup(false);
+            if (poultryId) {
+              navigation.navigate("AlertSettingsScreen", {
+                poultryId,
+                poultryName: poultryInfo.name || "Poulailler",
+              });
+            }
+          }}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+// ── Notification Popup ────────────────────────────────────────────────────────
+
+function NotificationPopup({ alerts, onClose, onMarkAllRead, onViewAll }) {
+  const unreadCount = alerts.filter((a) => !a.read).length;
+
+  function relativeTime(ts) {
+    if (!ts) return "À l'instant";
+    const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
+    if (diff < 60) return "À l'instant";
+    if (diff < 3600) return `Il y a ${Math.floor(diff / 60)} min`;
+    if (diff < 86400) return `Il y a ${Math.floor(diff / 3600)} h`;
+    return new Date(ts).toLocaleDateString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+    });
+  }
+
+  function severityStyle(severity) {
+    if (severity === "danger")
+      return {
+        bg: "#FEF2F2",
+        dot: "#EF4444",
+        badgeBg: "#FEF2F2",
+        badgeColor: "#EF4444",
+        badgeBorder: "#EF444430",
+        label: "Danger",
+      };
+    if (severity === "warn")
+      return {
+        bg: "#FFF7ED",
+        dot: "#F59E0B",
+        badgeBg: "#FFF7ED",
+        badgeColor: "#F59E0B",
+        badgeBorder: "#F59E0B30",
+        label: "Attention",
+      };
+    return {
+      bg: "#fff",
+      dot: "#CBD5E1",
+      badgeBg: "#F0FDF4",
+      badgeColor: "#22C55E",
+      badgeBorder: "#22C55E30",
+      label: "Normal",
+    };
+  }
+
+  return (
+    <Modal
+      transparent
+      animationType="fade"
+      visible
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      {/* Overlay */}
+      <TouchableOpacity
+        style={{ flex: 1, backgroundColor: "rgba(15, 23, 42, 0.3)" }}
+        activeOpacity={1}
+        onPress={onClose}
+      >
+        {/* Popup container — stopPropagation */}
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: Platform.OS === "ios" ? 98 : 64,
+            right: 12,
+            width: 315,
+            backgroundColor: "#fff",
+            borderRadius: 18,
+            borderWidth: 1,
+            borderColor: "#E2E8F0",
+            shadowColor: "#0F172A",
+            shadowOffset: { width: 0, height: 10 },
+            shadowOpacity: 0.15,
+            shadowRadius: 24,
+            elevation: 16,
+            overflow: "hidden",
+          }}
+        >
+          {/* ── En-tête ── */}
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+              paddingHorizontal: 16,
+              paddingVertical: 14,
+              borderBottomWidth: 1,
+              borderBottomColor: "#F1F5F9",
+            }}
+          >
+            <View>
+              <Text
+                style={{ fontSize: 15, fontWeight: "800", color: "#1E293B" }}
+              >
+                Notifications
+              </Text>
+              <Text
                 style={{
-                  height: 1,
-                  backgroundColor: "#F1F5F9",
-                  marginVertical: 24,
+                  fontSize: 11,
+                  color: "#94A3B8",
+                  marginTop: 1,
+                  fontWeight: "500",
                 }}
-              />
+              >
+                {unreadCount > 0
+                  ? `${unreadCount} non lue${unreadCount > 1 ? "s" : ""}`
+                  : "Tout est lu"}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={onClose}
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: 8,
+                backgroundColor: "#F1F5F9",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Ionicons name="close" size={16} color="#64748B" />
+            </TouchableOpacity>
+          </View>
 
-              <SectionLabel>Notifications ({alerts.length})</SectionLabel>
+          {/* ── Marquer tout comme lu ── */}
+          {unreadCount > 0 && (
+            <TouchableOpacity
+              onPress={onMarkAllRead}
+              style={{
+                paddingHorizontal: 16,
+                paddingVertical: 10,
+                borderBottomWidth: 1,
+                borderBottomColor: "#F1F5F9",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                backgroundColor: "#F8FAFC",
+              }}
+            >
+              <MaterialIcons name="done-all" size={15} color="#22C55E" />
+              <Text
+                style={{ fontSize: 12, fontWeight: "700", color: "#22C55E" }}
+              >
+                Tout marquer comme lu
+              </Text>
+            </TouchableOpacity>
+          )}
 
-              {alerts.map((alert) => {
-                // Determine badge color based on severity
-                let badgeBg = "#F0FDF4";
-                let badgeColor = "#22C55E";
-                let borderColor = "#22C55E30";
-                
-                if (alert.severity === "warn") {
-                  badgeBg = "#FFF7ED";
-                  badgeColor = "#F97316";
-                  borderColor = "#F9731630";
-                } else if (alert.severity === "danger") {
-                  badgeBg = "#FEF2F2";
-                  badgeColor = "#EF4444";
-                  borderColor = "#EF444430";
-                }
-
+          {/* ── Liste ── */}
+          <ScrollView
+            style={{ maxHeight: 320 }}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            {alerts.length === 0 ? (
+              <View
+                style={{ alignItems: "center", paddingVertical: 36, gap: 10 }}
+              >
+                <View
+                  style={{
+                    width: 52,
+                    height: 52,
+                    borderRadius: 16,
+                    backgroundColor: "#F8FAFC",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <MaterialIcons
+                    name="notifications-none"
+                    size={26}
+                    color="#CBD5E1"
+                  />
+                </View>
+                <Text
+                  style={{
+                    fontSize: 13,
+                    color: "#94A3B8",
+                    fontWeight: "500",
+                  }}
+                >
+                  Aucune notification
+                </Text>
+              </View>
+            ) : (
+              alerts.slice(0, 10).map((alert, idx) => {
+                const s = severityStyle(alert.severity);
                 return (
                   <View
-                    key={alert._id}
+                    key={alert._id || idx}
                     style={{
-                      backgroundColor: badgeBg,
-                      borderRadius: 12,
-                      padding: 12,
-                      marginBottom: 10,
-                      borderWidth: 1,
-                      borderColor: borderColor,
-                      opacity: alert.read ? 0.6 : 1,
+                      flexDirection: "row",
+                      gap: 10,
+                      alignItems: "flex-start",
+                      paddingHorizontal: 16,
+                      paddingVertical: 12,
+                      borderBottomWidth: 1,
+                      borderBottomColor: "#F1F5F9",
+                      backgroundColor: alert.read ? "#fff" : s.bg,
                     }}
                   >
+                    {/* Indicateur non-lu */}
                     <View
                       style={{
-                        flexDirection: "row",
-                        alignItems: "flex-start",
-                        gap: 10,
+                        width: 7,
+                        height: 7,
+                        borderRadius: 3.5,
+                        marginTop: 5,
+                        backgroundColor: alert.read ? "#E2E8F0" : s.dot,
+                        flexShrink: 0,
                       }}
-                    >
-                      {/* Icon / Emoji */}
-                      <Text style={{ fontSize: 20 }}>
-                        {alert.icon || (alert.severity === "warn" ? "⚠️" : alert.severity === "danger" ? "🔴" : "✅")}
-                      </Text>
+                    />
 
-                      {/* Message content */}
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={{
-                            fontSize: 12,
-                            fontWeight: "700",
-                            color: badgeColor,
-                            marginBottom: 4,
-                          }}
-                        >
-                          {alert.message}
-                        </Text>
-                        <Text
-                          style={{
-                            fontSize: 10,
-                            color: "#94A3B8",
-                            fontWeight: "500",
-                          }}
-                        >
-                          {alert.timestamp
-                            ? new Date(alert.timestamp).toLocaleString("fr-FR", {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                day: "2-digit",
-                                month: "2-digit",
-                              })
-                            : "À l'instant"}
-                        </Text>
-                      </View>
-
-                      {/* Type badge */}
+                    <View style={{ flex: 1 }}>
+                      {/* Badge sévérité + type */}
                       <View
                         style={{
-                          backgroundColor: badgeColor + "20",
-                          borderRadius: 6,
-                          paddingHorizontal: 8,
-                          paddingVertical: 4,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 6,
+                          marginBottom: 4,
                         }}
                       >
-                        <Text
+                        <View
                           style={{
-                            fontSize: 9,
-                            fontWeight: "700",
-                            color: badgeColor,
-                            textTransform: "uppercase",
-                            letterSpacing: 0.5,
+                            backgroundColor: s.badgeBg,
+                            borderRadius: 20,
+                            paddingHorizontal: 7,
+                            paddingVertical: 2,
+                            borderWidth: 1,
+                            borderColor: s.badgeBorder,
                           }}
                         >
-                          {alert.type}
-                        </Text>
+                          <Text
+                            style={{
+                              fontSize: 9,
+                              fontWeight: "700",
+                              color: s.badgeColor,
+                              textTransform: "uppercase",
+                              letterSpacing: 0.3,
+                            }}
+                          >
+                            {s.label}
+                          </Text>
+                        </View>
+                        {alert.type && (
+                          <Text
+                            style={{
+                              fontSize: 10,
+                              color: "#94A3B8",
+                              fontWeight: "500",
+                            }}
+                          >
+                            {alert.type}
+                          </Text>
+                        )}
                       </View>
+
+                      {/* Message */}
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: alert.read ? "#64748B" : "#1E293B",
+                          fontWeight: alert.read ? "400" : "600",
+                          lineHeight: 18,
+                        }}
+                        numberOfLines={2}
+                      >
+                        {alert.message}
+                      </Text>
+
+                      {/* Timestamp */}
+                      <Text
+                        style={{
+                          fontSize: 10,
+                          color: "#94A3B8",
+                          marginTop: 3,
+                          fontWeight: "500",
+                        }}
+                      >
+                        {relativeTime(alert.timestamp)}
+                      </Text>
                     </View>
                   </View>
                 );
-              })}
-            </>
-          )}
-        </View>
-      </ScrollView>
-    </SafeAreaView>
+              })
+            )}
+          </ScrollView>
+
+          {/* ── Footer — Voir toutes ── */}
+          <TouchableOpacity
+            onPress={onViewAll}
+            style={{
+              paddingVertical: 13,
+              paddingHorizontal: 16,
+              borderTopWidth: 1,
+              borderTopColor: "#F1F5F9",
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              backgroundColor: "#F0FDF4",
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={{ fontSize: 13, fontWeight: "700", color: "#22C55E" }}>
+              Voir toutes les notifications
+            </Text>
+            <MaterialIcons name="arrow-forward" size={15} color="#22C55E" />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
   );
 }
 

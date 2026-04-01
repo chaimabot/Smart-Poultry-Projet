@@ -27,7 +27,10 @@ export default function AppNavigator() {
         <Stack.Screen name="AddPoultry" component={AddPoultryScreen} />
         <Stack.Screen name="Profile" component={ProfileScreen} />
         <Stack.Screen name="PoultryDetail" component={PoultryDetailScreen} />
-        <Stack.Screen name="AlertSettings" component={AlertSettingsScreen} />
+        <Stack.Screen
+          name="AlertSettingsScreen"
+          component={AlertSettingsScreen}
+        />
         <Stack.Screen
           name="ArchivedPoultries"
           component={ArchivedPoultriesScreen}

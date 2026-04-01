@@ -7,7 +7,6 @@ const doorMotionTracker = new Map();
 
 /**
  * Mark door motion as started
- * Used to detect if motor is stuck after 30s
  */
 const trackDoorMotion = (poulaillerId, action) => {
   doorMotionTracker.set(poulaillerId, {
@@ -18,6 +17,7 @@ const trackDoorMotion = (poulaillerId, action) => {
 
 /**
  * Check if door motion timed out (> 30s without reaching end switch)
+ * ✅ CORRIGÉ — createDoorAlert appelé avec la bonne signature
  */
 const checkDoorTimeout = async (poulaillerId) => {
   const motion = doorMotionTracker.get(poulaillerId);
@@ -25,43 +25,36 @@ const checkDoorTimeout = async (poulaillerId) => {
 
   const elapsed = Date.now() - motion.startTime;
   if (elapsed > 30000) {
-    // Motor stuck for more than 30s
-    await createDoorAlert(
-      poulaillerId,
-      "door_timeout",
-      "danger",
-      "⚠️ Moteur porte bloqué (fin de course non atteinte après 30s)"
-    );
+    // ✅ Signature correcte : (poultryId, eventKey, triggeredBy)
+    await createDoorAlert(poulaillerId, "timeout", "auto");
     doorMotionTracker.delete(poulaillerId);
+    console.log(`[DOOR] Timeout détecté pour ${poulaillerId}`);
   }
 };
 
 /**
  * Record door motion completed successfully
+ * ✅ CORRIGÉ — createDoorAlert appelé avec la bonne signature
  */
 const recordDoorCompletion = async (poulaillerId, action) => {
   doorMotionTracker.delete(poulaillerId);
 
-  const messages = {
-    open: "✅ Porte ouverte à l'heure programmée",
-    close: "✅ Porte fermée à l'heure programmée",
-  };
+  // ✅ Signature correcte : (poultryId, eventKey, triggeredBy)
+  const eventKey = action === "open" ? "scheduled_open" : "scheduled_close";
+  await createDoorAlert(poulaillerId, eventKey, "scheduled");
 
-  await createDoorAlert(
-    poulaillerId,
-    `door_${action}`,
-    "info",
-    messages[action] || `Porte ${action}`
+  console.log(
+    `[DOOR] Completion enregistrée : ${eventKey} pour ${poulaillerId}`,
   );
 };
 
+// GET /api/poulaillers/:id/door/schedule
 exports.getDoorSchedule = async (req, res) => {
   try {
     const { id } = req.params;
 
     let schedule = await DoorSchedule.findOne({ poulaillerId: id });
 
-    // If no schedule exists, create default one
     if (!schedule) {
       schedule = new DoorSchedule({
         poulaillerId: id,
@@ -96,7 +89,6 @@ exports.updateDoorSchedule = async (req, res) => {
     const { id } = req.params;
     const { openHour, openMinute, closeHour, closeMinute, enabled } = req.body;
 
-    // Validation
     if (
       openHour === undefined ||
       openMinute === undefined ||
