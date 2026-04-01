@@ -470,9 +470,9 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setFan = async (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
+    setShowNotifPopup(true);
     await createActuatorAlert(poultryId, "fan", v);
     await fetchAlerts();
-    setShowNotifPopup(true);
   };
 
   // ── Handlers Lampe ───────────────────────────────────────────────────────
@@ -486,9 +486,9 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const setLamp = async (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
+    setShowNotifPopup(true);
     await createActuatorAlert(poultryId, "lamp", v);
     await fetchAlerts();
-    setShowNotifPopup(true);
   };
 
   // ── Handlers Porte ───────────────────────────────────────────────────────
@@ -496,9 +496,9 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const toggleDoor = async (v) => {
     publishCommand("door", v);
     setActuators((p) => ({ ...p, door: v }));
+    setShowNotifPopup(true);
     await createActuatorAlert(poultryId, "door", v);
     await fetchAlerts();
-    setShowNotifPopup(true);
   };
 
   const markAllRead = useCallback(async () => {
