@@ -510,13 +510,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
     }
   }, [poultryId, fetchAlerts]);
 
-  // ── Mark all read ────────────────────────────────────────────────────────
-
-  const markAllRead = useCallback(() => {
-    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
-    setAlertCount(0);
-  }, []);
-
   // ── Refresh ──────────────────────────────────────────────────────────────
 
   const onRefresh = useCallback(async () => {
