@@ -154,6 +154,23 @@ export const deleteReadAlerts = async (poultryId) => {
   }
 };
 
+// ✅ NOUVEAU — créer une alerte actionneur (fan, lamp, door)
+export const createActuatorAlert = async (poultryId, actuator, state) => {
+  try {
+    const response = await api.post("/alerts", {
+      poulaillerId: poultryId,
+      type: "actuator",
+      actuator,
+      state: state ? "on" : "off",
+      triggeredBy: "manual",
+    });
+    return response.data;
+  } catch (error) {
+    console.error("[poultry] createActuatorAlert error:", error.message);
+    return null;
+  }
+};
+
 // ✅ NOUVEAU — statistiques des alertes
 export const getAlertStats = async (poultryId) => {
   try {

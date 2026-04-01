@@ -18,6 +18,7 @@ import {
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import mqtt from "mqtt";
 import { getPoultryById, getAlerts } from "../../../services/poultry";
+import { createActuatorAlert } from "../../../services/poultry";
 import Toast from "../../../components/Toast";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -468,6 +469,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
       message: v ? "🌀 Ventilateur activé" : "Ventilateur désactivé",
       type: "info",
     });
+    createActuatorAlert(poultryId, "fan", v);
     setTimeout(async () => {
       await fetchPoultryInfo();
     }, 1000);
@@ -489,6 +491,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
       message: v ? "💡 Lampe chauffante activée" : "Lampe chauffante désactivée",
       type: "info",
     });
+    createActuatorAlert(poultryId, "lamp", v);
     setTimeout(async () => {
       await fetchPoultryInfo();
     }, 1000);
@@ -504,6 +507,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
       message: v ? "🚪 Porte ouverte" : "Porte fermée",
       type: "info",
     });
+    createActuatorAlert(poultryId, "door", v);
     setTimeout(async () => {
       await fetchPoultryInfo();
     }, 1000);
