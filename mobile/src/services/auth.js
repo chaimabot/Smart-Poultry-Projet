@@ -6,13 +6,12 @@ import {
   secureClearAll,
 } from "./secureStorage";
 
+// Permet à l’utilisateur de se connecter et stocke ses informations
 export const login = async (email, password) => {
   try {
     const response = await api.post("/auth/login", { email, password });
     if (response.data.token) {
-      // ✅ Store token securely (encrypted)
       await secureSet("userToken", response.data.token);
-      // User data can be in regular storage
       await secureSet("userData", JSON.stringify(response.data.user));
     }
     return response.data;
@@ -23,6 +22,7 @@ export const login = async (email, password) => {
   }
 };
 
+// Crée un nouveau compte utilisateur et stocke ses informations
 export const register = async (firstName, lastName, email, password, phone) => {
   try {
     const response = await api.post("/auth/register", {
@@ -33,7 +33,6 @@ export const register = async (firstName, lastName, email, password, phone) => {
       phone,
     });
     if (response.data.token) {
-      // ✅ Store token securely (encrypted)
       await secureSet("userToken", response.data.token);
       await secureSet("userData", JSON.stringify(response.data.user));
     }
@@ -45,6 +44,7 @@ export const register = async (firstName, lastName, email, password, phone) => {
   }
 };
 
+// Récupère les informations du profil utilisateur connecté
 export const getMe = async () => {
   try {
     const response = await api.get("/auth/me");
@@ -54,11 +54,13 @@ export const getMe = async () => {
   }
 };
 
+// Récupère les données utilisateur stockées localement
 export const getUserData = async () => {
   const data = await secureGet("userData");
   return data ? JSON.parse(data) : null;
 };
 
+// Met à jour les informations du profil utilisateur
 export const updateProfile = async (userData) => {
   try {
     const response = await api.put("/auth/updatedetails", userData);
@@ -71,6 +73,7 @@ export const updateProfile = async (userData) => {
   }
 };
 
+// Permet de changer le mot de passe utilisateur
 export const updatePassword = async (passwordData) => {
   try {
     const response = await api.put("/auth/updatepassword", passwordData);
@@ -80,14 +83,14 @@ export const updatePassword = async (passwordData) => {
   }
 };
 
+// Déconnecte l’utilisateur en supprimant ses données stockées
 export const logout = async () => {
-  // ✅ Clear all data securely
   await secureRemove("userToken");
   await secureRemove("userData");
 };
 
+// Vérifie si l’utilisateur est connecté (token موجود)
 export const checkAuth = async () => {
-  // ✅ Check token from secure storage
   const token = await secureGet("userToken");
   return !!token;
 };

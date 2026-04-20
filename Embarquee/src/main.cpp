@@ -1,68 +1,74 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <PubSubClient.h>
-
 #include "config.h"
 #include "sensors.h"
 #include "actuators.h"
 #include "mqtt_handler.h"
 
-WiFiClientSecure secureClient;
-PubSubClient     mqttClient(secureClient);
+// --- Instances globales ---
+WiFiClientSecure sClient;
+PubSubClient mqttClient(sClient);
 
-unsigned long lastMeasureTime = 0;
+// --- Intervalle mesures/MQTT ---
+unsigned long lastMeasure = 0;
+const unsigned long MEASURE_INTERVAL = 5000; // 5 secondes
 
-static void connectWiFi() {
-  Serial.printf("[WiFi] Connexion a %s", WIFI_SSID);
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== DEMARRAGE DU POULAILLER INTELLIGENT ===");
+
+  sensors_init();
+  actuators_init(); // Lit les fins de course + charge planning NVS
+
+  Serial.print("Connexion WiFi: ");
+  Serial.println(WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.printf("\n[WiFi] Connecte — IP: %s\n",
-    WiFi.localIP().toString().c_str());
-}
+  Serial.println("\n[WIFI] Connecte !");
+  Serial.print("[WIFI] IP: ");
+  Serial.println(WiFi.localIP());
 
-void setup() {
-  Serial.begin(115200);
-  delay(500);
-  Serial.println("\n====== Smart Poultry ESP32 ======");
-  Serial.println("Test MQ-135 GPIO34(AO) GPIO25(DO)");
-  Serial.println("Mesures toutes 5s:");
-  Serial.println("  DHT22 T/H(GPIO4)");
-  Serial.println("  MQ135 ADC/Air%/NH3ppm/DO(GPIO34/25)");
-  Serial.println("  HC-SR04 Eau(5/18)");
-  Serial.println("=================================\n");
-
-  sensors_init();
-  actuators_init();
-  actuators_setLampAuto(true);
-  // actuators_setFanAuto(true); // FIX: BUG3 - Default manual au boot, configurable via MQTT
-  connectWiFi();
-  mqtt_init(mqttClient, secureClient);
-
-  Serial.println("[BOOT] Pret - Attends MQ135 valeurs dans 5s...\n");
+  mqtt_init(mqttClient, sClient);
+  Serial.println("[SYSTEM] Setup termine. Pret.");
 }
 
 void loop() {
+  // ⚡ PRIORITÉ 1 — Moteur porte (non-bloquant, chaque ms)
+  // Doit être appelé à chaque itération de loop() sans délai
+  // pour réagir immédiatement aux fins de course
+  actuators_doorLoop();
+
+  // PRIORITÉ 2 — Maintenir connexion MQTT + traiter messages entrants
   mqtt_loop(mqttClient);
 
-  // [MOTOR] Motor control tick - advance stepper sequence
-  actuators_doorMotorTick();
+  // PRIORITÉ 3 — Toutes les 5 secondes : capteurs + relais + MQTT publish
+  if (millis() - lastMeasure > MEASURE_INTERVAL) {
+    lastMeasure = millis();
 
-  unsigned long now = millis();
-  if (now - lastMeasureTime >= MEASURE_INTERVAL_MS) {
-    lastMeasureTime = now;
-
-    Serial.println("---=== LECTURE CAPTEURS ===---");
+    // Lire capteurs
     SensorData data = sensors_read();
-    Serial.println("MQTT OK | FAN/LAMPE auto");
-    actuators_tick(data.temperature, data.humidity, data.co2, data.nh3, data.airQualityPercent, data.nh3DigitalAlert);
+
+    // Planning horaire + automatismes relais (lampe, ventilo, pompe)
+    actuators_tick(data.temperature, data.waterLevel, data.co2);
+
+    // Publier mesures et état actionneurs vers HiveMQ
     mqtt_publishMeasures(mqttClient, data);
-    // ✅ FIX: Publish status every 5 seconds instead of 30s
-    // This reduces lag when user toggles actuators
-    if (millis() % 5000 < 500) mqtt_publishStatus(mqttClient, actuators_getState());
-    Serial.println("----------------------------\n");
+    mqtt_publishStatus(mqttClient, _state);
+
+    // Log Serial
+    Serial.printf("--- Log %lus ---\n", millis() / 1000);
+    Serial.printf("Temp: %.1fC | Eau: %.1f%% | CO2: %.0fppm\n",
+                  data.temperature, data.waterLevel, data.co2);
+    Serial.printf("Porte: %s | Lampe: %s | Pompe: %s | Ventilo: %s\n",
+                  actuators_doorStateName(_state.doorState),
+                  _state.lampOn ? "ON" : "OFF",
+                  _state.pumpOn ? "ON" : "OFF",
+                  _state.fanOn  ? "ON" : "OFF");
+    Serial.println("-----------------");
   }
 }

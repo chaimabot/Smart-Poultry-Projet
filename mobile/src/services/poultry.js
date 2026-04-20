@@ -1,5 +1,6 @@
 import api from "./api";
 
+// Récupère la liste de tous les poulaillers
 export const getPoultries = async () => {
   try {
     const response = await api.get("/poulaillers");
@@ -9,6 +10,7 @@ export const getPoultries = async () => {
   }
 };
 
+// Récupère les informations d’un poulailler par son id
 export const getPoultryById = async (id) => {
   try {
     const response = await api.get(`/poulaillers/${id}`);
@@ -18,6 +20,7 @@ export const getPoultryById = async (id) => {
   }
 };
 
+// Crée un nouveau poulailler
 export const createPoultry = async (poultryData) => {
   try {
     const response = await api.post("/poulaillers", poultryData);
@@ -27,6 +30,7 @@ export const createPoultry = async (poultryData) => {
   }
 };
 
+// Met à jour les informations d’un poulailler
 export const updatePoultry = async (id, poultryData) => {
   try {
     const response = await api.put(`/poulaillers/${id}`, poultryData);
@@ -36,6 +40,7 @@ export const updatePoultry = async (id, poultryData) => {
   }
 };
 
+// Supprime un poulailler
 export const deletePoultry = async (id) => {
   try {
     await api.delete(`/poulaillers/${id}`);
@@ -45,6 +50,7 @@ export const deletePoultry = async (id) => {
   }
 };
 
+// Archive un poulailler (le rendre inactif)
 export const archivePoultry = async (id) => {
   try {
     const response = await api.post(`/poulaillers/${id}/archive`);
@@ -54,6 +60,7 @@ export const archivePoultry = async (id) => {
   }
 };
 
+// Restaure un poulailler archivé
 export const restorePoultry = async (id) => {
   try {
     const response = await api.put(`/poulaillers/${id}`, { isArchived: false });
@@ -63,6 +70,7 @@ export const restorePoultry = async (id) => {
   }
 };
 
+// Récupère la liste des poulaillers archivés
 export const getArchivedPoultries = async () => {
   try {
     const response = await api.get("/poulaillers/archives");
@@ -72,6 +80,7 @@ export const getArchivedPoultries = async () => {
   }
 };
 
+// Récupère un résumé global des poulaillers
 export const getPoultriesSummary = async () => {
   try {
     const response = await api.get("/poulaillers/summary");
@@ -81,6 +90,7 @@ export const getPoultriesSummary = async () => {
   }
 };
 
+// Récupère les poulaillers en état critique
 export const getCriticalPoultries = async () => {
   try {
     const response = await api.get("/poulaillers/critical");
@@ -90,6 +100,7 @@ export const getCriticalPoultries = async () => {
   }
 };
 
+// Récupère les seuils d’un poulailler
 export const getThresholds = async (id) => {
   try {
     const response = await api.get(`/poulaillers/${id}/thresholds`);
@@ -99,6 +110,7 @@ export const getThresholds = async (id) => {
   }
 };
 
+// Met à jour les seuils d’un poulailler
 export const updateThresholds = async (id, thresholds) => {
   try {
     const response = await api.put(`/poulaillers/${id}/thresholds`, thresholds);
@@ -108,7 +120,7 @@ export const updateThresholds = async (id, thresholds) => {
   }
 };
 
-// ✅ CORRIGÉ — utilise poulaillerId (nom attendu par le backend)
+// Récupère les alertes d’un poulailler
 export const getAlerts = async (poultryId) => {
   try {
     const response = await api.get("/alerts", {
@@ -120,7 +132,7 @@ export const getAlerts = async (poultryId) => {
   }
 };
 
-// ✅ CORRIGÉ — envoie alertId dans le body
+// Marque une alerte comme lue
 export const markAlertAsRead = async (alertId) => {
   try {
     const response = await api.post("/alerts/read", { alertId });
@@ -130,7 +142,7 @@ export const markAlertAsRead = async (alertId) => {
   }
 };
 
-// ✅ NOUVEAU — marquer toutes les alertes d'un poulailler comme lues
+// Marque toutes les alertes d’un poulailler comme lues
 export const markAllAlertsAsRead = async (poultryId) => {
   try {
     const response = await api.post("/alerts/read", {
@@ -142,7 +154,7 @@ export const markAllAlertsAsRead = async (poultryId) => {
   }
 };
 
-// ✅ NOUVEAU — supprimer les alertes lues
+// Supprime les alertes déjà lues
 export const deleteReadAlerts = async (poultryId) => {
   try {
     const response = await api.delete("/alerts", {
@@ -154,7 +166,7 @@ export const deleteReadAlerts = async (poultryId) => {
   }
 };
 
-// ✅ NOUVEAU — créer une alerte actionneur (fan, lamp, door)
+// Crée une alerte liée à un actionneur (porte, ventilateur, lampe)
 export const createActuatorAlert = async (poultryId, actuator, state) => {
   try {
     const response = await api.post("/alerts", {
@@ -171,7 +183,7 @@ export const createActuatorAlert = async (poultryId, actuator, state) => {
   }
 };
 
-// ✅ NOUVEAU — statistiques des alertes
+// Récupère les statistiques des alertes
 export const getAlertStats = async (poultryId) => {
   try {
     const response = await api.get("/alerts/stats", {
@@ -183,6 +195,7 @@ export const getAlertStats = async (poultryId) => {
   }
 };
 
+// Récupère les données de monitoring (capteurs)
 export const getMonitoringData = async (id) => {
   try {
     const response = await api.get(`/poulaillers/${id}/monitoring`);
@@ -192,6 +205,7 @@ export const getMonitoringData = async (id) => {
   }
 };
 
+// Envoie une commande pour contrôler un actionneur
 export const controlActuator = async (id, actuator, state, mode = "manual") => {
   try {
     const response = await api.patch(`/poulaillers/${id}/actuators`, {
@@ -201,7 +215,6 @@ export const controlActuator = async (id, actuator, state, mode = "manual") => {
     });
     return response.data;
   } catch (error) {
-    // ✅ Lever une vraie Error avec le message du serveur
     const message =
       error.response?.data?.error ||
       error.response?.data?.message ||
@@ -211,6 +224,7 @@ export const controlActuator = async (id, actuator, state, mode = "manual") => {
   }
 };
 
+// Récupère l’historique des mesures d’un capteur
 export const getMeasureHistory = async (
   id,
   sensor = "temperature",
@@ -226,7 +240,7 @@ export const getMeasureHistory = async (
   }
 };
 
-// ✅ NOUVEAU — récupérer les seuils par défaut depuis SystemConfig
+// Récupère les seuils par défaut du système
 export const getDefaultThresholds = async () => {
   try {
     const response = await api.get("/system-config/default-thresholds");

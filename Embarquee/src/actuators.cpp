@@ -1,230 +1,267 @@
 #include "actuators.h"
+#include <Preferences.h>
 
-static ActuatorState _state;
-static FanThresholds thresholds = {DEFAULT_TEMP_MIN, DEFAULT_TEMP_MAX, DEFAULT_CO2_MAX, DEFAULT_NH3_MAX, 70.0f};
+// =========================================================
+//  Variables globales exportées
+// =========================================================
+ActuatorState _state;
+Thresholds    _th;
+DoorSchedule  _doorSched;
+Preferences   prefs;
 
-// ============================================================
-// STEPPER MOTOR STATE MACHINE
-// ============================================================
-enum DoorMotorState {
-  DOOR_IDLE,        // Moteur arrêté
-  DOOR_OPENING,     // En train d'ouvrir
-  DOOR_CLOSING,     // En train de fermer
-  DOOR_OPEN,        // Portefull ouverte (arrêtée)
-  DOOR_CLOSED       // Porte fermée (arrêtée)
+// ---- Heure courante (reçue via MQTT config) --------------
+static int _currentH = -1;
+static int _currentM = -1;
+
+// ---- Anti-déclenchement multiple sur la même minute ------
+static int _lastOpenTriggeredM  = -1;
+static int _lastCloseTriggeredM = -1;
+
+// =========================================================
+//  Moteur pas-à-pas 28BYJ-48 — séquence half-step
+// =========================================================
+static const uint8_t STEPPER_SEQ[8][4] = {
+  {1, 0, 0, 0},
+  {1, 1, 0, 0},
+  {0, 1, 0, 0},
+  {0, 1, 1, 0},
+  {0, 0, 1, 0},
+  {0, 0, 1, 1},
+  {0, 0, 0, 1},
+  {1, 0, 0, 1}
 };
 
-static DoorMotorState _doorMotorState = DOOR_IDLE;
+static int           _stepperStep  = 0;
 static unsigned long _lastStepTime = 0;
-static int _stepIndex = 0;  // 0-7 pour 8-step half-step sequence
 
-// Séquence 8-pas half-step validée
-// {IN1, IN2, IN3, IN4}
-static const uint8_t STEPPER_SEQUENCE[8][4] = {
-  {1,0,0,0},
-  {1,1,0,0},
-  {0,1,0,0},
-  {0,1,1,0},
-  {0,0,1,0},
-  {0,0,1,1},
-  {0,0,0,1},
-  {1,0,0,1}
-};
+static const unsigned int  STEPPER_DELAY_MS = 5;
+static const unsigned long DOOR_TIMEOUT_MS  = 25000UL;
+static unsigned long       _doorMoveStart   = 0;
 
-// ============================================================
-// Helper: Set stepper pins to given sequence step
-// ============================================================
-static void _setStepperStep(int stepIdx) {
-  if (stepIdx < 0 || stepIdx >= 8) return;
-  digitalWrite(PIN_STEPPER_IN1, STEPPER_SEQUENCE[stepIdx][0] ? HIGH : LOW);
-  digitalWrite(PIN_STEPPER_IN2, STEPPER_SEQUENCE[stepIdx][1] ? HIGH : LOW);
-  digitalWrite(PIN_STEPPER_IN3, STEPPER_SEQUENCE[stepIdx][2] ? HIGH : LOW);
-  digitalWrite(PIN_STEPPER_IN4, STEPPER_SEQUENCE[stepIdx][3] ? HIGH : LOW);
+// =========================================================
+//  Utilitaires internes
+// =========================================================
+
+static void stepper_off() {
+  digitalWrite(PIN_MOTOR_IN1, LOW);
+  digitalWrite(PIN_MOTOR_IN2, LOW);
+  digitalWrite(PIN_MOTOR_IN3, LOW);
+  digitalWrite(PIN_MOTOR_IN4, LOW);
 }
 
-// ============================================================
-// Helper: Turn off all stepper pins
-// ============================================================
-static void _stopStepper() {
-  digitalWrite(PIN_STEPPER_IN1, LOW);
-  digitalWrite(PIN_STEPPER_IN2, LOW);
-  digitalWrite(PIN_STEPPER_IN3, LOW);
-  digitalWrite(PIN_STEPPER_IN4, LOW);
+static void stepper_applyStep() {
+  digitalWrite(PIN_MOTOR_IN1, STEPPER_SEQ[_stepperStep][0] ? HIGH : LOW);
+  digitalWrite(PIN_MOTOR_IN2, STEPPER_SEQ[_stepperStep][1] ? HIGH : LOW);
+  digitalWrite(PIN_MOTOR_IN3, STEPPER_SEQ[_stepperStep][2] ? HIGH : LOW);
+  digitalWrite(PIN_MOTOR_IN4, STEPPER_SEQ[_stepperStep][3] ? HIGH : LOW);
 }
 
-// ============================================================
-// Init
-// ============================================================
+static bool switch_isOpen()   { return digitalRead(PIN_SWITCH_OPEN)  == LOW; }
+static bool switch_isClosed() { return digitalRead(PIN_SWITCH_CLOSE) == LOW; }
+
+const char* actuators_doorStateName(DoorState s) {
+  switch (s) {
+    case DOOR_UNKNOWN: return "UNKNOWN";
+    case DOOR_OPEN:    return "OPEN";
+    case DOOR_CLOSED:  return "CLOSED";
+    case DOOR_OPENING: return "OPENING";
+    case DOOR_CLOSING: return "CLOSING";
+    case DOOR_BLOCKED: return "BLOCKED";
+    default:           return "?";
+  }
+}
+
+// =========================================================
+//  Init hardware - CORRIGÉ (Pas de mouvement au démarrage)
+// =========================================================
 void actuators_init() {
-  pinMode(PIN_LAMPE, OUTPUT);
-  digitalWrite(PIN_LAMPE, LOW);
+  // Relais
+  pinMode(PIN_PUMP,        OUTPUT);
   pinMode(PIN_VENTILATEUR, OUTPUT);
-  digitalWrite(PIN_VENTILATEUR, HIGH);
-  
-  // Stepper pins
-  pinMode(PIN_STEPPER_IN1, OUTPUT);
-  pinMode(PIN_STEPPER_IN2, OUTPUT);
-  pinMode(PIN_STEPPER_IN3, OUTPUT);
-  pinMode(PIN_STEPPER_IN4, OUTPUT);
-  _stopStepper();
-  
-  // End switches
-  pinMode(PIN_SWITCH_OPEN, INPUT_PULLUP);
+  pinMode(PIN_LAMPE,       OUTPUT);
+  digitalWrite(PIN_PUMP,        HIGH); 
+  digitalWrite(PIN_VENTILATEUR, HIGH); 
+  digitalWrite(PIN_LAMPE,       LOW);  
+
+  // Fins de course
+  pinMode(PIN_SWITCH_OPEN,  INPUT_PULLUP);
   pinMode(PIN_SWITCH_CLOSE, INPUT_PULLUP);
 
-  _state.fanOn = false;
-  _state.fanAuto = false;
-  _state.lampOn = false;
-  _state.lampAuto = false;
-  _state.doorOpen = false;
-  _state.doorAuto = false;
-  _doorMotorState = DOOR_IDLE;
-  _lastStepTime = 0;
-  _stepIndex = 0;
+  // Moteur
+  pinMode(PIN_MOTOR_IN1, OUTPUT);
+  pinMode(PIN_MOTOR_IN2, OUTPUT);
+  pinMode(PIN_MOTOR_IN3, OUTPUT);
+  pinMode(PIN_MOTOR_IN4, OUTPUT);
+  stepper_off();
 
-  Serial.println("[ACTUATORS] Init OK - Stepper motor ready");
-}
+  // Planning depuis Flash NVS
+  actuators_loadSched();
 
-// Getters
-ActuatorState actuators_getState() {
-  return _state;
-}
-
-// Fan
-void actuators_setFan(bool on) {
-  _state.fanOn = on;
-  if (on) {
-    digitalWrite(PIN_VENTILATEUR, LOW);
-    Serial.println("[FAN] ON");
+  // --- LOGIQUE DE DÉMARRAGE CORRIGÉE ---
+  if (switch_isOpen()) {
+    _state.doorState = DOOR_OPEN;
+    Serial.println("[DOOR] Demarrage : porte detectee OUVERTE");
+  } else if (switch_isClosed()) {
+    _state.doorState = DOOR_CLOSED;
+    Serial.println("[DOOR] Demarrage : porte detectee FERMEE");
   } else {
-    digitalWrite(PIN_VENTILATEUR, HIGH);
-    Serial.println("[FAN] OFF");
+    // On reste immobile même si la position est inconnue
+    _state.doorState = DOOR_UNKNOWN;
+    Serial.println("[DOOR] Demarrage : position INCONNUE (Attente commande)");
+    // La ligne actuators_moveDoor(false); a été supprimée pour éviter l'ouverture/fermeture directe.
   }
+
+  Serial.println("[ACTUATORS] Initialise.");
 }
 
-void actuators_setFanAuto(bool enabled) {
-  _state.fanAuto = enabled;
-  Serial.printf("[FAN AUTO] %s\n", enabled ? "ON" : "OFF");
+// =========================================================
+//  Persistance planning NVS
+// =========================================================
+void actuators_loadSched() {
+  prefs.begin("poultry", true);
+  _doorSched.openH  = prefs.getInt ("oh",     7);
+  _doorSched.openM  = prefs.getInt ("om",     0);
+  _doorSched.closeH = prefs.getInt ("ch",    18);
+  _doorSched.closeM = prefs.getInt ("cm",     0);
+  _doorSched.active = prefs.getBool("active", false);
+  prefs.end();
 }
 
-// Lamp
-void actuators_setLamp(bool on) {
-  _state.lampOn = on;
-  digitalWrite(PIN_LAMPE, on ? HIGH : LOW);
-  Serial.printf("[LAMP] %s\n", on ? "ON" : "OFF");
+void actuators_saveSched() {
+  prefs.begin("poultry", false);
+  prefs.putInt ("oh",     _doorSched.openH);
+  prefs.putInt ("om",     _doorSched.openM);
+  prefs.putInt ("ch",     _doorSched.closeH);
+  prefs.putInt ("cm",     _doorSched.closeM);
+  prefs.putBool("active", _doorSched.active);
+  prefs.end();
 }
 
-void actuators_setLampAuto(bool enabled) {
-  _state.lampAuto = enabled;
-  Serial.printf("[LAMP AUTO] %s\n", enabled ? "ON" : "OFF");
+void actuators_updateTime(int h, int m) {
+  _currentH = h;
+  _currentM = m;
 }
 
-// ============================================================
-// DOOR CONTROL — MQTT Command
-// ============================================================
+// =========================================================
+//  Commandes porte
+// =========================================================
+void actuators_stopDoor() {
+  stepper_off();
+  _state.doorState = switch_isOpen()   ? DOOR_OPEN
+                   : switch_isClosed() ? DOOR_CLOSED
+                   : DOOR_UNKNOWN;
+  Serial.printf("[DOOR] Stop -> etat : %s\n", actuators_doorStateName(_state.doorState));
+}
+
 void actuators_moveDoor(bool open) {
-  if (open) {
-    // Start opening sequence: 0 → 7
-    _doorMotorState = DOOR_OPENING;
-    _stepIndex = 0;
-    _lastStepTime = millis();
-    Serial.println("[DOOR] START OPENING (0→7)");
-  } else {
-    // Start closing sequence: 7 → 0
-    _doorMotorState = DOOR_CLOSING;
-    _stepIndex = 7;
-    _lastStepTime = millis();
-    Serial.println("[DOOR] START CLOSING (7→0)");
+  if (open && (switch_isOpen() || _state.doorState == DOOR_OPEN)) {
+    _state.doorState = DOOR_OPEN;
+    Serial.println("[DOOR] OUVRIR ignoree : deja ouverte");
+    return;
   }
+  if (!open && (switch_isClosed() || _state.doorState == DOOR_CLOSED)) {
+    _state.doorState = DOOR_CLOSED;
+    Serial.println("[DOOR] FERMER ignoree : deja fermee");
+    return;
+  }
+  if (open  && _state.doorState == DOOR_OPENING) return;
+  if (!open && _state.doorState == DOOR_CLOSING) return;
+
+  _state.doorState = open ? DOOR_OPENING : DOOR_CLOSING;
+  _doorMoveStart   = millis();
+  _lastStepTime    = 0; 
+  Serial.printf("[DOOR] Commande : %s\n", open ? "OUVRIR" : "FERMER");
 }
 
-void actuators_setDoorAuto(bool enabled) {
-  _state.doorAuto = enabled;
-  Serial.printf("[DOOR AUTO] %s\n", enabled ? "ON" : "OFF");
-}
+void actuators_doorLoop() {
+  if (_state.doorState != DOOR_OPENING && _state.doorState != DOOR_CLOSING) return;
 
-void actuators_setSchedule(int openH, int openM, int closeH, int closeM) {
-  _state.openHour = openH;
-  _state.openMin = openM;
-  _state.closeHour = closeH;
-  _state.closeMin = closeM;
-  _state.doorAuto = true;
-  Serial.printf("[SCHEDULE] %02d:%02d / %02d:%02d\n", openH, openM, closeH, closeM);
-}
+  bool atOpen  = switch_isOpen();
+  bool atClose = switch_isClosed();
 
-// ============================================================
-// DOOR MOTOR TICK — Call from loop() to advance stepper
-// ============================================================
-void actuators_doorMotorTick() {
-  if (_doorMotorState == DOOR_IDLE || _doorMotorState == DOOR_OPEN || _doorMotorState == DOOR_CLOSED) {
+  if (_state.doorState == DOOR_OPENING && atOpen) {
+    stepper_off();
+    _state.doorState = DOOR_OPEN;
+    Serial.println("[DOOR] *** Porte OUVERTE (Fin de course) ***");
+    return;
+  }
+  if (_state.doorState == DOOR_CLOSING && atClose) {
+    stepper_off();
+    _state.doorState = DOOR_CLOSED;
+    Serial.println("[DOOR] *** Porte FERMEE (Fin de course) ***");
     return;
   }
 
-  unsigned long now = millis();
-  if (now - _lastStepTime < STEPPER_STEP_DELAY_MS) {
-    return; // Not yet time for next step
+  if (millis() - _doorMoveStart > DOOR_TIMEOUT_MS) {
+    stepper_off();
+    _state.doorState = DOOR_BLOCKED;
+    Serial.println("[DOOR] *** TIMEOUT 25s (BLOQUE) ***");
+    return;
   }
 
-  _lastStepTime = now;
-
-  if (_doorMotorState == DOOR_OPENING) {
-    // Check if reached open end switch (LOW = reached)
-    if (digitalRead(PIN_SWITCH_OPEN) == LOW) {
-      Serial.println("[DOOR] OPEN end switch reached!");
-      _stopStepper();
-      _doorMotorState = DOOR_OPEN;
-      _state.doorOpen = true;
-      return;
+  if (millis() - _lastStepTime >= STEPPER_DELAY_MS) {
+    _lastStepTime = millis();
+    if (_state.doorState == DOOR_OPENING) {
+      _stepperStep = (_stepperStep + 1) % 8;
+    } else {
+      _stepperStep = (_stepperStep - 1 + 8) % 8;
     }
-    
-    // Move to next step: 0→7
-    _setStepperStep(_stepIndex);
-    Serial.printf("[DOOR OPENING] Step %d\n", _stepIndex);
-    _stepIndex++;
-    if (_stepIndex > 7) _stepIndex = 0; // Wrap around
-
-  } else if (_doorMotorState == DOOR_CLOSING) {
-    // Check if reached close end switch (LOW = reached)
-    if (digitalRead(PIN_SWITCH_CLOSE) == LOW) {
-      Serial.println("[DOOR] CLOSE end switch reached!");
-      _stopStepper();
-      _doorMotorState = DOOR_CLOSED;
-      _state.doorOpen = false;
-      return;
-    }
-
-    // Move to next step: 7→0
-    _setStepperStep(_stepIndex);
-    Serial.printf("[DOOR CLOSING] Step %d\n", _stepIndex);
-    _stepIndex--;
-    if (_stepIndex < 0) _stepIndex = 7; // Wrap around
+    stepper_applyStep();
   }
 }
 
-// Thresholds
-void actuators_applyThresholds(FanThresholds t) {
-  thresholds = t;
-  Serial.printf("[THRESHOLDS] Tmin=%.1f Tmax=%.1f CO2=%.0f NH3=%.1f AQ=%.0f\n", 
-    thresholds.tempMin, thresholds.tempMax, thresholds.co2Max, thresholds.nh3Max, thresholds.airQualityMin);
-}
+void actuators_tick(float temp, float water, float co2) {
+  if (_doorSched.active && _currentH != -1) {
+    if (_currentH == _doorSched.openH && _currentM == _doorSched.openM) {
+      if (_lastOpenTriggeredM != _currentM) {
+        _lastOpenTriggeredM = _currentM;
+        if (_state.doorState != DOOR_OPEN && _state.doorState != DOOR_OPENING) {
+          actuators_moveDoor(true);
+        }
+      }
+    }
+    if (_currentH == _doorSched.closeH && _currentM == _doorSched.closeM) {
+      if (_lastCloseTriggeredM != _currentM) {
+        _lastCloseTriggeredM = _currentM;
+        if (_state.doorState != DOOR_CLOSED && _state.doorState != DOOR_CLOSING) {
+          actuators_moveDoor(false);
+        }
+      }
+    }
+  }
 
-// Tick logic (lamp & fan auto)
-void actuators_tick(float temperature, float humidity, float co2, float nh3, float airQualityPercent, bool nh3Alert) {
+  // Automatismes relais
   if (_state.lampAuto) {
-    bool shouldHeat = temperature < thresholds.tempMin;
-    if (shouldHeat != _state.lampOn) {
-      actuators_setLamp(shouldHeat);
-    }
+    if      (temp < _th.tempMin) actuators_setLamp(true);
+    else if (temp > _th.tempMax) actuators_setLamp(false);
   }
-
   if (_state.fanAuto) {
-    bool shouldRun = (temperature > thresholds.tempMax) ||
-                     (co2 > thresholds.co2Max) ||
-                     (nh3 > thresholds.nh3Max) ||
-                     nh3Alert ||
-                     (airQualityPercent < thresholds.airQualityMin);
-    if (shouldRun != _state.fanOn) {
-      actuators_setFan(shouldRun);
-    }
+    if (temp > _th.tempMax || co2 > 1000.0f) actuators_setFan(true);
+    else                                      actuators_setFan(false);
+  }
+  if (_state.pumpAuto) {
+    if      (water < _th.waterMin && !_state.pumpOn) actuators_setPump(true);
+    else if (water > (_th.waterMin + _th.waterHysteresis) && _state.pumpOn) actuators_setPump(false);
   }
 }
+
+// =========================================================
+//  Setters relais
+// =========================================================
+void actuators_setLamp(bool on) {
+  _state.lampOn = on;
+  digitalWrite(PIN_LAMPE, on ? HIGH : LOW);
+}
+void actuators_setLampAuto(bool autoMode) { _state.lampAuto = autoMode; }
+
+void actuators_setPump(bool on) {
+  _state.pumpOn = on;
+  digitalWrite(PIN_PUMP, on ? LOW : HIGH);
+}
+void actuators_setPumpAuto(bool autoMode) { _state.pumpAuto = autoMode; }
+
+void actuators_setFan(bool on) {
+  _state.fanOn = on;
+  digitalWrite(PIN_VENTILATEUR, on ? LOW : HIGH);
+}
+void actuators_setFanAuto(bool autoMode) { _state.fanAuto = autoMode; }
