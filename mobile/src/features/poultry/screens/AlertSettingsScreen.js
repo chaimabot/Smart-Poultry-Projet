@@ -1,10 +1,5 @@
-import React, {
-  useState,
-  useEffect,
-  useCallback,
-  useRef,
-  useMemo,
-} from "react";
+// screens/AlertSettingsScreen.jsx
+import React, { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -13,8 +8,8 @@ import {
   TouchableOpacity,
   Switch,
   TextInput,
-  Alert,
   ActivityIndicator,
+  RefreshControl,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -24,278 +19,88 @@ import {
 import { MaterialIcons } from "@expo/vector-icons";
 import { useTheme } from "../../../context/ThemeContext";
 import Toast from "../../../components/Toast";
-import {
-  getThresholds,
-  updateThresholds,
-  getAlerts,
-  markAlertAsRead,
-  markAllAlertsAsRead,
-  deleteReadAlerts,
-  getAlertStats,
-  getDefaultThresholds,
-} from "../../../services/poultry";
 
-const PARAM_ICONS = {
-  temperature: { icon: "thermostat", color: "#ef4444" },
-  humidity: { icon: "water-drop", color: "#3b82f6" },
-  co2: { icon: "air", color: "#f97316" },
-  nh3: { icon: "science", color: "#a855f7" },
-  dust: { icon: "blur-on", color: "#f59e0b" },
-  waterLevel: { icon: "water", color: "#06b6d4" },
-};
+import useAlertSettings, { PARAM_ICONS } from "../../../hooks/useAlertSettings";
 
-// Valeurs par défaut en cas d'erreur de chargement
-const FALLBACK_THREHOLDS = {
-  temperatureMin: 18,
-  temperatureMax: 28,
-  humidityMin: 40,
-  humidityMax: 70,
-  co2Max: 1500,
-  nh3Max: 25,
-  dustMax: 150,
-  waterLevelMin: 20,
-};
+// ── Severity helpers ──────────────────────────────────────────────────────────
+
+function getSeverityMeta(item) {
+  if (
+    item.severity === "danger" ||
+    item.severity === "critical" ||
+    item.type === "CRITIQUE"
+  )
+    return {
+      icon: "error-outline",
+      label: item.type === "CRITIQUE" ? "CRITIQUE" : "DANGER",
+      color: "#ef4444",
+    };
+  if (item.severity === "warn")
+    return { icon: "warning-amber", label: "AVERTISSEMENT", color: "#f97316" };
+  return { icon: "check-circle-outline", label: "INFO", color: "#22C55E" };
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 
 const AlertSettingsScreen = ({ route, navigation }) => {
-  const { poultryId } = route.params || {};
+  const { poultryId, poultryName = "Poulailler" } = route.params || {};
   const { darkMode, colors } = useTheme();
   const insets = useSafeAreaInsets();
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [activeTab, setActiveTab] = useState("settings");
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState({
     visible: false,
     message: "",
     type: "success",
   });
-  const [activeTab, setActiveTab] = useState("settings");
-  const [stats, setStats] = useState(null);
 
-  const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
+  const {
+    loading,
+    saving,
+    stats,
+    alerts,
+    thresholds,
+    hasChanges,
+    handleThresholdChange,
+    handleSave,
+    handleReset,
+    handleMarkAsRead,
+    handleMarkAllAsRead,
+    handleDeleteRead,
+    fetchData,
+  } = useAlertSettings({ poultryId, activeTab, setToast });
 
-  // États pour les seuils
-  const [defaultThresholds, setDefaultThresholds] =
-    useState(FALLBACK_THREHOLDS);
-  const [thresholds, setThresholds] = useState(FALLBACK_THREHOLDS);
-  const previousThresholds = useRef(FALLBACK_THREHOLDS);
-  const [alerts, setAlerts] = useState([]);
-
-  // ── Validation ─────────────────────────────────────────────────────────────
-  const validateThresholds = (vals) => {
-    if (vals.temperatureMin >= vals.temperatureMax)
-      return "Température min doit être < max";
-    if (vals.humidityMin >= vals.humidityMax)
-      return "Humidité min doit être < max";
-    if (vals.temperatureMin < -20 || vals.temperatureMax > 50)
-      return "Température hors plage (-20°C à 50°C)";
-    if (vals.humidityMin < 0 || vals.humidityMax > 100)
-      return "Humidité entre 0% et 100%";
-    if (vals.co2Max < 400 || vals.co2Max > 5000)
-      return "CO₂ entre 400 et 5000 ppm";
-    if (vals.nh3Max < 0 || vals.nh3Max > 100) return "NH₃ entre 0 et 100 ppm";
-    if (vals.dustMax < 0 || vals.dustMax > 500)
-      return "Poussière entre 0 et 500 µg";
-    if (vals.waterLevelMin < 0 || vals.waterLevelMin > 100)
-      return "Niveau d'eau entre 0 et 100%";
-    return null;
-  };
-
-  const hasChanges = useMemo(
-    () =>
-      JSON.stringify(thresholds) !== JSON.stringify(previousThresholds.current),
-    [thresholds],
-  );
-
-  // ── Fetch ───────────────────────────────────────────────────────────────────
-  const fetchData = useCallback(async () => {
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
     try {
-      setLoading(true);
-
-      // 1. D'abord récupérer les seuils par défaut depuis SystemConfig
-      let fetchedDefaults = FALLBACK_THREHOLDS;
-      try {
-        const defaultRes = await getDefaultThresholds();
-        if (defaultRes.success && defaultRes.data) {
-          fetchedDefaults = { ...FALLBACK_THREHOLDS, ...defaultRes.data };
-          setDefaultThresholds(fetchedDefaults);
-        }
-      } catch (e) {
-        console.log("[AlertSettings] Erreur chargement seuils par défaut:", e);
-      }
-
-      // 2. Récupérer les seuils du poulailler spécifique
-      const [threshRes, alertRes, statsRes] = await Promise.all([
-        getThresholds(poultryId),
-        getAlerts(poultryId),
-        getAlertStats(poultryId),
-      ]);
-
-      if (threshRes.success) {
-        // Fusionner: valeurs du poulailler avec les valeurs par défaut
-        const t = { ...fetchedDefaults, ...threshRes.data };
-        setThresholds(t);
-        previousThresholds.current = t;
-      } else {
-        // Si pas de seuils personnalisés, utiliser les défaut
-        setThresholds(fetchedDefaults);
-        previousThresholds.current = fetchedDefaults;
-      }
-
-      if (alertRes.success) {
-        setAlerts(
-          Array.isArray(alertRes.data) ? alertRes.data.slice(0, 30) : [],
-        );
-      }
-      if (statsRes.success) {
-        setStats(statsRes.data);
-      }
-    } catch (e) {
-      console.log("Fetch error", e);
-    } finally {
-      setLoading(false);
-    }
-  }, [poultryId]);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  // [NOTIFICATION] Mark all alerts as read when opening Alerts tab
-  useEffect(() => {
-    if (activeTab === "alerts" && alerts.length > 0) {
-      const hasUnread = alerts.some((a) => !a.read && !a.isRead);
-      if (hasUnread) {
-        handleMarkAllAsRead();
-      }
-    }
-  }, [activeTab]);
-
-  // ── Save thresholds ─────────────────────────────────────────────────────────
-  const handleSave = async () => {
-    const err = validateThresholds(thresholds);
-    if (err) {
-      setToast({ visible: true, message: err, type: "error" });
-      return;
-    }
-    try {
-      setSaving(true);
-      const res = await updateThresholds(poultryId, thresholds);
-      if (res.success) {
-        previousThresholds.current = thresholds;
-        setToast({
-          visible: true,
-          message: "Seuils enregistrés ✓",
-          type: "success",
-        });
-      }
-    } catch (e) {
+      await fetchData();
+    } catch {
       setToast({
         visible: true,
-        message: "Erreur lors de l'enregistrement",
+        message: "Erreur de rafraîchissement",
         type: "error",
       });
     } finally {
-      setSaving(false);
+      setRefreshing(false);
     }
-  };
+  }, [fetchData]);
 
-  // ── Reset aux valeurs par défaut (SystemConfig) ─────────────────────────────
-  const handleReset = () => {
-    Alert.alert(
-      "Réinitialiser",
-      "Voulez-vous réinitialiser les seuils aux valeurs par défaut ?",
-      [
-        { text: "Annuler", style: "cancel" },
-        {
-          text: "Réinitialiser",
-          onPress: () => {
-            setThresholds(defaultThresholds);
-            previousThresholds.current = defaultThresholds;
-          },
-        },
-      ],
-    );
-  };
-
-  // ── Alert actions ───────────────────────────────────────────────────────────
-  const handleMarkAsRead = async (alertId) => {
-    try {
-      await markAlertAsRead(alertId);
-      setAlerts((prev) =>
-        prev.map((a) =>
-          a._id === alertId ? { ...a, read: true, isRead: true } : a,
-        ),
-      );
-      setStats((prev) =>
-        prev ? { ...prev, unread: Math.max(0, prev.unread - 1) } : prev,
-      );
-    } catch (e) {
-      console.log(e);
-    }
-  };
-
-  const handleMarkAllAsRead = async () => {
-    try {
-      await markAllAlertsAsRead(poultryId);
-      setAlerts((prev) =>
-        prev.map((a) => ({ ...a, read: true, isRead: true })),
-      );
-      setStats((prev) => (prev ? { ...prev, unread: 0 } : prev));
-      setToast({
-        visible: true,
-        message: "Toutes les alertes marquées comme lues",
-        type: "success",
-      });
-    } catch (e) {
-      setToast({ visible: true, message: "Erreur", type: "error" });
-    }
-  };
-
-  const handleDeleteRead = () => {
-    Alert.alert("Supprimer", "Supprimer toutes les alertes lues ?", [
-      { text: "Annuler", style: "cancel" },
-      {
-        text: "Supprimer",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await deleteReadAlerts(poultryId);
-            setAlerts((prev) => prev.filter((a) => !a.isRead && !a.read));
-            setToast({
-              visible: true,
-              message: "Alertes lues supprimées",
-              type: "success",
-            });
-          } catch (e) {
-            setToast({
-              visible: true,
-              message: "Erreur lors de la suppression",
-              type: "error",
-            });
-          }
-        },
-      },
-    ]);
-  };
-
-  const handleThresholdChange = (key, text) => {
-    const numeric = text.replace(/[^0-9.-]/g, "");
-    if (numeric === "" || !isNaN(parseFloat(numeric))) {
-      setThresholds({
-        ...thresholds,
-        [key]: numeric === "" ? 0 : parseFloat(numeric) || 0,
-      });
-    }
-  };
-
-  // ── UI helpers ──────────────────────────────────────────────────────────────
+  // ── Theme shortcuts ───────────────────────────────────────────────────────
   const bg = darkMode ? colors.slate950 : colors.slate50;
   const cardBg = darkMode ? "#1e293b" : "#ffffff";
   const borderCol = darkMode ? "#334155" : "#e2e8f0";
   const textCol = darkMode ? colors.white : colors.slate900;
   const subCol = darkMode ? "#94a3b8" : "#64748b";
+  const iconCol = darkMode ? "#cbd5e1" : "#475569";
 
+  const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
+
+  // FIX: unreadCount basé uniquement sur les alertes non lues en state
+  const unreadCount = alerts.filter((a) => !(a.isRead || a.read)).length;
+
+  // ── Input helper ──────────────────────────────────────────────────────────
   const renderInput = (label, value, key, unit) => (
     <View style={styles.inputContainer}>
       <Text style={[styles.inputLabel, { color: subCol }]}>{label}</Text>
@@ -318,8 +123,25 @@ const AlertSettingsScreen = ({ route, navigation }) => {
     </View>
   );
 
-  const unreadCount = alerts.filter((a) => !a.isRead && !a.read).length;
+  // ── Section label with icon ───────────────────────────────────────────────
+  const renderSectionLabel = (iconName, label) => (
+    <View style={styles.sectionLabelRow}>
+      <View
+        style={[
+          styles.sectionIconWrap,
+          {
+            backgroundColor: darkMode ? "#0f172a" : "#f1f5f9",
+            borderColor: borderCol,
+          },
+        ]}
+      >
+        <MaterialIcons name={iconName} size={15} color={iconCol} />
+      </View>
+      <Text style={[styles.catLabel, { color: textCol }]}>{label}</Text>
+    </View>
+  );
 
+  // ── Loading ───────────────────────────────────────────────────────────────
   if (loading)
     return (
       <View style={[styles.container, styles.center, { backgroundColor: bg }]}>
@@ -327,11 +149,12 @@ const AlertSettingsScreen = ({ route, navigation }) => {
       </View>
     );
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <StatusBar style={darkMode ? "light" : "dark"} />
 
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      {/* ── Header ── */}
       <View style={styles.header}>
         <TouchableOpacity
           onPress={() => navigation.goBack()}
@@ -347,8 +170,11 @@ const AlertSettingsScreen = ({ route, navigation }) => {
           </View>
         </TouchableOpacity>
 
-        <Text style={[styles.headerTitle, { color: textCol }]}>
-          Configuration
+        <Text
+          style={[styles.headerTitle, { color: textCol }]}
+          numberOfLines={1}
+        >
+          {poultryName} — Alertes
         </Text>
 
         {hasChanges && activeTab === "settings" ? (
@@ -374,55 +200,42 @@ const AlertSettingsScreen = ({ route, navigation }) => {
         )}
       </View>
 
-      {/* ── Tabs ───────────────────────────────────────────────────────────── */}
+      {/* ── Tab Bar ── */}
       <View
         style={[
           styles.tabBar,
           { backgroundColor: cardBg, borderBottomColor: borderCol },
         ]}
       >
-        <TouchableOpacity
-          style={[styles.tab, activeTab === "settings" && styles.tabActive]}
-          onPress={() => setActiveTab("settings")}
-        >
-          <MaterialIcons
-            name="tune"
-            size={16}
-            color={activeTab === "settings" ? "#22C55E" : subCol}
-          />
-          <Text
-            style={[
-              styles.tabText,
-              { color: activeTab === "settings" ? "#22C55E" : subCol },
-            ]}
-          >
-            Seuils
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.tab, activeTab === "alerts" && styles.tabActive]}
-          onPress={() => setActiveTab("alerts")}
-        >
-          <MaterialIcons
-            name="notifications"
-            size={16}
-            color={activeTab === "alerts" ? "#22C55E" : subCol}
-          />
-          <Text
-            style={[
-              styles.tabText,
-              { color: activeTab === "alerts" ? "#22C55E" : subCol },
-            ]}
-          >
-            Alertes
-          </Text>
-          {unreadCount > 0 && (
-            <View style={styles.tabBadge}>
-              <Text style={styles.tabBadgeText}>{unreadCount}</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+        {[
+          { key: "settings", label: "Seuils", icon: "tune" },
+          { key: "alerts", label: "Alertes", icon: "notifications" },
+        ].map((tab) => {
+          const active = activeTab === tab.key;
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              style={[styles.tab, active && styles.tabActive]}
+              onPress={() => setActiveTab(tab.key)}
+            >
+              <MaterialIcons
+                name={tab.icon}
+                size={16}
+                color={active ? "#22C55E" : subCol}
+              />
+              <Text
+                style={[styles.tabText, { color: active ? "#22C55E" : subCol }]}
+              >
+                {tab.label}
+              </Text>
+              {tab.key === "alerts" && unreadCount > 0 && (
+                <View style={styles.tabBadge}>
+                  <Text style={styles.tabBadgeText}>{unreadCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
       </View>
 
       <ScrollView
@@ -432,13 +245,21 @@ const AlertSettingsScreen = ({ route, navigation }) => {
           paddingBottom: dynamicPaddingBottom,
         }}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor="#22C55E"
+            colors={["#22C55E"]}
+          />
+        }
       >
-        {/* ══════════════════════════════════════════════════════════════════ */}
-        {/* TAB SEUILS                                                        */}
-        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* TAB SEUILS                                                     */}
+        {/* ══════════════════════════════════════════════════════════════ */}
         {activeTab === "settings" && (
           <>
-            {/* Info sur les seuils par défaut */}
+            {/* Info banner */}
             <View
               style={[
                 styles.card,
@@ -455,7 +276,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                 <MaterialIcons name="info-outline" size={18} color={subCol} />
                 <Text style={[styles.cardSub, { color: subCol, flex: 1 }]}>
                   Les valeurs par défaut proviennent de la configuration
-                  système. Modifiez-les pour personaliser ce poulailler.
+                  système. Modifiez-les pour personnaliser ce poulailler.
                 </Text>
               </View>
             </View>
@@ -473,27 +294,10 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                   marginBottom: 24,
                 },
               ]}
-            >
-              <View>
-                <Text style={[styles.cardTitle, { color: textCol }]}>
-                  Notifications mobiles
-                </Text>
-                <Text style={[styles.cardSub, { color: subCol }]}>
-                  Recevoir les alertes sur le téléphone
-                </Text>
-              </View>
-              <Switch
-                value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
-                trackColor={{ false: "#475569", true: "#22C55E" }}
-                thumbColor="#fff"
-              />
-            </View>
+            ></View>
 
-            {/* 🌡 Température */}
-            <Text style={[styles.catLabel, { color: textCol }]}>
-              🌡 Température
-            </Text>
+            {/* Température */}
+            {renderSectionLabel("thermostat", "Température")}
             <View
               style={[
                 styles.card,
@@ -516,10 +320,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               </View>
             </View>
 
-            {/* 💧 Humidité */}
-            <Text style={[styles.catLabel, { color: textCol }]}>
-              💧 Humidité
-            </Text>
+            {/* Humidité */}
+            {renderSectionLabel("water-drop", "Humidité")}
             <View
               style={[
                 styles.card,
@@ -532,10 +334,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               </View>
             </View>
 
-            {/* 🌫 Qualité air */}
-            <Text style={[styles.catLabel, { color: textCol }]}>
-              🌫 Qualité de l'air
-            </Text>
+            {/* Qualité de l'air */}
+            {renderSectionLabel("air", "Qualité de l'air")}
             <View
               style={[
                 styles.card,
@@ -546,18 +346,10 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                 {renderInput("CO₂ Max", thresholds.co2Max, "co2Max", "ppm")}
                 {renderInput("NH₃ Max", thresholds.nh3Max, "nh3Max", "ppm")}
               </View>
-              <View style={styles.row}>
-                {renderInput(
-                  "Poussière Max",
-                  thresholds.dustMax,
-                  "dustMax",
-                  "µg",
-                )}
-              </View>
             </View>
 
-            {/* 🚰 Eau */}
-            <Text style={[styles.catLabel, { color: textCol }]}>🚰 Eau</Text>
+            {/* Eau */}
+            {renderSectionLabel("water", "Niveau d'eau")}
             <View
               style={[
                 styles.card,
@@ -576,20 +368,31 @@ const AlertSettingsScreen = ({ route, navigation }) => {
           </>
         )}
 
-        {/* ══════════════════════════════════════════════════════════════════ */}
-        {/* TAB ALERTES                                                       */}
-        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* ══════════════════════════════════════════════════════════════ */}
+        {/* TAB ALERTES                                                    */}
+        {/* ══════════════════════════════════════════════════════════════ */}
         {activeTab === "alerts" && (
           <>
-            {/* Stats bar */}
+            {/* Stats */}
             {stats && (
               <View style={styles.statsRow}>
                 {[
-                  { label: "Total", value: stats.total, color: "#64748b" },
-                  { label: "Non lues", value: stats.unread, color: "#ef4444" },
+                  {
+                    label: "Total",
+                    value: stats.total,
+                    icon: "list-alt",
+                    color: subCol,
+                  },
+                  {
+                    label: "Non lues",
+                    value: stats.unread,
+                    icon: "mark-email-unread",
+                    color: "#ef4444",
+                  },
                   {
                     label: "Danger",
                     value: stats.danger || 0,
+                    icon: "error-outline",
                     color: "#f97316",
                   },
                 ].map((s) => (
@@ -600,6 +403,12 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                       { backgroundColor: cardBg, borderColor: borderCol },
                     ]}
                   >
+                    <MaterialIcons
+                      name={s.icon}
+                      size={18}
+                      color={s.color}
+                      style={{ marginBottom: 4 }}
+                    />
                     <Text style={[styles.statValue, { color: s.color }]}>
                       {s.value}
                     </Text>
@@ -618,7 +427,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                   style={[
                     styles.actionBtn,
                     {
-                      backgroundColor: "rgba(34,197,94,0.1)",
+                      backgroundColor: "rgba(34,197,94,0.08)",
                       borderColor: "#22C55E",
                     },
                   ]}
@@ -634,7 +443,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                   style={[
                     styles.actionBtn,
                     {
-                      backgroundColor: "rgba(239,68,68,0.1)",
+                      backgroundColor: "rgba(239,68,68,0.08)",
                       borderColor: "#ef4444",
                     },
                   ]}
@@ -661,7 +470,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                 ]}
               >
                 <MaterialIcons
-                  name="notifications-none"
+                  name="notifications-off"
                   size={40}
                   color={subCol}
                 />
@@ -672,40 +481,12 @@ const AlertSettingsScreen = ({ route, navigation }) => {
             ) : (
               alerts.map((item) => {
                 const isRead = item.isRead || item.read;
-                // Support new alert system: icon emoji + new severity levels
-                const iconEmoji =
-                  item.icon ||
-                  (item.severity === "danger"
-                    ? "🔴"
-                    : item.severity === "warn"
-                      ? "⚠️"
-                      : "✅");
-                const severityColor =
-                  item.severity === "danger"
-                    ? "#ef4444"
-                    : item.severity === "warn"
-                      ? "#f97316"
-                      : "#22C55E";
-                const severityLabel =
-                  item.severity === "danger"
-                    ? "DANGER"
-                    : item.severity === "warn"
-                      ? "AVERTISSEMENT"
-                      : "INFO";
-                const severityBgColor =
-                  item.severity === "danger"
-                    ? "#ef444420"
-                    : item.severity === "warn"
-                      ? "#f9731620"
-                      : "#22C55E20";
-
-                // Fallback to old system if needed
-                const isCrit =
-                  item.severity === "critical" || item.type === "CRITIQUE";
+                const meta = getSeverityMeta(item);
                 const param = PARAM_ICONS[item.parameter] || {
-                  icon: "warning",
+                  icon: "sensors",
                   color: "#f59e0b",
                 };
+                const rowIcon = item.parameter ? param.icon : meta.icon;
 
                 return (
                   <TouchableOpacity
@@ -718,40 +499,36 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                         styles.alertItem,
                         {
                           backgroundColor: cardBg,
-                          borderColor: isRead
-                            ? borderCol
-                            : item.severity
-                              ? severityColor + "30"
-                              : isCrit
-                                ? "#ef444430"
-                                : "#f9731630",
+                          borderColor: isRead ? borderCol : meta.color + "35",
                         },
-                        isRead && { opacity: 0.55 },
+                        isRead && { opacity: 0.5 },
                       ]}
                     >
-                      {/* Icône: emoji ou MaterialIcon */}
-                      {iconEmoji ? (
-                        <Text style={{ fontSize: 24, marginRight: 12 }}>
-                          {iconEmoji}
-                        </Text>
-                      ) : (
-                        <View
-                          style={[
-                            styles.alertIcon,
-                            { backgroundColor: param.color + "20" },
-                          ]}
-                        >
-                          <MaterialIcons
-                            name={param.icon}
-                            size={20}
-                            color={param.color}
-                          />
-                        </View>
-                      )}
+                      {/* Icône dans carré neutre */}
+                      <View
+                        style={[
+                          styles.alertIconWrap,
+                          {
+                            backgroundColor: darkMode ? "#0f172a" : "#f8fafc",
+                            borderColor: borderCol,
+                          },
+                        ]}
+                      >
+                        <MaterialIcons
+                          name={rowIcon}
+                          size={20}
+                          color={isRead ? subCol : iconCol}
+                        />
+                      </View>
 
                       {/* Contenu */}
                       <View style={{ flex: 1 }}>
-                        <Text style={[styles.alertMsg, { color: textCol }]}>
+                        <Text
+                          style={[
+                            styles.alertMsg,
+                            { color: isRead ? subCol : textCol },
+                          ]}
+                        >
                           {item.message}
                         </Text>
                         <View
@@ -766,31 +543,19 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                             style={[
                               styles.severityBadge,
                               {
-                                backgroundColor: item.severity
-                                  ? severityBgColor
-                                  : isCrit
-                                    ? "#ef444420"
-                                    : "#f9731620",
+                                backgroundColor: meta.color + "15",
+                                borderColor: meta.color + "30",
+                                borderWidth: 1,
                               },
                             ]}
                           >
                             <Text
                               style={[
                                 styles.severityText,
-                                {
-                                  color: item.severity
-                                    ? severityColor
-                                    : isCrit
-                                      ? "#ef4444"
-                                      : "#f97316",
-                                },
+                                { color: meta.color },
                               ]}
                             >
-                              {item.severity
-                                ? severityLabel
-                                : isCrit
-                                  ? "CRITIQUE"
-                                  : "ATTENTION"}
+                              {meta.label}
                             </Text>
                           </View>
                           <Text style={[styles.alertTime, { color: subCol }]}>
@@ -804,12 +569,12 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                         </View>
                       </View>
 
-                      {/* Indicateur non lu */}
+                      {/* Dot non lu */}
                       {!isRead && (
                         <View
                           style={[
                             styles.unreadDot,
-                            { backgroundColor: isCrit ? "#ef4444" : "#f97316" },
+                            { backgroundColor: meta.color },
                           ]}
                         />
                       )}
@@ -832,6 +597,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
   );
 };
 
+// ── Styles ────────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { justifyContent: "center", alignItems: "center" },
@@ -853,7 +620,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
     flex: 1,
     textAlign: "center",
@@ -865,11 +632,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
 
-  tabBar: {
-    flexDirection: "row",
-    borderBottomWidth: 1,
-    paddingHorizontal: 16,
-  },
+  tabBar: { flexDirection: "row", borderBottomWidth: 1, paddingHorizontal: 16 },
   tab: {
     flex: 1,
     flexDirection: "row",
@@ -892,11 +655,25 @@ const styles = StyleSheet.create({
   },
   tabBadgeText: { color: "#fff", fontSize: 10, fontWeight: "800" },
 
+  sectionLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 10,
+  },
+  sectionIconWrap: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  catLabel: { fontSize: 14, fontWeight: "700" },
+
   card: { borderRadius: 16, padding: 16, borderWidth: 1, marginBottom: 20 },
   cardTitle: { fontSize: 15, fontWeight: "600" },
   cardSub: { fontSize: 12, marginTop: 3 },
-
-  catLabel: { fontSize: 14, fontWeight: "700", marginBottom: 10 },
 
   row: {
     flexDirection: "row",
@@ -924,7 +701,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
   },
-  statValue: { fontSize: 22, fontWeight: "800" },
+  statValue: { fontSize: 20, fontWeight: "800" },
   statLabel: { fontSize: 11, fontWeight: "600", marginTop: 2 },
 
   actionsRow: { flexDirection: "row", gap: 10, marginBottom: 16 },
@@ -948,20 +725,18 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 1.5,
   },
-  alertIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+  alertIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     marginRight: 12,
+    borderWidth: 1,
+    flexShrink: 0,
   },
   alertMsg: { fontSize: 13, fontWeight: "600", lineHeight: 18 },
-  severityBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
+  severityBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6 },
   severityText: { fontSize: 10, fontWeight: "800" },
   alertTime: { fontSize: 11 },
   unreadDot: {
@@ -969,6 +744,7 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     marginLeft: 8,
+    flexShrink: 0,
   },
 
   emptyCard: {

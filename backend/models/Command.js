@@ -9,12 +9,13 @@ const commandSchema = new mongoose.Schema(
     },
     typeActionneur: {
       type: String,
-      enum: ["porte", "ventilateur", "lampe"], // ✅ ajouter 'lampe'
+      // BUG CORRIGÉ #8 : "pompe" était absent → crash Mongoose si commande pompe créée
+      enum: ["porte", "ventilateur", "lampe", "pompe"],
       required: true,
     },
     action: {
       type: String,
-      required: true, // e.g., 'ouvrir', 'fermer', 'demarrer', 'arreter'
+      required: true, // e.g., 'ouvrir', 'fermer', 'demarrer', 'arreter', 'on', 'off'
     },
     issuedBy: {
       type: String, // 'system', 'user', 'scheduler'

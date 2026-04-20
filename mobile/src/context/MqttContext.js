@@ -5,12 +5,7 @@ import React, {
   useReducer,
   useCallback,
 } from "react";
-// ✅ Import correct : connectMqtt et subscribePoultry en named, disconnectMqtt en default
-import mqttService, {
-  connectMqtt,
-  subscribePoultry,
-  disconnectMqtt,
-} from "../services/mqttService";
+import * as realtimeService from "../services/realtimeService";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const MqttContext = createContext();
@@ -20,7 +15,6 @@ const mqttReducer = (state, action) => {
     case "MESSAGE": {
       const { topic, data } = action.payload;
 
-      // SAFETY: Skip malformed data
       if (!data || typeof data !== "object") return state;
 
       const parts = topic.split("/");
@@ -56,40 +50,64 @@ export const MqttProvider = ({ children }) => {
   useEffect(() => {
     let isMounted = true;
 
-    const initMqtt = async () => {
+    const initRealtime = async () => {
       try {
         const userToken = await AsyncStorage.getItem("userToken");
-        const userId = (await AsyncStorage.getItem("userId")) || "guest";
 
-        if (!userToken || !isMounted) return;
+        if (!userToken || !isMounted) {
+          console.log("[MqttContext] No token, skipping realtime init");
+          return;
+        }
 
-        await connectMqtt(userToken, userId, (topic, data) => {
-          if (isMounted) {
-            dispatch({ type: "MESSAGE", payload: { topic, data } });
+        await realtimeService.connect(userToken);
+        realtimeService.onMeasures((data) => {
+          if (isMounted && data.poulaillerId) {
+            const topic = `poulailler/${data.poulaillerId}/measures`;
+            dispatch({ type: "MESSAGE", payload: { topic, data: data } });
           }
         });
-
+        realtimeService.onStatus((data) => {
+          if (isMounted && data.poulaillerId) {
+            const topic = `poulailler/${data.poulaillerId}/status`;
+            dispatch({ type: "MESSAGE", payload: { topic, data: data } });
+          }
+        });
         dispatch({ type: "CONNECT" });
       } catch (e) {
-        console.warn("[MqttContext] initMqtt error:", e);
+        console.warn("[MqttContext] initRealtime error:", e);
+        dispatch({ type: "DISCONNECT" });
       }
     };
 
-    initMqtt();
+    initRealtime();
+
+    realtimeService.socket?.on("connect", () => {
+      if (isMounted) dispatch({ type: "CONNECT" });
+    });
+    realtimeService.socket?.on("disconnect", () => {
+      if (isMounted) dispatch({ type: "DISCONNECT" });
+    });
+    realtimeService.socket?.on("connect_error", () => {
+      if (isMounted) dispatch({ type: "DISCONNECT" });
+    });
 
     return () => {
       isMounted = false;
-      disconnectMqtt();
+      realtimeService.disconnect();
       dispatch({ type: "DISCONNECT" });
     };
   }, []);
 
   const subscribe = useCallback((poultryId) => {
-    subscribePoultry(poultryId);
+    realtimeService.joinPoulailler(poultryId);
+  }, []);
+
+  const sendCommand = useCallback((poultryId, command, value = null) => {
+    realtimeService.sendCommand(poultryId, command, value);
   }, []);
 
   return (
-    <MqttContext.Provider value={{ state, dispatch, subscribe }}>
+    <MqttContext.Provider value={{ state, dispatch, subscribe, sendCommand }}>
       {children}
     </MqttContext.Provider>
   );

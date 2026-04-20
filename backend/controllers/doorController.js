@@ -1,6 +1,7 @@
 const DoorSchedule = require("../models/DoorSchedule");
 const DoorEvent = require("../models/DoorEvent");
 const { createDoorAlert } = require("../services/alertService");
+const { publishDoorConfig } = require("../services/porteService");
 
 // In-memory tracking of door motion times (to detect timeouts)
 const doorMotionTracker = new Map();
@@ -19,16 +20,23 @@ const trackDoorMotion = (poulaillerId, action) => {
  * Check if door motion timed out (> 30s without reaching end switch)
  * ✅ CORRIGÉ — createDoorAlert appelé avec la bonne signature
  */
+const mongoose = require("mongoose"); // FIX mongoose scope
+
 const checkDoorTimeout = async (poulaillerId) => {
+  if (!mongoose.Types.ObjectId.isValid(poulaillerId)) return;
+
   const motion = doorMotionTracker.get(poulaillerId);
   if (!motion) return;
 
   const elapsed = Date.now() - motion.startTime;
   if (elapsed > 30000) {
-    // ✅ Signature correcte : (poultryId, eventKey, triggeredBy)
-    await createDoorAlert(poulaillerId, "timeout", "auto");
-    doorMotionTracker.delete(poulaillerId);
-    console.log(`[DOOR] Timeout détecté pour ${poulaillerId}`);
+    try {
+      await createDoorAlert(poulaillerId, "timeout", "auto");
+      doorMotionTracker.delete(poulaillerId);
+      console.log(`[DOOR] Timeout détecté pour ${poulaillerId}`);
+    } catch (error) {
+      console.error("[DOOR] Alert fail:", error.message);
+    }
   }
 };
 
@@ -132,6 +140,24 @@ exports.updateDoorSchedule = async (req, res) => {
     }
 
     await schedule.save();
+
+    try {
+      await publishDoorConfig(id, schedule);
+      console.log("[DOOR] Planning publie vers ESP32", {
+        poulaillerId: id,
+        openHour: schedule.openHour,
+        openMinute: schedule.openMinute,
+        closeHour: schedule.closeHour,
+        closeMinute: schedule.closeMinute,
+        enabled: schedule.enabled,
+      });
+    } catch (publishError) {
+      console.error("[DOOR] publishDoorConfig error:", publishError.message);
+      return res.status(502).json({
+        success: false,
+        error: `Planning sauvegarde, mais envoi MQTT impossible: ${publishError.message}`,
+      });
+    }
 
     res.json({
       success: true,

@@ -11,7 +11,8 @@ const path = require("path");
 const fs = require("fs");
 
 // Ensure logs directory exists
-const logsDir = path.join(__dirname, "../../../logs");
+const logsDir = path.join(process.cwd(), "backend", "logs");
+
 if (!fs.existsSync(logsDir)) {
   fs.mkdirSync(logsDir, { recursive: true });
 }

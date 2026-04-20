@@ -21,8 +21,8 @@ const DoorEventSchema = new mongoose.Schema(
     timestamp: {
       type: Date,
       default: Date.now,
-      index: true,
     },
+
   },
   { timestamps: false } // We only use our custom timestamp
 );

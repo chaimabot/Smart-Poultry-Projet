@@ -33,7 +33,8 @@
           "photosPermission": "L'application a besoin d'accéder à vos photos.",
           "cameraPermission": "L'application a besoin d'accéder à votre caméra."
         }
-      ]
+      ],
+      "expo-secure-store"
     ]
   }
 }

@@ -458,7 +458,7 @@ export default function ActuatorControl({
         </TouchableOpacity>
       </View>
 
-      {mode === "Manuel" ? (
+{mode === "Manuel" ? (
         <TouchableOpacity
           style={[
             styles.actionBtn,
@@ -468,6 +468,41 @@ export default function ActuatorControl({
           onPress={onToggle}
           disabled={processing}
         >
+          {processing ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <MaterialIcons
+              name={
+                name === "Porte"
+                  ? doorState === "Fermée"
+                    ? "door-sliding"
+                    : "door-front"
+                  : name === "Lampe"
+                    ? state === "Éteinte"
+                      ? "lightbulb"
+                      : "lightbulb-outline"
+                    : state === "Arrêt"
+                      ? "play-arrow"
+                      : "stop"
+              }
+              size={20}
+              color="#fff"
+            />
+          )}
+          <Text style={styles.actionBtnText}>
+            {name === "Porte"
+              ? doorState === "Fermée"
+                ? "Ouvrir"
+                : "Fermer"
+              : name === "Lampe"
+                ? state === "Éteinte"
+                  ? "Allumer"
+                  : "Éteindre"
+                : state === "Arrêt"
+                  ? "Démarrer"
+                  : "Arrêter"}
+          </Text>
+        </TouchableOpacity>
           {processing ? (
             <ActivityIndicator size="small" color="#fff" />
           ) : (

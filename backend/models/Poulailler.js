@@ -66,7 +66,7 @@ const poulaillerSchema = new mongoose.Schema(
     uniqueCode: {
       type: String,
       unique: true,
-      sparse: true, // Permet d'avoir plusieurs null si pas encore défini
+      sparse: true,
     },
     moduleId: {
       type: mongoose.Schema.ObjectId,
@@ -100,6 +100,11 @@ const poulaillerSchema = new mongoose.Schema(
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
       },
       lamp: {
+        status: { type: String, enum: ["on", "off"], default: "off" },
+        mode: { type: String, enum: ["auto", "manual"], default: "auto" },
+      },
+      // BUG CORRIGÉ #10 : "pump" manquait → état pompe jamais persisté en DB
+      pump: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
       },
