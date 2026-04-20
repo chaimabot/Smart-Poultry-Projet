@@ -567,10 +567,10 @@ exports.getMonitoringData = async (req, res) => {
       data: {
         ...measures,
         actuatorStates: {
-          door: poulailler.actuatorStates.door.status,
-          ventilation: poulailler.actuatorStates.ventilation.status,
-          lamp: poulailler.actuatorStates.lamp.status,
-          pump: poulailler.actuatorStates.pump.status, // AJOUT
+          door: poulailler.actuatorStates?.door?.status || "closed",
+          ventilation: poulailler.actuatorStates?.ventilation?.status || "off",
+          lamp: poulailler.actuatorStates?.lamp?.status || "off",
+          pump: poulailler.actuatorStates?.pump?.status || "off",
         },
         history: history.map((m) => m.temperature ?? 0),
         historyFull: history,

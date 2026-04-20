@@ -20,7 +20,11 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.chaimabn78.mobile"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -35,6 +39,11 @@
         }
       ],
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "efce610b-3e78-4397-8f0c-1f4dc862fe31"
+      }
+    }
   }
 }
