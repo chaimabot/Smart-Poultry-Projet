@@ -20,10 +20,14 @@ const mqttReducer = (state, action) => {
       const parts = topic.split("/");
       if (parts.length < 3 || parts[0] !== "poulailler") return state;
 
-      const poultryId = parts[1];
-      if (!poultryId) return state;
+      // ✅ FIX : parts[1] est la macAddress (ex: "142B2FC7D704")
+      //         On l'utilise comme clé dans le state MQTT.
+      //         Le mapping macAddress → poulaillerId est géré côté composant
+      //         (via usePoultryState qui connaît les deux).
+      const macAddress = parts[1];
+      if (!macAddress) return state;
 
-      const newPoultryState = state[poultryId] || {};
+      const newPoultryState = state[macAddress] || {};
 
       if (parts[2] === "status") {
         newPoultryState.status = data;
@@ -33,7 +37,7 @@ const mqttReducer = (state, action) => {
         return state;
       }
 
-      return { ...state, [poultryId]: newPoultryState };
+      return { ...state, [macAddress]: newPoultryState };
     }
     case "CONNECT":
       return { ...state, connected: true };
@@ -60,18 +64,23 @@ export const MqttProvider = ({ children }) => {
         }
 
         await realtimeService.connect(userToken);
+
+        // ✅ FIX : le serveur doit envoyer la macAddress dans le payload
+        //         Exemple attendu : { macAddress: "142B2FC7D704", temperature: 25, ... }
         realtimeService.onMeasures((data) => {
-          if (isMounted && data.poulaillerId) {
-            const topic = `poulailler/${data.poulaillerId}/measures`;
-            dispatch({ type: "MESSAGE", payload: { topic, data: data } });
+          if (isMounted && data.macAddress) {
+            const topic = `poulailler/${data.macAddress}/measures`;
+            dispatch({ type: "MESSAGE", payload: { topic, data } });
           }
         });
+
         realtimeService.onStatus((data) => {
-          if (isMounted && data.poulaillerId) {
-            const topic = `poulailler/${data.poulaillerId}/status`;
-            dispatch({ type: "MESSAGE", payload: { topic, data: data } });
+          if (isMounted && data.macAddress) {
+            const topic = `poulailler/${data.macAddress}/status`;
+            dispatch({ type: "MESSAGE", payload: { topic, data } });
           }
         });
+
         dispatch({ type: "CONNECT" });
       } catch (e) {
         console.warn("[MqttContext] initRealtime error:", e);
@@ -98,12 +107,16 @@ export const MqttProvider = ({ children }) => {
     };
   }, []);
 
-  const subscribe = useCallback((poultryId) => {
-    realtimeService.joinPoulailler(poultryId);
+  // ✅ FIX : subscribe prend maintenant la macAddress (pas le poulaillerId)
+  //         Appeler avec : subscribe(macAddress)  ex: subscribe("142B2FC7D704")
+  const subscribe = useCallback((macAddress) => {
+    realtimeService.joinPoulailler(macAddress);
   }, []);
 
-  const sendCommand = useCallback((poultryId, command, value = null) => {
-    realtimeService.sendCommand(poultryId, command, value);
+  // ✅ FIX : sendCommand utilise la macAddress dans le topic
+  //         Appeler avec : sendCommand(macAddress, command, value)
+  const sendCommand = useCallback((macAddress, command, value = null) => {
+    realtimeService.sendCommand(macAddress, command, value);
   }, []);
 
   return (
