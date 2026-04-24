@@ -6,14 +6,19 @@
 #include "actuators.h"
 #include "sensors.h"
 
-String TOPIC_BASE     = "poulailler/" + String(POULAILLER_ID) + "/";
-String TOPIC_MEASURES = TOPIC_BASE + "measures";
-String TOPIC_STATUS   = TOPIC_BASE + "status";
-String TOPIC_CMD_LAMP = TOPIC_BASE + "cmd/lamp";
-String TOPIC_CMD_PUMP = TOPIC_BASE + "cmd/pump";
-String TOPIC_CMD_FAN  = TOPIC_BASE + "cmd/fan";
-String TOPIC_CMD_DOOR = TOPIC_BASE + "cmd/door";
-String TOPIC_CONFIG   = TOPIC_BASE + "config";
+// --- DEVICE_ID défini dans main.cpp (adresse MAC WiFi) ---
+extern String DEVICE_ID;
+
+// Topics initialisés dynamiquement dans mqtt_init()
+// (DEVICE_ID n'est pas encore disponible au chargement statique)
+String TOPIC_BASE     = "";
+String TOPIC_MEASURES = "";
+String TOPIC_STATUS   = "";
+String TOPIC_CMD_LAMP = "";
+String TOPIC_CMD_PUMP = "";
+String TOPIC_CMD_FAN  = "";
+String TOPIC_CMD_DOOR = "";
+String TOPIC_CONFIG   = "";
 
 extern Thresholds    _th;
 extern ActuatorState _state;
@@ -25,7 +30,19 @@ void mqtt_init(PubSubClient& client, WiFiClientSecure& sClient) {
   sClient.setInsecure(); // Ajouter CA cert en production
   client.setServer(MQTT_BROKER, MQTT_PORT);
   client.setCallback(onMessage);
-  Serial.println("[MQTT] Client configuré");
+
+  // Construction des topics avec l'adresse MAC
+  TOPIC_BASE     = "poulailler/" + DEVICE_ID + "/";
+  TOPIC_MEASURES = TOPIC_BASE + "measures";
+  TOPIC_STATUS   = TOPIC_BASE + "status";
+  TOPIC_CMD_LAMP = TOPIC_BASE + "cmd/lamp";
+  TOPIC_CMD_PUMP = TOPIC_BASE + "cmd/pump";
+  TOPIC_CMD_FAN  = TOPIC_BASE + "cmd/fan";
+  TOPIC_CMD_DOOR = TOPIC_BASE + "cmd/door";
+  TOPIC_CONFIG   = TOPIC_BASE + "config";
+
+  Serial.println("[MQTT] Client configure. Topics initialises avec MAC : " + DEVICE_ID);
+  Serial.println("[MQTT] Topic base : " + TOPIC_BASE);
 }
 
 // =========================================================
@@ -34,16 +51,17 @@ void mqtt_loop(PubSubClient& client) {
   if (!client.connected()) {
     if (millis() - lastReconnect > 5000) {
       lastReconnect = millis();
-      String clientId = "ESP32-" + String(POULAILLER_ID);
+      // Client ID unique basé sur l'adresse MAC
+      String clientId = "ESP32-" + DEVICE_ID;
       if (client.connect(clientId.c_str(), MQTT_USER, MQTT_PASS)) {
-        Serial.println("[MQTT] Connecté au broker");
+        Serial.println("[MQTT] Connecte au broker (ID: " + clientId + ")");
         client.subscribe(TOPIC_CMD_LAMP.c_str());
         client.subscribe(TOPIC_CMD_PUMP.c_str());
         client.subscribe(TOPIC_CMD_FAN.c_str());
         client.subscribe(TOPIC_CMD_DOOR.c_str());
         client.subscribe(TOPIC_CONFIG.c_str());
       } else {
-        Serial.printf("[MQTT] Connexion échouée : %d\n", client.state());
+        Serial.printf("[MQTT] Connexion echouee : %d\n", client.state());
       }
     }
   } else {
@@ -56,14 +74,15 @@ void mqtt_publishMeasures(PubSubClient& client, const SensorData& data) {
   if (!client.connected()) return;
 
   StaticJsonDocument<384> doc;
-  doc["temperature"]      = round(data.temperature * 10) / 10.0;
-  doc["humidity"]         = round(data.humidity    * 10) / 10.0;
-  doc["co2"]              = (int)data.co2;
-  doc["nh3"]              = round(data.nh3         * 10) / 10.0;
-  doc["airQualityPercent"]= (int)data.airQualityPercent;
-  doc["nh3DigitalAlert"]  = data.nh3DigitalAlert;
-  doc["waterLevel"]       = round(data.waterLevel  * 10) / 10.0;
-  doc["timestamp"]        = millis();
+  doc["temperature"]       = round(data.temperature * 10) / 10.0;
+  doc["humidity"]          = round(data.humidity    * 10) / 10.0;
+  doc["co2"]               = (int)data.co2;
+  doc["nh3"]               = round(data.nh3         * 10) / 10.0;
+  doc["airQualityPercent"] = (int)data.airQualityPercent;
+  doc["nh3DigitalAlert"]   = data.nh3DigitalAlert;
+  doc["waterLevel"]        = round(data.waterLevel  * 10) / 10.0;
+  doc["timestamp"]         = millis();
+  doc["deviceId"]          = DEVICE_ID; // Inclus dans la payload pour faciliter le backend
 
   char buf[512];
   serializeJson(doc, buf);
@@ -79,12 +98,13 @@ void mqtt_publishStatus(PubSubClient& client, const ActuatorState& state) {
   doc["pumpOn"]    = state.pumpOn;
   doc["fanOn"]     = state.fanOn;
   // Champ booléen rétro-compat + état riche texte
-  doc["doorOpen"]  = state.doorOpen();          // true si OPEN ou OPENING
-  doc["doorState"] = actuators_doorStateName(state.doorState); // "OPEN","CLOSED","OPENING"...
+  doc["doorOpen"]  = state.doorOpen();                           // true si OPEN ou OPENING
+  doc["doorState"] = actuators_doorStateName(state.doorState);  // "OPEN","CLOSED","OPENING"...
   doc["lampAuto"]  = state.lampAuto;
   doc["pumpAuto"]  = state.pumpAuto;
   doc["fanAuto"]   = state.fanAuto;
   doc["doorAuto"]  = _doorSched.active;
+  doc["deviceId"]  = DEVICE_ID; // Inclus dans la payload pour faciliter le backend
 
   char buf[512];
   serializeJson(doc, buf);
@@ -100,7 +120,7 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
 
   StaticJsonDocument<768> doc;
   if (deserializeJson(doc, msg)) {
-    Serial.println("[MQTT] JSON invalide — message ignoré");
+    Serial.println("[MQTT] JSON invalide — message ignore");
     return;
   }
 
@@ -117,7 +137,6 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
     else {
       Serial.printf("[MQTT] Action porte inconnue : %s\n", action);
     }
-    // Publier le nouvel état immédiatement
     mqtt_publishStatus(mqttClient, _state);
     return;
   }
@@ -164,7 +183,7 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       _doorSched.closeM = doc["doorSched"]["closeM"] | _doorSched.closeM;
       _doorSched.active = doc["doorSched"]["active"] | _doorSched.active;
       actuators_saveSched();
-      Serial.printf("[MQTT] Planning mis à jour : O=%02d:%02d F=%02d:%02d actif=%d\n",
+      Serial.printf("[MQTT] Planning mis a jour : O=%02d:%02d F=%02d:%02d actif=%d\n",
         _doorSched.openH, _doorSched.openM,
         _doorSched.closeH, _doorSched.closeM,
         _doorSched.active);

@@ -68,53 +68,33 @@ export const eleveursAPI = {
   delete: (id) => api.delete(`/admin/eleveurs/${id}`),
 
   // Renoyer l'invitation
-  resendInvite: (id) => api.post(`/adm in/eleveurs/${id}/resend-invite`),
+  resendInvite: (id) => api.post(`/admin/eleveurs/${id}/resend-invite`),
 };
 
 export const modulesAPI = {
-  // Liste des modules avec pagination et filtres
+  // GET
   getAll: (params) => api.get("/admin/modules", { params }),
-
-  // Obtenir un module par ID
+  getPendingPoulaillers: () => api.get("/admin/modules/pending-poulaillers"),
   getById: (id) => api.get(`/admin/modules/${id}`),
 
-  // Creer un nouveau module sans code claim
+  // CREATE / UPDATE / DELETE
   create: (data) => api.post("/admin/modules", data),
-
-  // Generate claim code pour un module existant ou nouveau
-  generateClaimCode: (data) => api.post("/admin/modules/generate-claim", data),
-
-  // Decoder le code QR et obtenir les infos du module avant claim
-  decodeQR: (qrData) => api.post("/admin/modules/decode-qr", { qrData }),
-
-  // Claimer un module avec son code
-  // Claim + Associate en une seule etape
-  claim: (claimCode, poulaillerId) =>
-    api.post("/admin/modules/claim", { claimCode, poulaillerId }),
-
-  // Associer le module a un poulailler
-  associate: (moduleId, poulaillerId) =>
-    api.put(`/admin/modules/${moduleId}/associate`, { poulaillerId }),
-
-  // Dissocier le module d'un poulailler
-  dissociate: (moduleId, data) =>
-    api.put(`/admin/modules/${moduleId}/dissociate`, data),
-
-  // Obtenir les poulaillers en attente de module
-  getPendingPoulaillers: () => api.get("/admin/modules/pending-poulaillers"),
-
-  // Supprimer un module
+  update: (id, data) => api.put(`/admin/modules/${id}`, data),
   delete: (id) => api.delete(`/admin/modules/${id}`),
 
-  // Mettre a jour un module
-  update: (id, data) => api.put(`/admin/modules/${id}`, data),
+  // BUSINESS LOGIC
+  claim: (data) => api.post("/admin/modules/claim", data),
+  dissociate: (moduleId, data) =>
+    api.patch(`/admin/modules/${moduleId}/dissociate`, data),
 };
 
 export const poulaillersAPI = {
   getAll: (params) => api.get("/admin/poulaillers", { params }),
   getById: (id) => api.get(`/admin/poulaillers/${id}`),
+  create: (data) => api.post("/admin/poulaillers", data),
   update: (id, data) => api.put(`/admin/poulaillers/${id}`, data),
   delete: (id) => api.delete(`/admin/poulaillers/${id}`),
+  getUsers: () => api.get("/admin/eleveurs"),
   getSeuils: (id) => api.get(`/poulaillers/${id}/seuils`),
   updateSeuils: (id, seuils) => api.put(`/poulaillers/${id}/seuils`, seuils),
 };
@@ -169,6 +149,19 @@ export const utilisateursAPI = {
   toggleStatus: (id) => api.put(`/admin/utilisateurs/${id}/toggle-status`),
   delete: (id) => api.delete(`/admin/utilisateurs/${id}`),
   inviteAdmin: (data) => api.post("/admin/utilisateurs/invite-admin", data),
+};
+export const dossiersAPI = {
+  getAll: (params) => api.get("/admin/dossiers", { params }),
+
+  getById: (id) => api.get(`/admin/dossiers/${id}`),
+
+  validate: (id) => api.patch(`/admin/dossiers/validate/${id}`),
+
+  updateAmounts: (id, data) => api.put(`/admin/dossiers/${id}/finance`, data),
+
+  clore: (id, body) => api.patch(`/admin/dossiers/clore/${id}`, body),
+  annuler: (id, body) => api.patch(`/admin/dossiers/annuler/${id}`, body),
+  delete: (id) => api.delete(`/admin/dossiers/${id}`),
 };
 
 export default api;

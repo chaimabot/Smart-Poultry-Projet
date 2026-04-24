@@ -1,9 +1,28 @@
 const Poulailler = require("../models/Poulailler");
 const Command = require("../models/Command");
+const Module = require("../models/Module");
 const { getMqttClient } = require("./mqttService");
 
+// ============================================================================
+// HELPER : obtenir la macAddress du device associé au poulailler
+// ============================================================================
+const getMacAddress = async (poulaillerId) => {
+  const device = await Module.findOne({ poulailler: poulaillerId });
+  if (!device?.macAddress) {
+    throw new Error(
+      `Aucun device/MAC trouvé pour le poulailler ${poulaillerId}`,
+    );
+  }
+  return device.macAddress;
+};
+
 const pompeService = {
-  // Envoi de la commande à l'ESP32 et log dans la DB
+  // ============================================================================
+  // Envoyer une commande pompe à l'ESP32 et logger en BD
+  // @param {string} id     — ObjectId MongoDB du poulailler
+  // @param {string} mode   — "auto" | "manual"
+  // @param {string} action — "on" | "off"
+  // ============================================================================
   async sendPumpCommand(id, mode, action) {
     const poulailler = await Poulailler.findById(id);
     if (!poulailler) throw new Error("Poulailler introuvable");
@@ -14,15 +33,16 @@ const pompeService = {
       action,
     });
 
-    // Publication MQTT vers le hardware au bon topic avec le bon format
     const client = getMqttClient();
     if (!client || !client.connected) {
       console.error("[pompeService] MQTT client non connecté");
       throw new Error("MQTT client non connecté");
     }
 
-    const poulaillerId = poulailler.uniqueCode || poulailler._id.toString();
-    const topic = `poulailler/${poulaillerId}/cmd/pump`;
+    // ✅ Résoudre la MAC pour le topic
+    const macAddress = await getMacAddress(id);
+    const topic = `poulailler/${macAddress}/cmd/pump`;
+
     // Format correct : ESP32 attend {"on": true/false, "mode": "auto"/"manual"}
     const payload = JSON.stringify({
       on: action === "on",
@@ -45,9 +65,11 @@ const pompeService = {
     return command;
   },
 
-  // Mise à jour des seuils (Min et Hystérésis) et Sync Hardware
+  // ============================================================================
+  // Mettre à jour les seuils eau et synchroniser avec l'ESP32
+  // ============================================================================
   async updateAndSyncThresholds(id, waterLevelMin, waterHysteresis) {
-    // Maj de la configuration dans MongoDB
+    // Mise à jour dans MongoDB
     const poulailler = await Poulailler.findByIdAndUpdate(
       id,
       {
@@ -65,24 +87,31 @@ const pompeService = {
       waterHysteresis,
     });
 
-    // Envoi immédiat de la nouvelle config à l'ESP32
+    // ✅ Envoi immédiat de la nouvelle config à l'ESP32 via MAC
     const client = getMqttClient();
     if (client && client.connected) {
-      const poulaillerId = poulailler.uniqueCode || poulailler._id.toString();
-      const configTopic = `poulailler/${poulaillerId}/config`;
-      const configPayload = JSON.stringify({
-        waterMin: waterLevelMin,
-        waterHysteresis: waterHysteresis,
-      });
+      try {
+        const macAddress = await getMacAddress(id);
+        const configTopic = `poulailler/${macAddress}/config`;
+        const configPayload = JSON.stringify({
+          waterMin: waterLevelMin,
+          waterHysteresis: waterHysteresis,
+        });
 
-      client.publish(configTopic, configPayload, { qos: 1 });
-      console.log(`[pompeService] Config MQTT publié sur ${configTopic}`);
+        client.publish(configTopic, configPayload, { qos: 1 });
+        console.log(`[pompeService] Config MQTT publiée sur ${configTopic}`);
+      } catch (err) {
+        console.warn(
+          "[pompeService] Impossible d'envoyer la config MQTT:",
+          err.message,
+        );
+      }
     }
 
     return poulailler.thresholds;
   },
 
-  // Sécurité : Vérifie si la pompe tourne trop longtemps (prévention surchauffe)
+  // Sécurité : vérifie si la pompe tourne depuis trop longtemps (prévention surchauffe)
   isRuntimeSafe(startTime) {
     const MAX_SECONDS = 30; // Sécurité pour petite pompe 5V
     const duration = (Date.now() - startTime) / 1000;

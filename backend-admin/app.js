@@ -6,7 +6,10 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
 // ✅ NEW: Session timeout middleware
-const { updateActivity, checkSessionTimeout } = require("./middlewares/sessionTimeout");
+const {
+  updateActivity,
+  checkSessionTimeout,
+} = require("./middlewares/sessionTimeout");
 
 // Charger les variables d'environnement
 dotenv.config();
@@ -101,6 +104,9 @@ app.use("/api/admin/logs", logsRoutes);
 
 const rapportsRoutes = require("./routes/rapports");
 app.use("/api/admin/rapports", rapportsRoutes);
+
+const dossierRoutes = require("./routes/dossier");
+app.use("/api/admin/dossiers", dossierRoutes);
 
 // 2. Route générique admin (après toutes les spécifiques)
 const adminRoutes = require("./routes/admin");

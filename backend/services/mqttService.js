@@ -6,15 +6,27 @@ const Module = require("../models/Module");
 const DoorEvent = require("../models/DoorEvent");
 const {
   checkSensorThresholds,
+  resolveNormalValues,
   createMqttAlert,
-  createActuatorAlert, // ✅ AJOUT
+  createActuatorAlert,
 } = require("./alertService");
 
 let client = null;
 let lastMqttDisconnectTime = 0;
 let mqttDisconnectAlertSent = false;
-let doorTimeoutIntervalId = null; // FIX: Prevent ReferenceError
+let doorTimeoutIntervalId = null;
 let doorClockIntervalId = null;
+
+// ============================================================================
+// HELPER : résoudre poulailler depuis adresse MAC
+// L'ESP32 publie sur poulailler/{MAC}/... — le topicParts[1] est la MAC
+// ============================================================================
+const resolvePoulaillerByMac = async (macAddress) => {
+  // La MAC n'est pas un ObjectId MongoDB — on cherche via le modèle Module
+  const device = await Module.findOne({ macAddress });
+  if (!device || !device.poulailler) return null;
+  return await Poulailler.findById(device.poulailler);
+};
 
 // ============================================================================
 // CONFIGURATION ET CONNEXION MQTT
@@ -57,25 +69,23 @@ const connectMqtt = () => {
 
   client = mqtt.connect(brokerUrl, options);
 
-  // --- ÉVÉNEMENTS DU CLIENT ---
+  // ── ÉVÉNEMENTS DU CLIENT ──────────────────────────────────────────────────
+
   client.on("connect", () => {
     console.log(`[MQTT] ✅ Backend connecté avec succès au broker !`);
     mqttDisconnectAlertSent = false;
 
-    // ✅ NE PAS créer d'alerte pour "connect" ou "reconnect"
-    // Ces événements sont du bruit inutile pour l'utilisateur
-
     const topics = [
-      "poulailler/+/measures",
+      "poulailler/+/measures", // mesures capteurs ESP32
+      "poulailler/+/status", // état actionneurs ESP32
       "smartpoultry/discovery",
       "smartpoultry/heartbeat",
-      "poulailler/+/status",
-      "poulailler/+/commands/door",
     ];
 
     topics.forEach((topic) => {
       client.subscribe(topic, (err) => {
         if (!err) console.log(`[MQTT] Souscrit à : ${topic}`);
+        else console.error(`[MQTT] Erreur souscription ${topic}:`, err.message);
       });
     });
 
@@ -95,10 +105,7 @@ const connectMqtt = () => {
     console.error("[MQTT] ❌ Erreur de connexion:", error.message);
     if (error.message.includes("Not authorized")) {
       console.log(
-        "👉 CONSEIL : Vérifiez que l'utilisateur 'backend' existe dans la console HiveMQ.",
-      );
-      console.log(
-        "👉 CONSEIL : Assurez-vous qu'il n'y a pas d'autres sessions 'backend' actives.",
+        "👉 CONSEIL : Vérifiez que l'utilisateur MQTT existe dans la console HiveMQ.",
       );
     }
   });
@@ -122,8 +129,8 @@ const connectMqtt = () => {
         !mqttDisconnectAlertSent
       ) {
         try {
-          const poulailliers = await Poulailler.find().select("_id").lean();
-          for (const poule of poulailliers) {
+          const poulaillers = await Poulailler.find().select("_id").lean();
+          for (const poule of poulaillers) {
             await createMqttAlert(poule._id.toString(), "disconnect");
           }
           mqttDisconnectAlertSent = true;
@@ -153,44 +160,190 @@ const handleMqttMessage = async (topic, message) => {
       return;
     }
 
-    // ... [reste identique jusqu'à door status]
+    // ── 1. DISCOVERY / HEARTBEAT ─────────────────────────────────────────────
+    if (
+      topic === "smartpoultry/discovery" ||
+      topic === "smartpoultry/heartbeat"
+    ) {
+      // Un ESP32 annonce sa présence avec sa MAC
+      const mac = data.mac || data.macAddress || data.deviceId;
+      if (!mac) return;
 
-    // 3. Status actuators
-    if (topicParts[0] === "poulailler" && topicParts[2] === "status") {
-      const poultryId = topicParts[1];
-      if (!mongoose.Types.ObjectId.isValid(poultryId)) return;
+      console.log(`[MQTT] Discovery/Heartbeat — MAC: ${mac}`);
 
-      const poulailler = await Poulailler.findById(poultryId);
-      if (!poulailler) return;
+      // Mettre à jour lastPing du device
+      await Module.findOneAndUpdate(
+        { macAddress: mac },
+        { lastPing: new Date() },
+      );
+      return;
+    }
 
-      // updates + door event code...
-      // [garder tout le bloc existant]
+    // Pour les topics poulailler/+/measures et poulailler/+/status
+    if (topicParts[0] !== "poulailler" || topicParts.length < 3) return;
 
-      // Dynamic import SAFE
-      let doorController;
-      try {
-        doorController = require("../controllers/doorController");
-      } catch (err) {
-        console.error("[MQTT] doorController load fail:", err.message);
-        return;
+    // ✅ topicParts[1] est maintenant la MAC (ex: "142B2FC7D704")
+    // PAS un ObjectId MongoDB
+    const macAddress = topicParts[1];
+    const messageType = topicParts[2]; // "measures" ou "status"
+
+    // Résoudre MAC → poulailler via le modèle Module
+    const poulailler = await resolvePoulaillerByMac(macAddress);
+    if (!poulailler) {
+      console.warn(`[MQTT] Aucun poulailler trouvé pour MAC: ${macAddress}`);
+      return;
+    }
+
+    const poulaillerId = poulailler._id.toString();
+
+    // ── 2. MESURES CAPTEURS ───────────────────────────────────────────────────
+    if (messageType === "measures") {
+      console.log(
+        `[MQTT] Mesures reçues — MAC: ${macAddress} | poulailler: ${poulaillerId}`,
+      );
+
+      // Sauvegarder la mesure en base
+      await Measure.create({
+        poulailler: poulailler._id,
+        temperature: data.temperature ?? null,
+        humidity: data.humidity ?? null,
+        co2: data.co2 ?? null,
+        nh3: data.nh3 ?? null,
+        waterLevel: data.waterLevel ?? null,
+        timestamp: new Date(),
+      });
+
+      // Mettre à jour lastMonitoring sur le poulailler
+      poulailler.lastMonitoring = {
+        temperature: data.temperature ?? poulailler.lastMonitoring?.temperature,
+        humidity: data.humidity ?? poulailler.lastMonitoring?.humidity,
+        co2: data.co2 ?? poulailler.lastMonitoring?.co2,
+        nh3: data.nh3 ?? poulailler.lastMonitoring?.nh3,
+        waterLevel: data.waterLevel ?? poulailler.lastMonitoring?.waterLevel,
+        timestamp: new Date(),
+      };
+
+      // Mettre à jour le status du device (lastPing)
+      await Module.findOneAndUpdate(
+        { macAddress },
+        { lastPing: new Date(), status: "associated" },
+      );
+
+      // Mettre à jour le statut du poulailler
+      if (poulailler.status !== "connecte") {
+        poulailler.status = "connecte";
+      }
+      await poulailler.save();
+
+      // Vérifier les seuils et créer des alertes si nécessaire
+      await checkSensorThresholds(poulaillerId, data, poulailler.thresholds);
+
+      // Résoudre les alertes pour les valeurs revenues à la normale
+      await resolveNormalValues(poulaillerId, data, poulailler.thresholds);
+
+      console.log(
+        `[MQTT] ✅ Mesures enregistrées — T:${data.temperature}°C H:${data.humidity}% CO2:${data.co2}ppm Eau:${data.waterLevel}%`,
+      );
+      return;
+    }
+
+    // ── 3. STATUS ACTIONNEURS ─────────────────────────────────────────────────
+    if (messageType === "status") {
+      console.log(
+        `[MQTT] Status reçu — MAC: ${macAddress} | poulailler: ${poulaillerId}`,
+      );
+      console.log(`[MQTT] Payload status:`, data);
+
+      // Mettre à jour les états actionneurs depuis l'ESP32
+      // L'ESP32 publie : fanOn, lampOn, pumpOn, doorOpen, doorState, fanAuto, lampAuto, pumpAuto, doorAuto
+
+      if (data.fanOn !== undefined) {
+        poulailler.actuatorStates.ventilation.status = data.fanOn
+          ? "on"
+          : "off";
+      }
+      if (data.fanAuto !== undefined) {
+        poulailler.actuatorStates.ventilation.mode = data.fanAuto
+          ? "auto"
+          : "manual";
+      }
+      if (data.lampOn !== undefined) {
+        poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
+      }
+      if (data.lampAuto !== undefined) {
+        poulailler.actuatorStates.lamp.mode = data.lampAuto ? "auto" : "manual";
+      }
+      if (data.pumpOn !== undefined) {
+        poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
+      }
+      if (data.pumpAuto !== undefined) {
+        poulailler.actuatorStates.pump.mode = data.pumpAuto ? "auto" : "manual";
       }
 
-      // Rest of door logic with try/catch...
+      // Traitement spécial pour la porte (état riche)
+      if (data.doorState !== undefined) {
+        const doorStateMap = {
+          OPEN: "open",
+          CLOSED: "closed",
+          OPENING: "open",
+          CLOSING: "closed",
+          BLOCKED: "closed",
+          UNKNOWN: "closed",
+        };
+        const newDoorStatus = doorStateMap[data.doorState] || "closed";
+        const prevDoorStatus = poulailler.actuatorStates.door?.status;
+
+        poulailler.actuatorStates.door.status = newDoorStatus;
+
+        // Créer un DoorEvent si l'état a changé
+        if (prevDoorStatus !== newDoorStatus) {
+          try {
+            await DoorEvent.create({
+              poulailler: poulailler._id,
+              action: newDoorStatus === "open" ? "open" : "close",
+              source: "esp32",
+              doorState: data.doorState,
+              timestamp: new Date(),
+            });
+            console.log(
+              `[DOOR] Événement enregistré: ${prevDoorStatus} → ${newDoorStatus}`,
+            );
+          } catch (doorErr) {
+            console.error("[DOOR] Erreur création DoorEvent:", doorErr.message);
+          }
+        }
+
+        // Vérifier le timeout porte via doorController
+        if (data.doorState === "BLOCKED") {
+          try {
+            const doorController = require("../controllers/doorController");
+            await doorController.checkDoorTimeout(poulaillerId);
+          } catch (err) {
+            console.error("[MQTT] doorController load fail:", err.message);
+          }
+        }
+      }
+
+      await poulailler.save();
+      console.log(`[MQTT] ✅ Status actionneurs mis à jour`);
+      return;
     }
   } catch (error) {
-    console.error("[MQTT] handleMessage ERROR:", error.message);
+    console.error("[MQTT] handleMessage ERROR:", error.message, error.stack);
   }
 };
 
 // ============================================================================
 // ACTIONS SORTANTES
 // ============================================================================
-const publishCommand = (poultryId, command, value) => {
+
+// Publie une commande générique (usage interne)
+const publishCommand = (macAddressOrId, command, value) => {
   if (!client || !client.connected) {
     console.error("[MQTT] Publication impossible : client déconnecté.");
     return false;
   }
-  const topic = `poulailler/${poultryId}/commands`;
+  const topic = `poulailler/${macAddressOrId}/commands`;
   const payload = JSON.stringify({
     command,
     value,
@@ -208,43 +361,57 @@ const disconnectMqtt = () => {
   if (client) client.end();
 };
 
-// 2. Modifie la fonction startDoorMonitoring en bas du fichier :
+// ============================================================================
+// SURVEILLANCE PORTE (timeout)
+// ============================================================================
 const startDoorMonitoring = () => {
   if (doorTimeoutIntervalId) return;
 
   doorTimeoutIntervalId = setInterval(async () => {
     try {
       const doorController = require("../controllers/doorController");
-      const poulailliers = await Poulailler.find().select("_id").lean();
+      const poulaillers = await Poulailler.find().select("_id").lean();
 
-      if (!poulailliers?.length) {
-        return; // No poulaillers yet
-      }
+      if (!poulaillers?.length) return;
 
-      for (const poule of poulailliers) {
+      for (const poule of poulaillers) {
         if (mongoose.Types.ObjectId.isValid(poule._id)) {
           await doorController.checkDoorTimeout(poule._id.toString());
         }
       }
     } catch (error) {
       console.error("[DOOR-MONITOR] Erreur timeout check:", error.message);
-      // Ne pas crasher le serveur
     }
-  }, 10000); // 10s au lieu de 5s
+  }, 10000);
 
   console.log("[MQTT] Door monitoring started (safe)");
 };
 
+// ============================================================================
+// SYNC HORLOGE PORTE → ESP32
+// ============================================================================
 const startDoorClockSync = () => {
   if (doorClockIntervalId) return;
 
   const syncAllDoorClocks = async () => {
     try {
       const { syncDoorClock } = require("./porteService");
-      const poulailliers = await Poulailler.find().select("_id").lean();
 
-      for (const poule of poulailliers) {
-        await syncDoorClock(poule._id.toString());
+      // ✅ On itère sur les devices (Module) qui ont une MAC associée à un poulailler
+      // pour passer la MAC à syncDoorClock
+      const devices = await Module.find({
+        macAddress: { $exists: true, $ne: null },
+        poulailler: { $exists: true, $ne: null },
+        status: "associated",
+      }).lean();
+
+      for (const device of devices) {
+        if (device.macAddress && device.poulailler) {
+          await syncDoorClock(
+            device.poulailler.toString(),
+            device.macAddress, // ✅ passer la MAC
+          );
+        }
       }
     } catch (error) {
       console.error("[DOOR-CLOCK] Erreur sync horloge:", error.message);

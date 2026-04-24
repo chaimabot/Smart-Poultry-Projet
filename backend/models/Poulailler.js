@@ -13,11 +13,7 @@ const poulaillerSchema = new mongoose.Schema(
       minlength: [3, "Le nom doit avoir au moins 3 caractères"],
       maxlength: [50, "Le nom ne peut pas dépasser 50 caractères"],
     },
-    type: {
-      type: String,
-      enum: ["pondeuses", "chair", "dindes", "canards", "autre"],
-      required: [true, "Veuillez sélectionner un type de volaille"],
-    },
+
     animalCount: {
       type: Number,
       min: [1, "Le nombre d'animaux doit être au moins 1"],
