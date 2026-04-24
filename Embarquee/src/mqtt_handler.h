@@ -4,8 +4,12 @@
 #include "sensors.h"
 #include "actuators.h"
 
+// Identifiant unique de l'appareil (adresse MAC WiFi), défini dans main.cpp
+extern String DEVICE_ID;
+
 /**
- * @brief Initialise les paramètres MQTT (Broker, Port, Topics)
+ * @brief Initialise les paramètres MQTT et construit les topics avec l'adresse MAC.
+ *        DOIT être appelé APRÈS l'assignation de DEVICE_ID dans setup().
  * @param client Référence vers le client PubSubClient
  * @param sClient Référence vers le client WiFi sécurisé (SSL)
  */
@@ -39,7 +43,7 @@ void mqtt_publishStatus(PubSubClient& client, const ActuatorState& state);
  */
 void onMessage(char* topic, byte* payload, unsigned int length);
 
-// --- Déclaration des Topics en mode externe pour accès global ---
+// Topics MQTT (construits dynamiquement dans mqtt_init avec l'adresse MAC)
 extern String TOPIC_MEASURES;
 extern String TOPIC_STATUS;
 extern String TOPIC_CMD_LAMP;

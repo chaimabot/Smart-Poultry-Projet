@@ -46,6 +46,12 @@ const navItems = [
     icon: "description",
     description: "Historique des actions",
   },
+  {
+    name: "Dossiers",
+    path: "/dossiers",
+    icon: "analytics",
+    description: "Contrats et inscriptions",
+  },
 ];
 
 export default function Sidebar() {

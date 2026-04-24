@@ -37,7 +37,12 @@ export default function ControlsTab({
   setDoorMode,
   doorSchedule,
   setDoorSchedule,
-  feeder,
+  feeder = {
+    schedules: [],
+    durationSec: 5,
+    isDistributing: false,
+    lastDistribution: null,
+  },
   setFeeder,
   distributeFood,
   addSchedule,
@@ -79,17 +84,17 @@ export default function ControlsTab({
 
         {/* Porte Automatique */}
         <SectionGestionPorte
-  poultryId={poultryId}
-  isConnected={isConnected}
-  data={actuators.door}
-  doorMoving={doorMoving}
-  doorMode={doorMode}
-  setDoorMode={setDoorMode}
-  doorSchedule={doorSchedule}
-  setDoorSchedule={setDoorSchedule}
-  toggleDoor={toggleDoor}
-  stopDoor={stopDoor}
-/>
+          poultryId={poultryId}
+          isConnected={isConnected}
+          data={actuators.door}
+          doorMoving={doorMoving}
+          doorMode={doorMode}
+          setDoorMode={setDoorMode}
+          doorSchedule={doorSchedule}
+          setDoorSchedule={setDoorSchedule}
+          toggleDoor={toggleDoor}
+          stopDoor={stopDoor}
+        />
       </View>
       {/* Section Pompe à Eau */}
       <SectionGestionEau

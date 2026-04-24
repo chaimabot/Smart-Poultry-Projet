@@ -18,6 +18,7 @@ import Utilisateurs from "./features/utilisateurs/utilisateurs";
 import Parametres from "./features/parametres/parametres";
 import Profile from "./features/profile/Profile";
 import Logs from "./features/logs/logs";
+import Dossiers from "./features/dossiers/dossiers";
 
 function App() {
   return (
@@ -152,6 +153,15 @@ function App() {
           element={
             <ProtectedRoute>
               <Logs />
+            </ProtectedRoute>
+          }
+        />
+        {/* Routes protégées - Dossiers */}
+        <Route
+          path="/dossiers"
+          element={
+            <ProtectedRoute>
+              <Dossiers />
             </ProtectedRoute>
           }
         />

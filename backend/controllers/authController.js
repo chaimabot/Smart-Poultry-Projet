@@ -1,205 +1,447 @@
-const User = require('../models/User');
-const jwt = require('jsonwebtoken');
-const Joi = require('joi');
-const bcrypt = require('bcryptjs');
+const User = require("../models/User");
+const Poulailler = require("../models/Poulailler");
+const Dossier = require("../models/Dossier");
+const jwt = require("jsonwebtoken");
+const Joi = require("joi");
+const crypto = require("crypto");
 
-// Validation Joi pour l'inscription
+// ─────────────────────────────────────────────────────────────
+// SCHEMAS JOI
+// ─────────────────────────────────────────────────────────────
+
+const poulaillerSchema = Joi.object({
+  nom: Joi.string().trim().required(),
+
+  nb_volailles: Joi.number().min(1).required(),
+  surface: Joi.number().min(1).required(),
+  densite: Joi.number().min(0).optional(),
+  adresse: Joi.string().trim().optional().allow(""),
+  remarques: Joi.string().trim().optional().allow(""),
+});
+
 const registerSchema = Joi.object({
-    firstName: Joi.string().required(),
-    lastName: Joi.string().required(),
-    email: Joi.string().email().required(),
-    password: Joi.string().min(6).required(),
-    phone: Joi.string().allow('', null)
+  firstName: Joi.string().trim().required(),
+  lastName: Joi.string().trim().required(),
+  email: Joi.string().email().lowercase().required(),
+  phone: Joi.string().required(),
+  adresse: Joi.string().required(),
+  // Accepte 1 à 20 poulaillers par éleveur
+  poulaillers: Joi.array().items(poulaillerSchema).min(1).max(20).required(),
+  // Champs legacy optionnels envoyés par le frontend (ignorés côté logique)
+  nb_volailles: Joi.number().optional(),
+  surface: Joi.number().optional(),
 });
 
-// Validation Joi pour la connexion
 const loginSchema = Joi.object({
-    email: Joi.string().email().required(),
-    password: Joi.string().required()
+  email: Joi.string().email().required(),
+  password: Joi.string().required(),
 });
 
-// Générer un JWT
-const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '30d'
-    });
+// ─────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────
+
+const generateToken = (id) =>
+  jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "30d" });
+
+const genererMotDePasseTemporaire = () => {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const digits = "23456789";
+  const special = "@#!$";
+  const pick = (str, n) =>
+    Array.from({ length: n }, () => str[crypto.randomInt(str.length)]).join("");
+  const raw = pick(upper, 3) + pick(digits, 3) + pick(special, 2);
+  return raw
+    .split("")
+    .sort(() => crypto.randomInt(3) - 1)
+    .join("");
 };
 
-// @desc    Enregistrer un nouvel utilisateur (Eleveur)
+// ─────────────────────────────────────────────────────────────
+// @desc    Inscription publique (éleveur) + N poulaillers + 1 dossier
 // @route   POST /api/auth/register
 // @access  Public
+// ─────────────────────────────────────────────────────────────
 exports.register = async (req, res) => {
-    const { error } = registerSchema.validate(req.body);
-    if (error) {
-        return res.status(400).json({ success: false, error: error.details[0].message });
+  const { error, value } = registerSchema.validate(req.body, {
+    abortEarly: false,
+  });
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      error: error.details.map((d) => d.message).join(" | "),
+    });
+  }
+
+  const { firstName, lastName, email, phone, adresse, poulaillers } = value;
+
+  try {
+    // Vérification unicité email
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+      return res.status(400).json({
+        success: false,
+        message: "Cet utilisateur existe déjà",
+      });
     }
 
-    const { firstName, lastName, email, password, phone } = req.body;
+    const motDePasseTemporaire = genererMotDePasseTemporaire();
 
-    try {
-        // Vérifier si l'utilisateur existe déjà
-        let user = await User.findOne({ email });
+    // Créer l'utilisateur avec statut "pending"
+    const user = await User.create({
+      firstName,
+      lastName,
+      email,
+      password: motDePasseTemporaire,
+      phone,
+      role: "eleveur",
+      status: "pending",
+    });
 
-        if (user) {
-            return res.status(409).json({ success: false, error: 'Cet email est déjà utilisé' });
-        }
-
-        // Créer l'utilisateur
-        user = await User.create({
-            firstName,
-            lastName,
-            email,
-            password,
-            phone,
-            role: 'eleveur' // Force le rôle éleveur
+    // Créer TOUS les poulaillers en parallèle (1 à N)
+    const poulaillersDocs = await Promise.all(
+      poulaillers.map((p) => {
+        const densiteCalc = parseFloat((p.nb_volailles / p.surface).toFixed(2));
+        return Poulailler.create({
+          owner: user._id,
+          name: p.nom,
+          animalCount: p.nb_volailles,
+          location: p.adresse || adresse,
+          description: `Surface: ${p.surface}m² | Densité: ${densiteCalc} sujets/m²${
+            p.remarques ? " | " + p.remarques : ""
+          }`,
         });
+      }),
+    );
 
-        const token = generateToken(user._id);
+    // Calculs globaux sur l'ensemble des poulaillers
+    const totalVolailles = poulaillers.reduce(
+      (sum, p) => sum + p.nb_volailles,
+      0,
+    );
+    const totalSurface = poulaillers.reduce((sum, p) => sum + p.surface, 0);
 
-        res.status(201).json({
-            success: true,
-            token,
-            user: {
-                id: user._id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                email: user.email,
-                photoUrl: user.photoUrl,
-                role: user.role
-            }
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, error: 'Erreur serveur' });
-    }
+    // Générer un numéro de contrat automatique
+    const year = new Date().getFullYear();
+    const randomHex = crypto.randomBytes(2).toString("hex").toUpperCase();
+    const autoContractNumber = `SP-${year}-${randomHex}`;
+
+    // Créer le dossier lié au 1er poulailler (principal)
+    // Les autres poulaillers sont tous liés à l'éleveur via owner: user._id
+    const dossier = await Dossier.create({
+      eleveur: user._id,
+      poulailler: poulaillersDocs[0]._id,
+      contractNumber: autoContractNumber,
+      totalAmount: 0,
+      status: "EN_ATTENTE",
+      motDePasseTemporaire: motDePasseTemporaire,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Demande d'inscription reçue. En attente de validation par l'administrateur.",
+      data: {
+        user: { id: user._id, firstName, lastName, email },
+        poulaillers: poulaillersDocs.map((doc, i) => ({
+          id: doc._id,
+          nom: doc.name,
+          nb_volailles: poulaillers[i].nb_volailles,
+          surface: poulaillers[i].surface,
+        })),
+        totalVolailles,
+        totalSurface,
+        nbPoulaillers: poulaillersDocs.length,
+        dossierId: dossier._id,
+        contractNumber: autoContractNumber,
+      },
+    });
+  } catch (err) {
+    console.error("[register]", err);
+    res.status(500).json({
+      success: false,
+      message: "Erreur serveur lors de la création du compte",
+      error: err.message,
+    });
+  }
 };
 
-// @desc    Connecter un utilisateur
+// ─────────────────────────────────────────────────────────────
+// @desc    Connexion
 // @route   POST /api/auth/login
 // @access  Public
+// ─────────────────────────────────────────────────────────────
 exports.login = async (req, res) => {
-    const { error } = loginSchema.validate(req.body);
-    if (error) {
-        return res.status(400).json({ success: false, error: error.details[0].message });
+  const { error } = loginSchema.validate(req.body);
+  if (error) {
+    return res
+      .status(400)
+      .json({ success: false, error: error.details[0].message });
+  }
+
+  const { email, password } = req.body;
+
+  try {
+    const user = await User.findOne({ email }).select("+password");
+
+    if (!user || !(await user.matchPassword(password))) {
+      return res
+        .status(401)
+        .json({ success: false, error: "Identifiants invalides" });
     }
 
-    const { email, password } = req.body;
-
-    try {
-        // Vérifier l'email
-        const user = await User.findOne({ email }).select('+password');
-
-        if (!user) {
-            return res.status(401).json({ success: false, error: 'Identifiants invalides' });
-        }
-
-        // Vérifier le mot de passe
-        const isMatch = await user.matchPassword(password);
-
-        if (!isMatch) {
-            return res.status(401).json({ success: false, error: 'Identifiants invalides' });
-        }
-
-        const token = generateToken(user._id);
-
-        res.status(200).json({
-            success: true,
-            token,
-            user: {
-                id: user._id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                email: user.email,
-                photoUrl: user.photoUrl,
-                role: user.role
-            }
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, error: 'Erreur serveur' });
+    if (user.status === "pending") {
+      return res.status(403).json({
+        success: false,
+        error:
+          "Votre compte est en attente de validation par l'administrateur.",
+      });
     }
+
+    const token = generateToken(user._id);
+
+    return res.status(200).json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
 };
 
-// @desc    Obtenir l'utilisateur actuel
-// @route   GET /api/auth/me
-// @access  Private
+// ─────────────────────────────────────────────────────────────
+// @desc    Validation du dossier par l'admin
+// @route   PATCH /api/dossiers/:id/valider
+// @access  Admin
+// ─────────────────────────────────────────────────────────────
+exports.validerDossier = async (req, res) => {
+  try {
+    const dossier = await Dossier.findById(req.params.id)
+      .populate("eleveur")
+      .populate("poulailler");
+
+    if (!dossier) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Dossier introuvable." });
+    }
+    if (dossier.status !== "EN_ATTENTE") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Ce dossier est déjà traité." });
+    }
+
+    const user = dossier.eleveur;
+    const motDePasse = dossier.motDePasseTemporaire;
+
+    if (!motDePasse) {
+      return res.status(400).json({
+        success: false,
+        message: "Mot de passe temporaire introuvable.",
+      });
+    }
+
+    // Récupérer TOUS les poulaillers de cet éleveur (pas seulement le principal)
+    const tousPoulaillers = await Poulailler.find({ owner: user._id });
+
+    // 1. Activer le compte
+    user.status = "active";
+    await user.save();
+
+    // 2. Mettre à jour le dossier
+    dossier.status = "AVANCE_PAYEE";
+    dossier.motDePasseTemporaire = undefined;
+    await dossier.save();
+
+    // 3. Envoi Email (optionnel — config SMTP requise)
+    try {
+      const nodemailer = require("nodemailer");
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT) || 587,
+        secure: false,
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      });
+
+      // Tableau HTML listant tous les poulaillers de l'éleveur
+      const lignesPoulaillers = tousPoulaillers
+        .map(
+          (p, i) => `
+          <tr style="border-bottom:1px solid #e1e3e4">
+            <td style="padding:8px 12px;font-weight:600">${i + 1}. ${p.name}</td>
+            <td style="padding:8px 12px;text-align:center">${
+              p.animalCount?.toLocaleString("fr-FR") ?? "—"
+            }</td>
+            <td style="padding:8px 12px;text-align:center;font-size:11px;color:#717971">${
+              p.description ?? "—"
+            }</td>
+          </tr>`,
+        )
+        .join("");
+
+      await transporter.sendMail({
+        from: `"SmartPoultry" <${process.env.SMTP_USER}>`,
+        to: user.email,
+        subject: "✅ Votre dossier SmartPoultry est validé",
+        html: `
+          <div style="font-family:Inter,sans-serif;max-width:600px;margin:auto">
+            <h2 style="color:#00361a">Bonjour ${user.firstName},</h2>
+            <p>Votre compte SmartPoultry est maintenant <strong>actif</strong>.</p>
+            <p><strong>Email :</strong> ${user.email}<br/>
+               <strong>Mot de passe temporaire :</strong> <code style="background:#f0fff4;padding:2px 6px;border-radius:4px">${motDePasse}</code></p>
+            <p>Pensez à changer ce mot de passe à votre première connexion.</p>
+            <h3 style="color:#00361a;margin-top:24px">Vos poulaillers connectés (${tousPoulaillers.length})</h3>
+            <table style="width:100%;border-collapse:collapse;font-size:13px">
+              <thead>
+                <tr style="background:#00361a;color:white">
+                  <th style="padding:8px 12px;text-align:left">Bâtiment</th>
+                  <th style="padding:8px 12px">Volailles</th>
+                  <th style="padding:8px 12px">Détails</th>
+                </tr>
+              </thead>
+              <tbody>${lignesPoulaillers}</tbody>
+            </table>
+            <p style="margin-top:24px;color:#717971;font-size:12px">
+              SmartPoultry — Precision IoT for the Living Laboratory
+            </p>
+          </div>`,
+      });
+    } catch (mailErr) {
+      console.warn("[SMTP] Email non envoyé :", mailErr.message);
+    }
+
+    return res.json({
+      success: true,
+      message: `Dossier validé. Email envoyé à ${user.email}.`,
+      motDePasseTemporaire: motDePasse,
+      data: {
+        userId: user._id,
+        dossierId: dossier._id,
+        nbPoulaillers: tousPoulaillers.length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// @desc    Récupérer tous les poulaillers d'un éleveur
+// @route   GET /api/auth/me/poulaillers
+// @access  Privé (éleveur connecté)
+// ─────────────────────────────────────────────────────────────
+exports.getMesPoulaillers = async (req, res) => {
+  try {
+    const poulaillers = await Poulailler.find({ owner: req.user.id }).sort({
+      createdAt: 1,
+    });
+    res.status(200).json({
+      success: true,
+      count: poulaillers.length,
+      poulaillers,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// @desc    Ajouter un poulailler à un éleveur existant
+// @route   POST /api/auth/me/poulaillers
+// @access  Privé (éleveur connecté)
+// ─────────────────────────────────────────────────────────────
+exports.ajouterPoulailler = async (req, res) => {
+  const { error, value } = poulaillerSchema.validate(req.body, {
+    abortEarly: false,
+  });
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      error: error.details.map((d) => d.message).join(" | "),
+    });
+  }
+
+  try {
+    // Vérifier que l'éleveur n'a pas déjà atteint la limite de 20 poulaillers
+    const compteActuel = await Poulailler.countDocuments({
+      owner: req.user.id,
+    });
+    if (compteActuel >= 20) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Limite atteinte : un éleveur ne peut pas dépasser 20 poulaillers.",
+      });
+    }
+
+    const densiteCalc = parseFloat(
+      (value.nb_volailles / value.surface).toFixed(2),
+    );
+
+    const poulailler = await Poulailler.create({
+      owner: req.user.id,
+      name: value.nom,
+      animalCount: value.nb_volailles,
+      location: value.adresse || "",
+      description: `Surface: ${value.surface}m² | Densité: ${densiteCalc} sujets/m²${
+        value.remarques ? " | " + value.remarques : ""
+      }`,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Poulailler ajouté avec succès.",
+      poulailler,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────
+// AUTRES ROUTES
+// ─────────────────────────────────────────────────────────────
+
 exports.getMe = async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id);
-        res.status(200).json({
-            success: true,
-            user: {
-                id: user._id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                email: user.email,
-                phone: user.phone,
-                photoUrl: user.photoUrl,
-                role: user.role
-            }
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, error: 'Erreur serveur' });
-    }
+  try {
+    const user = await User.findById(req.user.id);
+    res.status(200).json({ success: true, user });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
 };
 
-// @desc    Mettre à jour les détails de l'utilisateur
-// @route   PUT /api/auth/updatedetails
-// @access  Private
 exports.updateDetails = async (req, res) => {
-    const fieldsToUpdate = {
-        firstName: req.body.firstName,
-        lastName: req.body.lastName,
-        phone: req.body.phone,
-        photoUrl: req.body.photoUrl
-    };
-
-    try {
-        const user = await User.findByIdAndUpdate(req.user.id, fieldsToUpdate, {
-            returnDocument: 'after',
-            runValidators: true
-        });
-
-        res.status(200).json({
-            success: true,
-            user: {
-                id: user._id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                email: user.email,
-                phone: user.phone,
-                photoUrl: user.photoUrl,
-                role: user.role
-            }
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, error: 'Erreur serveur' });
-    }
+  try {
+    const user = await User.findByIdAndUpdate(req.user.id, req.body, {
+      new: true,
+      runValidators: true,
+    });
+    res.status(200).json({ success: true, user });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
 };
 
-// @desc    Mettre à jour le mot de passe
-// @route   PUT /api/auth/updatepassword
-// @access  Private
 exports.updatePassword = async (req, res) => {
-    try {
-        const user = await User.findById(req.user.id).select('+password');
-
-        // Vérifier le mot de passe actuel
-        if (!(await user.matchPassword(req.body.currentPassword))) {
-            return res.status(401).json({ success: false, error: 'Mot de passe actuel incorrect' });
-        }
-
-        user.password = req.body.newPassword;
-        await user.save();
-
-        res.status(200).json({
-            success: true,
-            message: 'Mot de passe mis à jour avec succès'
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, error: 'Erreur serveur' });
+  try {
+    const user = await User.findById(req.user.id).select("+password");
+    if (!(await user.matchPassword(req.body.currentPassword))) {
+      return res
+        .status(401)
+        .json({ success: false, error: "Mot de passe actuel incorrect" });
     }
+    user.password = req.body.newPassword;
+    await user.save();
+    res.status(200).json({ success: true, message: "Mot de passe mis à jour" });
+  } catch (err) {
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
 };

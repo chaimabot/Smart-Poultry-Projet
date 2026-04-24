@@ -1,10 +1,14 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_wifi.h>
 #include "config.h"
 #include "sensors.h"
 #include "actuators.h"
 #include "mqtt_handler.h"
+
+// --- Identifiant unique basé sur l'adresse MAC WiFi ---
+String DEVICE_ID = "";
 
 // --- Instances globales ---
 WiFiClientSecure sClient;
@@ -33,6 +37,17 @@ void setup() {
   Serial.print("[WIFI] IP: ");
   Serial.println(WiFi.localIP());
 
+  // --- Génération de l'ID à partir de l'adresse MAC ---
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char macStr[13];
+  snprintf(macStr, sizeof(macStr), "%02X%02X%02X%02X%02X%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  DEVICE_ID = String(macStr);
+  Serial.print("[DEVICE] ID (MAC): ");
+  Serial.println(DEVICE_ID);
+
+  // mqtt_init DOIT être appelé APRÈS l'assignation de DEVICE_ID
   mqtt_init(mqttClient, sClient);
   Serial.println("[SYSTEM] Setup termine. Pret.");
 }

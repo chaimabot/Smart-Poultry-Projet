@@ -48,13 +48,15 @@ app.use(helmet());
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-
+    if (!origin || origin === "null") {
+      return callback(null, true);
+    }
     const allowedOrigins = [
       "http://localhost:19000", // Expo dev
       "http://localhost:8081", // React Native debugger
       "http://127.0.0.1:19000",
-      "http://192.168.1.100:19000", // Local network
+      "http://192.168.1.100:19000",
+      "http://localhost:5500", // Local network
       process.env.MOBILE_APP_URL, // Production mobile
     ].filter(Boolean);
 

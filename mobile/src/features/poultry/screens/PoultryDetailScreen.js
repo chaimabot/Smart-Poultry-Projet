@@ -73,8 +73,10 @@ export default function PoultryDetailScreen({ route, navigation }) {
     onRefresh,
   } = usePoultryState({ poultryId, poultryName });
 
-  // ── Loading ──────────────────────────────────────────────────────────────
-  if (loading) {
+  // ── FIX 1 : attendre que poultryInfo soit disponible ─────────────────────
+  // `loading` peut passer à false avant que le backend renvoie poultryInfo.
+  // On garde l'écran de chargement tant que l'objet est absent ou vide.
+  if (loading || !poultryInfo) {
     return (
       <SafeAreaView
         style={{
@@ -98,6 +100,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
       </SafeAreaView>
     );
   }
+
+  // ── Valeur de secours pour le nom (FIX 2) ────────────────────────────────
+  // Utilisée partout où poultryInfo.name est lu, au cas où le champ
+  // arriverait null/undefined même après le guard ci-dessus.
+  const displayName = poultryInfo?.name || poultryName || "Poulailler";
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -140,11 +147,12 @@ export default function PoultryDetailScreen({ route, navigation }) {
 
         {/* Title + connection status */}
         <View style={{ flex: 1, alignItems: "center", marginHorizontal: 12 }}>
+          {/* ✅ FIX 2 — sécurisé avec displayName */}
           <Text
             style={{ fontSize: 16, fontWeight: "800", color: "#1E293B" }}
             numberOfLines={1}
           >
-            {poultryInfo.name}
+            {displayName}
           </Text>
           <View
             style={{
@@ -225,7 +233,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
             onPress={() =>
               navigation.navigate("AlertSettingsScreen", {
                 poultryId,
-                poultryName: poultryInfo.name,
+                // ✅ FIX 2 — sécurisé avec displayName
+                poultryName: displayName,
               })
             }
             style={{
@@ -309,7 +318,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             setLamp={setLamp}
             toggleDoor={toggleDoor}
             stopDoor={stopDoor}
-            doorMoving={actuators.doorMoving}
+            doorMoving={actuators?.doorMoving}
             doorMode={doorMode}
             setDoorMode={setDoorMode}
             doorSchedule={doorSchedule}
@@ -334,7 +343,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
             refreshing={refreshing}
             navigation={navigation}
             poultryId={poultryId}
-            poultryName={poultryInfo.name}
+            // ✅ FIX 2 — sécurisé avec displayName
+            poultryName={displayName}
           />
         )}
       </View>
@@ -349,7 +359,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             setShowNotifPopup(false);
             navigation.navigate("AlertSettingsScreen", {
               poultryId,
-              poultryName: poultryInfo.name,
+              poultryName: displayName,
             });
           }}
         />

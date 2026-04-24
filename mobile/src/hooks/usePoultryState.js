@@ -8,6 +8,7 @@ import {
   createActuatorAlert,
   markAllAlertsAsRead,
   getThresholds,
+  getDeviceByPoulailler, // ✅ NOUVEAU — récupère le device (macAddress) lié au poulailler
 } from "../services/poultry";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -45,13 +46,14 @@ export const SENSOR_CONFIG = [
     icon: "warning",
     key: "nh3",
   },
+  // ✅ key = "waterLevel" — correspond exactement au champ publié par l'ESP32
   {
     name: "Niveau eau",
     value: "--",
     unit: "%",
     status: "normal",
     icon: "water",
-    key: "water_level",
+    key: "waterLevel",
   },
 ];
 
@@ -73,10 +75,15 @@ export default function usePoultryState({ poultryId, poultryName }) {
   const mqttClientRef = useRef(null);
   const pulseAnimRef = useRef(new Animated.Value(1));
   const pulseAnim = pulseAnimRef.current;
+  const isMountedRef = useRef(true);
 
-  const ESP_POUAILLER_ID = "POULAILLER_001";
+  // ✅ CLE DU FIX : macAddress séparée du poultryId
+  // - poultryId  → utilisé UNIQUEMENT pour les appels API REST
+  // - macAddress → utilisé UNIQUEMENT pour construire les topics MQTT
+  // L'ESP32 publie sur poulailler/{MAC}/... pas poulailler/{mongoId}/...
+  const [macAddress, setMacAddress] = useState(null);
 
-  // ── UI state ─────────────────────────────────────────────────────────────
+  // ── UI state ──────────────────────────────────────────────────────────────
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -96,27 +103,12 @@ export default function usePoultryState({ poultryId, poultryName }) {
     lamp: false,
     fanAuto: true,
     lampAuto: true,
-    door: false,
+    door: false, // true = OPEN ou OPENING
+    doorState: "UNKNOWN", // état riche : "OPEN","CLOSED","OPENING","CLOSING","BLOCKED"
     doorMoving: false,
   });
 
-  const [feeder, setFeeder] = useState({
-    schedules: [
-      { id: 1, hour: 8, minute: 0, enabled: true },
-      { id: 2, hour: 14, minute: 0, enabled: true },
-      { id: 3, hour: 20, minute: 0, enabled: true },
-    ],
-    durationSec: 5,
-    tempConditionEnabled: false,
-    tempThreshold: 30,
-    lastDistribution: null,
-    isDistributing: false,
-  });
-
-  const [pumpData, setPumpData] = useState({
-    pumpAuto: false,
-    pumpOn: false,
-  });
+  const [pumpData, setPumpData] = useState({ pumpAuto: false, pumpOn: false });
 
   const [doorMode, setDoorMode] = useState("horaire");
   const [doorSchedule, setDoorSchedule] = useState({
@@ -126,7 +118,15 @@ export default function usePoultryState({ poultryId, poultryName }) {
     closeMinute: 0,
   });
 
-  // ── Pulse animation ──────────────────────────────────────────────────────
+  // ── isMounted guard ───────────────────────────────────────────────────────
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // ── Pulse animation ───────────────────────────────────────────────────────
   useEffect(() => {
     const anim = Animated.loop(
       Animated.sequence([
@@ -147,33 +147,35 @@ export default function usePoultryState({ poultryId, poultryName }) {
   }, []);
 
   // ── API fetchers ──────────────────────────────────────────────────────────
+
   const fetchThresholds = useCallback(async () => {
     if (!poultryId) return;
     try {
       const res = await getThresholds(poultryId);
-      if (res?.success) setThresholds(res.data);
+      if (res?.success && isMountedRef.current) setThresholds(res.data);
     } catch (e) {
-      console.warn("[API] seuils:", e.message);
+      console.warn("[API] seuils:", e?.message);
     }
   }, [poultryId]);
 
   const fetchAlerts = useCallback(async () => {
     try {
       const res = await getAlerts(poultryId);
-      if (res?.success && Array.isArray(res.data)) {
+      if (res?.success && Array.isArray(res.data) && isMountedRef.current) {
         setAlerts(res.data);
-        setAlertCount(res.data.filter((a) => a.read === false).length);
+        setAlertCount(res.data.filter((a) => !a.read).length);
       }
     } catch (e) {
-      console.warn("[API] fetchAlerts:", e.message);
+      console.warn("[API] fetchAlerts:", e?.message);
     }
   }, [poultryId]);
 
+  // ✅ FIX PRINCIPAL — fetchPoultryInfo récupère aussi la macAddress du device associé
   const fetchPoultryInfo = useCallback(async () => {
     if (!poultryId) return;
     try {
       const data = await getPoultryById(poultryId);
-      if (data) {
+      if (data && isMountedRef.current) {
         setPoultryInfo({
           name: data.name || poultryName || "Poulailler",
           location: data.location || "",
@@ -181,48 +183,71 @@ export default function usePoultryState({ poultryId, poultryName }) {
         });
       }
     } catch (e) {
-      console.warn("[API] getPoultryById:", e.message);
+      console.warn("[API] getPoultryById:", e?.message);
     }
-    await fetchAlerts();
-  }, [poultryId, fetchAlerts]);
 
-  // ── MQTT ──────────────────────────────────────────────────────────────────
+    // ✅ Récupère le device lié pour obtenir la macAddress
+    // Exemple de réponse attendue : { success: true, data: { macAddress: "142B2FC7D704", ... } }
+    try {
+      const deviceRes = await getDeviceByPoulailler(poultryId);
+      if (
+        deviceRes?.success &&
+        deviceRes.data?.macAddress &&
+        isMountedRef.current
+      ) {
+        const mac = deviceRes.data.macAddress; // ex: "142B2FC7D704"
+        console.log("[DEVICE] macAddress récupérée:", mac);
+        setMacAddress(mac);
+      } else {
+        console.warn("[DEVICE] Aucun device associé ou macAddress manquante");
+      }
+    } catch (e) {
+      console.warn("[API] getDeviceByPoulailler:", e?.message);
+    }
+
+    await fetchAlerts();
+  }, [poultryId, poultryName, fetchAlerts]);
+
+  // ── MQTT — se connecte UNIQUEMENT quand macAddress est disponible ─────────
   useEffect(() => {
-    if (!poultryId) {
-      setLoading(false);
+    if (!poultryId || !macAddress) return; // ✅ attend la MAC avant de connecter
+
+    let client;
+    try {
+      client = mqtt.connect(process.env.EXPO_PUBLIC_MQTT_BROKER, {
+        username: process.env.EXPO_PUBLIC_MQTT_USER,
+        password: process.env.EXPO_PUBLIC_MQTT_PASS,
+        reconnectPeriod: 5000,
+        keepalive: 60,
+        connectTimeout: 10000,
+        clientId: "mobile_" + macAddress + "_" + Date.now(),
+        rejectUnauthorized: false,
+      });
+    } catch (initErr) {
+      console.error("[MQTT] init:", initErr?.message);
       return;
     }
 
-    (async () => {
-      await fetchThresholds();
-      await fetchPoultryInfo();
-      setLoading(false);
-    })();
-
-    const client = mqtt.connect(process.env.EXPO_PUBLIC_MQTT_BROKER, {
-      username: process.env.EXPO_PUBLIC_MQTT_USER,
-      password: process.env.EXPO_PUBLIC_MQTT_PASS,
-      reconnectPeriod: 3000,
-      keepalive: 60,
-      clientId: "mobile_" + poultryId + "_" + Date.now(),
-      rejectUnauthorized: true,
-    });
     mqttClientRef.current = client;
 
     client.on("connect", () => {
+      if (!isMountedRef.current) return;
       setIsConnected(true);
-      client.subscribe("poulailler/+/measures");
-      client.subscribe("poulailler/+/status");
-      client.subscribe("poulailler/+/door/moving");
-      client.subscribe("poulailler/+/feeder/status");
-      client.subscribe("poulailler/+/pump/status");
+      // ✅ Topics construits avec la macAddress — correspondent exactement à l'ESP32
+      client.subscribe(`poulailler/${macAddress}/measures`);
+      client.subscribe(`poulailler/${macAddress}/status`);
+      console.log(
+        `[MQTT] Souscrit à poulailler/${macAddress}/measures & /status`,
+      );
     });
 
     client.on("message", (topic, message) => {
+      if (!isMountedRef.current) return;
       try {
         const data = JSON.parse(message.toString());
 
-        if (topic.includes("/measures")) {
+        // ── Mesures capteurs ────────────────────────────────────────────────
+        if (topic.endsWith("/measures")) {
           setSensors((prev) =>
             prev.map((sensor) => {
               const raw = data[sensor.key];
@@ -237,163 +262,165 @@ export default function usePoultryState({ poultryId, poultryName }) {
           );
         }
 
-        if (topic.includes("/status") && !topic.includes("feeder")) {
+        // ── État actionneurs ────────────────────────────────────────────────
+        // L'ESP32 publie : fanOn, lampOn, pumpOn, doorOpen, doorState,
+        //                  fanAuto, lampAuto, pumpAuto, doorAuto
+        if (topic.endsWith("/status")) {
           setActuators((prev) => ({
             ...prev,
-            fan: data.fan ?? prev.fan,
-            lamp: data.lamp ?? prev.lamp,
+            fan: data.fanOn ?? prev.fan,
+            lamp: data.lampOn ?? prev.lamp,
             fanAuto: data.fanAuto ?? prev.fanAuto,
             lampAuto: data.lampAuto ?? prev.lampAuto,
-            door: data.door ?? prev.door,
-            doorMoving: data.doorMoving ?? prev.doorMoving ?? false,
+            door: data.doorOpen ?? prev.door,
+            doorState: data.doorState ?? prev.doorState,
+            doorMoving:
+              data.doorState === "OPENING" || data.doorState === "CLOSING",
           }));
-        }
 
-        if (topic.includes("/feeder/status") && data.lastDistribution) {
-          setFeeder((prev) => ({
-            ...prev,
-            lastDistribution: new Date(data.lastDistribution),
-          }));
-        }
+          setPumpData({
+            pumpOn: data.pumpOn ?? false,
+            pumpAuto: data.pumpAuto ?? false,
+          });
 
-        if (topic.includes("/pump/status")) {
-          setPumpData((prev) => ({
-            ...prev,
-            pumpAuto: data.mode === "auto" ? true : false,
-            pumpOn: data.status === "on" ? true : false,
-          }));
+          if (data.doorAuto !== undefined) {
+            setDoorMode(data.doorAuto ? "horaire" : "manuel");
+          }
         }
       } catch (e) {
-        console.error("[MQTT] parse error:", e.message);
+        console.error("[MQTT] parse error:", e?.message);
       }
     });
 
-    client.on("disconnect", () => setIsConnected(false));
-    client.on("offline", () => setIsConnected(false));
+    client.on("reconnect", () => console.log("[MQTT] reconnexion..."));
+    client.on("disconnect", () => {
+      if (isMountedRef.current) setIsConnected(false);
+    });
+    client.on("offline", () => {
+      if (isMountedRef.current) setIsConnected(false);
+    });
     client.on("error", (e) => {
-      console.error("[MQTT]", e.message);
-      setIsConnected(false);
+      console.error("[MQTT] erreur:", e?.message);
+      if (isMountedRef.current) setIsConnected(false);
     });
 
     return () => {
-      client.end(true);
+      if (client) {
+        client.removeAllListeners();
+        client.end(true);
+      }
       mqttClientRef.current = null;
     };
-  }, [poultryId, fetchThresholds, fetchPoultryInfo]);
+  }, [macAddress]); // ✅ se (re)connecte quand la MAC change
+
+  // ── Chargement initial ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!poultryId) {
+      setLoading(false);
+      return;
+    }
+    (async () => {
+      await fetchThresholds();
+      await fetchPoultryInfo(); // ← récupère aussi la macAddress
+      if (isMountedRef.current) setLoading(false);
+    })();
+  }, [poultryId]);
 
   // ── Publish ───────────────────────────────────────────────────────────────
-  const publishCommand = useCallback((command, value) => {
-    const client = mqttClientRef.current;
-    if (!client?.connected) return;
-
-    let topic = `poulailler/${ESP_POUAILLER_ID}/commands`;
-    let payload = { command, value, timestamp: new Date().toISOString() };
-
-    if (command === "fanAuto") {
-      topic = `poulailler/${ESP_POUAILLER_ID}/commands/fan`;
-      payload = { mode: value ? "auto" : "manual" };
-    } else if (command === "fan") {
-      topic = `poulailler/${ESP_POUAILLER_ID}/commands/fan`;
-      payload = { mode: "manual", action: value ? "on" : "off" };
-    } else if (command === "lampAuto") {
-      topic = `poulailler/${ESP_POUAILLER_ID}/commands/lamp`;
-      payload = { mode: value ? "auto" : "manual" };
-    } else if (command === "lamp") {
-      topic = `poulailler/${ESP_POUAILLER_ID}/commands/lamp`;
-      payload = { mode: "manual", action: value ? "on" : "off" };
-    } else if (command === "door") {
-      topic = `poulailler/${ESP_POUAILLER_ID}/commands/door`;
-      if (value === "stop") {
-        payload = { action: "stop" };
-      } else {
-        payload = { action: value ? "open" : "close" };
-      }
-    }
-
-    client.publish(topic, JSON.stringify(payload), { qos: 1 });
-  }, []);
-
-  // ── Feeder ────────────────────────────────────────────────────────────────
-  const distributeFood = useCallback(
-    (triggeredBy = "manual") => {
+  // ✅ Utilise macAddress pour les topics — pas poultryId
+  const publishCommand = useCallback(
+    (command, value) => {
       const client = mqttClientRef.current;
-      if (feeder.tempConditionEnabled) {
-        const tempSensor = sensors.find((s) => s.key === "temperature");
-        const currentTemp = parseFloat(tempSensor?.value);
-        if (!isNaN(currentTemp) && currentTemp >= feeder.tempThreshold) return;
+      if (!client?.connected) {
+        console.warn("[MQTT] publishCommand ignoré — non connecté");
+        return;
       }
-      if (!client?.connected) return;
+      if (!macAddress) {
+        console.warn("[MQTT] publishCommand ignoré — macAddress inconnue");
+        return;
+      }
 
-      const topic = `poulailler/${ESP_POUAILLER_ID}/commands/feeder`;
-      const payload = {
-        action: "distribute",
-        durationSec: feeder.durationSec,
-        triggeredBy,
-        timestamp: new Date().toISOString(),
-      };
-      client.publish(topic, JSON.stringify(payload), { qos: 1 });
-      setFeeder((prev) => ({
-        ...prev,
-        isDistributing: true,
-        lastDistribution: new Date(),
-      }));
-      setTimeout(
-        () => setFeeder((prev) => ({ ...prev, isDistributing: false })),
-        feeder.durationSec * 1000,
-      );
+      const base = `poulailler/${macAddress}`;
+
+      if (command === "fan" || command === "fanAuto") {
+        // ESP32 attend : { on: bool, mode: "auto"|"manual" }
+        const isAuto = command === "fanAuto" ? value : false;
+        client.publish(
+          `${base}/cmd/fan`,
+          JSON.stringify({
+            on: isAuto ? false : Boolean(value),
+            mode: isAuto ? "auto" : "manual",
+          }),
+          { qos: 1 },
+        );
+      } else if (command === "lamp" || command === "lampAuto") {
+        const isAuto = command === "lampAuto" ? value : false;
+        client.publish(
+          `${base}/cmd/lamp`,
+          JSON.stringify({
+            on: isAuto ? false : Boolean(value),
+            mode: isAuto ? "auto" : "manual",
+          }),
+          { qos: 1 },
+        );
+      } else if (command === "pump" || command === "pumpAuto") {
+        const isAuto = command === "pumpAuto" ? value : false;
+        client.publish(
+          `${base}/cmd/pump`,
+          JSON.stringify({
+            on: isAuto ? false : Boolean(value),
+            mode: isAuto ? "auto" : "manual",
+          }),
+          { qos: 1 },
+        );
+      } else if (command === "door") {
+        // ESP32 attend : { action: "open"|"close"|"stop" }
+        let action;
+        if (value === "stop") action = "stop";
+        else if (value === true) action = "open";
+        else action = "close";
+        client.publish(`${base}/cmd/door`, JSON.stringify({ action }), {
+          qos: 1,
+        });
+      } else if (command === "config") {
+        client.publish(`${base}/config`, JSON.stringify(value), { qos: 1 });
+      }
     },
-    [feeder, sensors],
+    [macAddress],
   );
 
-  // ── Schedule checker ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = new Date();
-      feeder.schedules.forEach((s) => {
-        if (
-          s.enabled &&
-          now.getHours() === s.hour &&
-          now.getMinutes() === s.minute &&
-          now.getSeconds() < 30
-        )
-          distributeFood("schedule");
+  // ── Publish planning porte ────────────────────────────────────────────────
+  const publishDoorSchedule = useCallback(
+    (sched, active) => {
+      publishCommand("config", {
+        doorSched: {
+          openH: sched.openHour,
+          openM: sched.openMinute,
+          closeH: sched.closeHour,
+          closeM: sched.closeMinute,
+          active,
+        },
       });
+    },
+    [publishCommand],
+  );
 
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [
-    feeder.schedules,
-    distributeFood,
-  ]);
-
-  // ── Schedule helpers ──────────────────────────────────────────────────────
-  const addSchedule = () =>
-    setFeeder((p) => ({
-      ...p,
-      schedules: [
-        ...p.schedules,
-        { id: Date.now(), hour: 12, minute: 0, enabled: true },
-      ],
-    }));
-  const removeSchedule = (id) =>
-    setFeeder((p) => ({
-      ...p,
-      schedules: p.schedules.filter((s) => s.id !== id),
-    }));
-  const updateSchedule = (id, field, value) =>
-    setFeeder((p) => ({
-      ...p,
-      schedules: p.schedules.map((s) =>
-        s.id === id ? { ...s, [field]: value } : s,
-      ),
-    }));
+  // ── Publish heure courante → ESP32 ───────────────────────────────────────
+  const publishCurrentTime = useCallback(() => {
+    const now = new Date();
+    publishCommand("config", {
+      currentTime: { h: now.getHours(), m: now.getMinutes() },
+    });
+  }, [publishCommand]);
 
   // ── Actuator handlers ─────────────────────────────────────────────────────
+
   const toggleFanAuto = () => {
     const v = !actuators.fanAuto;
     publishCommand("fanAuto", v);
     setActuators((p) => ({ ...p, fanAuto: v }));
   };
+
   const toggleLampAuto = () => {
     const v = !actuators.lampAuto;
     publishCommand("lampAuto", v);
@@ -403,82 +430,81 @@ export default function usePoultryState({ poultryId, poultryName }) {
   const setFan = async (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
-    await createActuatorAlert(poultryId, "fan", v);
-    await fetchAlerts();
+    try {
+      await createActuatorAlert(poultryId, "fan", v);
+      await fetchAlerts();
+    } catch (e) {
+      console.warn("[setFan]", e?.message);
+    }
   };
+
   const setLamp = async (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
-    await createActuatorAlert(poultryId, "lamp", v);
-    await fetchAlerts();
-  };
-  const updateActuator = useCallback(
-    async (actuator, mode, action) => {
-      if (actuator !== "ventilation") return;
-
-      const isAuto = mode === "auto";
-      const isOn = action === "on";
-
-      if (isAuto) {
-        publishCommand("fanAuto", true);
-        setActuators((prev) => ({
-          ...prev,
-          fanAuto: true,
-          fan: false,
-        }));
-        return;
-      }
-
-      publishCommand("fanAuto", false);
-      publishCommand("fan", isOn);
-      setActuators((prev) => ({
-        ...prev,
-        fanAuto: false,
-        fan: isOn,
-      }));
-      await createActuatorAlert(poultryId, "fan", isOn);
-      await fetchAlerts();
-    },
-    [fetchAlerts, poultryId, publishCommand],
-  );
-  const toggleDoor = async (v) => {
-    if (v === actuators.door) {
-      console.log("Porte déjà dans cet état, skip");
-      return;
-    }
-    // API backend pour log/tracking
     try {
-      await fetch(
-        `/api/poulaillers/${poultryId}/door/${v ? "open" : "close"}`,
-        {
-          method: "POST",
-        },
-      );
+      await createActuatorAlert(poultryId, "lamp", v);
+      await fetchAlerts();
     } catch (e) {
-      console.warn("[API DOOR] ", e);
+      console.warn("[setLamp]", e?.message);
     }
-    console.log("[PORTE][HOOK] Commande porte", {
-      poultryId,
-      action: v ? "open" : "close",
-      previousState: actuators.door ? "open" : "closed",
-    });
+  };
+
+  const setPump = async (v) => {
+    publishCommand("pump", v);
+    setPumpData((p) => ({ ...p, pumpOn: v }));
+    try {
+      await createActuatorAlert(poultryId, "pump", v);
+      await fetchAlerts();
+    } catch (e) {
+      console.warn("[setPump]", e?.message);
+    }
+  };
+
+  const togglePumpAuto = () => {
+    const v = !pumpData.pumpAuto;
+    publishCommand("pumpAuto", v);
+    setPumpData((p) => ({ ...p, pumpAuto: v }));
+  };
+
+  const toggleDoor = async (v) => {
+    if (v === actuators.door && !actuators.doorMoving) return;
     publishCommand("door", v);
-    console.log("[PORTE][HOOK] MQTT publie", {
-      poultryId,
-      action: v ? "open" : "close",
-    });
     setActuators((p) => ({ ...p, door: v, doorMoving: true }));
-    await createActuatorAlert(poultryId, "door", v);
-    await fetchAlerts();
+    try {
+      await createActuatorAlert(poultryId, "door", v);
+      await fetchAlerts();
+    } catch (e) {
+      console.warn("[toggleDoor]", e?.message);
+    }
   };
 
   const stopDoor = useCallback(async () => {
-    console.log("[PORTE][HOOK] Commande stop porte", {
-      poultryId,
-    });
     publishCommand("door", "stop");
     setActuators((p) => ({ ...p, doorMoving: false }));
-  }, [poultryId, publishCommand]);
+  }, [publishCommand]);
+
+  const updateActuator = useCallback(
+    async (actuator, mode, action) => {
+      if (actuator !== "ventilation") return;
+      const isAuto = mode === "auto";
+      const isOn = action === "on";
+      if (isAuto) {
+        publishCommand("fanAuto", true);
+        setActuators((prev) => ({ ...prev, fanAuto: true, fan: false }));
+        return;
+      }
+      publishCommand("fanAuto", false);
+      publishCommand("fan", isOn);
+      setActuators((prev) => ({ ...prev, fanAuto: false, fan: isOn }));
+      try {
+        await createActuatorAlert(poultryId, "fan", isOn);
+        await fetchAlerts();
+      } catch (e) {
+        console.warn("[updateActuator]", e?.message);
+      }
+    },
+    [fetchAlerts, poultryId, publishCommand],
+  );
 
   // ── Mark all read ─────────────────────────────────────────────────────────
   const markAllRead = useCallback(async () => {
@@ -486,9 +512,9 @@ export default function usePoultryState({ poultryId, poultryName }) {
     setAlertCount(0);
     try {
       await markAllAlertsAsRead(poultryId);
-      await fetchAlerts();
     } catch (e) {
-      console.warn("[API] markAllRead:", e.message);
+      console.warn("[API] markAllRead:", e?.message);
+    } finally {
       await fetchAlerts();
     }
   }, [poultryId, fetchAlerts]);
@@ -497,12 +523,11 @@ export default function usePoultryState({ poultryId, poultryName }) {
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([fetchPoultryInfo(), fetchThresholds(), fetchAlerts()]);
-    setRefreshing(false);
+    if (isMountedRef.current) setRefreshing(false);
   }, [fetchPoultryInfo, fetchThresholds, fetchAlerts]);
 
   // ── Exposed ───────────────────────────────────────────────────────────────
   return {
-    // state
     loading,
     refreshing,
     isConnected,
@@ -512,26 +537,24 @@ export default function usePoultryState({ poultryId, poultryName }) {
     sensors,
     poultryInfo,
     actuators,
-    feeder,
-    setFeeder,
     pumpData,
+    macAddress, // ✅ exposée si besoin d'affichage debug
     doorMode,
     setDoorMode,
     doorSchedule,
     setDoorSchedule,
     pulseAnim,
-    // handlers
     toggleFanAuto,
     toggleLampAuto,
     setFan,
     setLamp,
+    setPump,
+    togglePumpAuto,
     toggleDoor,
-    distributeFood,
-    addSchedule,
-    removeSchedule,
-    updateSchedule,
-    updateActuator,
     stopDoor,
+    updateActuator,
+    publishDoorSchedule,
+    publishCurrentTime,
     markAllRead,
     onRefresh,
   };

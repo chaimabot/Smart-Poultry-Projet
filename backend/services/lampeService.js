@@ -1,8 +1,28 @@
 const Poulailler = require("../models/Poulailler");
 const Command = require("../models/Command");
+const Module = require("../models/Module");
 const { getMqttClient } = require("./mqttService");
 
+// ============================================================================
+// HELPER : obtenir la macAddress du device associé au poulailler
+// ============================================================================
+const getMacAddress = async (poulaillerId) => {
+  const device = await Module.findOne({ poulailler: poulaillerId });
+  if (!device?.macAddress) {
+    throw new Error(
+      `Aucun device/MAC trouvé pour le poulailler ${poulaillerId}`,
+    );
+  }
+  return device.macAddress;
+};
+
 const lampeService = {
+  // ============================================================================
+  // Envoyer une commande lampe à l'ESP32 et logger en BD
+  // @param {string} id     — ObjectId MongoDB du poulailler
+  // @param {string} mode   — "auto" | "manual"
+  // @param {string} action — "on" | "off"
+  // ============================================================================
   async sendLampCommand(id, mode, action) {
     const poulailler = await Poulailler.findById(id);
     if (!poulailler) throw new Error("Poulailler introuvable");
@@ -10,18 +30,20 @@ const lampeService = {
     const client = getMqttClient();
     if (!client || !client.connected) throw new Error("MQTT non connecté");
 
-    // On envoie la commande sur le topic de la lampe
-    const poulaillerId = poulailler.uniqueCode || poulailler._id.toString();
-    const topic = `poulailler/${poulaillerId}/cmd/lamp`;
+    // ✅ Résoudre la MAC pour le topic
+    const macAddress = await getMacAddress(id);
+    const topic = `poulailler/${macAddress}/cmd/lamp`;
+
     // Format correct : ESP32 attend {"on": true/false, "mode": "auto"/"manual"}
     const payload = JSON.stringify({
       on: action === "on",
       mode: mode || "manual",
     });
+
     client.publish(topic, payload, { qos: 1 });
     console.log(`[MQTT→ESP32] ${topic}: ${payload}`);
 
-    // On garde une trace de la commande en base
+    // Garder une trace de la commande en base
     return await Command.create({
       poulailler: id,
       typeActionneur: "lampe",
@@ -31,8 +53,11 @@ const lampeService = {
     });
   },
 
+  // ============================================================================
+  // Mettre à jour les seuils température et synchroniser avec l'ESP32
+  // ============================================================================
   async updateAndSyncThresholds(id, temperatureMin, temperatureMax) {
-    // 1. Mise à jour dans MongoDB (on s'assure que les types sont des nombres)
+    // Mise à jour dans MongoDB
     const poulailler = await Poulailler.findByIdAndUpdate(
       id,
       {
@@ -45,21 +70,28 @@ const lampeService = {
     if (!poulailler)
       throw new Error("Poulailler introuvable en base de données");
 
-    // 2. Synchronisation avec l'ESP32 via MQTT
+    // ✅ Synchronisation avec l'ESP32 via MAC
     const client = getMqttClient();
     if (client && client.connected) {
-      // On utilise l'ID unique ou le code pour le topic
-      const idTopic = poulailler.uniqueCode || id;
-      const configTopic = `poulailler/${idTopic}/config`;
+      try {
+        const macAddress = await getMacAddress(id);
+        const configTopic = `poulailler/${macAddress}/config`;
+        const configPayload = JSON.stringify({
+          tempMin: Number(temperatureMin),
+          tempMax: Number(temperatureMax),
+        });
 
-      // Le Payload doit correspondre aux clés attendues dans mqtt_handler.cpp
-      const configPayload = JSON.stringify({
-        tempMin: Number(temperatureMin),
-        tempMax: Number(temperatureMax),
-      });
-
-      client.publish(configTopic, configPayload, { qos: 1, retain: true });
-      console.log(`[MQTT] Config envoyée sur ${configTopic}:`, configPayload);
+        client.publish(configTopic, configPayload, { qos: 1, retain: false });
+        console.log(
+          `[MQTT] Config lampe envoyée sur ${configTopic}:`,
+          configPayload,
+        );
+      } catch (err) {
+        console.warn(
+          "[lampeService] Impossible d'envoyer la config MQTT:",
+          err.message,
+        );
+      }
     }
 
     return poulailler.thresholds;
