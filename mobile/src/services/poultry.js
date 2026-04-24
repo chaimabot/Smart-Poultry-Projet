@@ -249,3 +249,14 @@ export const getDefaultThresholds = async () => {
     throw error.response ? error.response.data : { error: "Erreur réseau" };
   }
 };
+
+// Récupère le device (module ESP32) associé à un poulailler
+// Retourne { success: true, data: { macAddress: "142B2FC7D704", ... } }
+export const getDeviceByPoulailler = async (poulaillerId) => {
+  try {
+    const response = await api.get(`/devices/by-poulailler/${poulaillerId}`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};

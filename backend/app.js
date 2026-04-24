@@ -99,7 +99,8 @@ let authRoutes,
   pompeRoutes,
   lampeRoutes,
   ventilateurRoutes,
-  porteRoutes;
+  porteRoutes,
+  devicesRoutes;
 try {
   authRoutes = require("./routes/auth");
 } catch (e) {
@@ -140,6 +141,11 @@ try {
 } catch (e) {
   console.error("[ROUTES] ventilateur fail:", e.message);
 }
+try {
+  devicesRoutes = require("./routes/devices");
+} catch (e) {
+  console.error("[ROUTES] devices fail:", e.message);
+}
 // ==================== CHARGEMENT ROUTE PORTE ====================
 try {
   porteRoutes = require("./routes/porte");
@@ -157,6 +163,8 @@ if (modulesRoutes) app.use("/api/modules", modulesRoutes);
 if (pompeRoutes) app.use("/api/pompe", pompeRoutes);
 if (lampeRoutes) app.use("/api/lampe", lampeRoutes);
 if (ventilateurRoutes) app.use("/api/ventilateur", ventilateurRoutes);
+if (devicesRoutes) app.use("/api/devices", devicesRoutes);
+
 // Route de base
 app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
