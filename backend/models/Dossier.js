@@ -15,7 +15,8 @@ const dossierSchema = new mongoose.Schema(
     contractNumber: {
       type: String,
       unique: true,
-      required: true,
+      // ✅ FIX : "required: true" supprimé — le pre-save génère la valeur automatiquement
+      // Si required: true est présent, Mongoose valide AVANT le pre-save → erreur de validation
     },
     // Finance
     totalAmount: { type: Number, required: true, default: 0 },
@@ -39,6 +40,7 @@ const dossierSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
+// ✅ Génération automatique du numéro de contrat avant sauvegarde
 dossierSchema.pre("save", async function () {
   if (!this.contractNumber) {
     this.contractNumber = "CTR-" + Date.now();

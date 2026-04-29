@@ -1,4 +1,5 @@
 const Poulailler = require("../models/Poulailler");
+const Dossier = require("../models/Dossier");
 const Measure = require("../models/Measure");
 const Command = require("../models/Command");
 const SystemConfig = require("../models/SystemConfig");
@@ -44,7 +45,6 @@ async function syncConfig(poulaillerId, mqttSvc) {
 
 // ============================================================
 // SCHEMA JOI
-// Accepte tout type de fichier (pas de restriction MIME côté schema)
 // ============================================================
 const attachmentSchema = Joi.object({
   name: Joi.string().required(),
@@ -54,6 +54,7 @@ const attachmentSchema = Joi.object({
   base64: Joi.string().optional().allow("", null),
 });
 
+// ✅ FIX : densite est bien présent et optionnel
 const poulaillerSchema = Joi.object({
   name: Joi.string().min(2).max(80).optional().allow("", null),
   animalCount: Joi.number().integer().min(1).required().messages({
@@ -66,10 +67,9 @@ const poulaillerSchema = Joi.object({
     "number.positive": "La surface doit être supérieure à 0",
     "any.required": "La surface est requise",
   }),
-  densite: Joi.number().optional().allow(null),
+  densite: Joi.number().optional().allow(null), // ✅ accepté par Joi
   remarque: Joi.string().max(200).optional().allow("", null),
   address: Joi.string().max(300).optional().allow("", null),
-  // Tout type de fichier accepté
   attachments: Joi.array().items(attachmentSchema).optional().default([]),
 });
 
@@ -116,7 +116,6 @@ function sampleHistory(arr, n) {
   return Array.from({ length: n }, (_, i) => arr[i * step]);
 }
 
-// Normalise les pièces jointes pour la BDD
 function normalizeAttachments(attachments = []) {
   return attachments.map((f) => ({
     name: f.name,
@@ -143,38 +142,33 @@ exports.createPoulailler = async (req, res) => {
 
     const defaultThresholds = await getDefaultThresholds();
     const uniqueCode = generateUniqueCode();
-    const name = value.name?.trim() || generateAutoName();
+    const finalName = value.name?.trim() || generateAutoName(); // ✅ FIX: utilise value.name
     const densite = calculerDensite(value.animalCount, value.surface);
 
-    // 1. CREATE POULAILLER (PENDING)
-    const poulailler = await Poulailler.create({
-      name,
+    // ✅ FIX : const poultryData était manquant
+    const poultryData = {
+      name: finalName,
       animalCount: value.animalCount,
       surface: value.surface,
       densite,
       remarque: value.remarque || null,
       address: value.address || null,
       attachments: normalizeAttachments(value.attachments),
-      owner: req.user.id,
+    };
 
-      // 🔴 IMPORTANT: pas actif directement
+    const poulailler = await Poulailler.create({
+      ...poultryData,
+      owner: req.user.id,
       status: "PENDING",
       isOnline: false,
       uniqueCode,
-
       thresholds: { ...defaultThresholds },
     });
 
-    // 2. CREATE DOSSIER (IMPORTANT AJOUT)
     const dossier = await Dossier.create({
       eleveur: req.user.id,
       poulailler: poulailler._id,
-
       status: "EN_ATTENTE",
-
-      createdAt: Date.now(),
-
-      // optionnel si tu as finance
       totalAmount: req.body.totalAmount || 0,
       advanceAmount: req.body.advanceAmount || 0,
     });
@@ -185,7 +179,7 @@ exports.createPoulailler = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Demande envoyée à l’administrateur",
+      message: "Demande envoyée à l'administrateur",
       data: {
         poulailler,
         dossier,
@@ -259,7 +253,6 @@ exports.updatePoulailler = async (req, res) => {
         .status(403)
         .json({ success: false, error: "Action non autorisée" });
 
-    // Archive-only shortcut
     const isArchiveOnly =
       Object.keys(req.body).length === 1 &&
       typeof req.body.isArchived === "boolean";
@@ -271,9 +264,7 @@ exports.updatePoulailler = async (req, res) => {
           .status(400)
           .json({ success: false, error: error.details[0].message });
 
-      // Defensive: let middleware compute density
-      delete validated.densite;
-
+      // ✅ FIX : "delete validated.densite" supprimé — on laisse le middleware pre-save recalculer
       const newCount = validated.animalCount ?? poulailler.animalCount;
       const newSurface = validated.surface ?? poulailler.surface;
       const densite = calculerDensite(newCount, newSurface);
@@ -570,9 +561,8 @@ exports.getMonitoringData = async (req, res) => {
 
     const lastMeasure = await Measure.findOne({
       poulailler: req.params.id,
-    }).sort({
-      timestamp: -1,
-    });
+    }).sort({ timestamp: -1 });
+
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const historyRaw = await Measure.find({
       poulailler: req.params.id,
