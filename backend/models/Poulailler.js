@@ -31,7 +31,6 @@ const poulaillerSchema = new mongoose.Schema(
       trim: true,
       maxlength: 80,
     },
-    // unique:true crée l'index implicitement — NE PAS ajouter schema.index({ uniqueCode:1 })
     uniqueCode: {
       type: String,
       unique: true,
@@ -140,9 +139,9 @@ poulaillerSchema.virtual("hasAlert").get(function () {
 
 // ─────────────────────────────────────────────
 // Middleware : recalcul automatique de la densité
-// CRITIQUE : function(next) synchrone — PAS async, next() est obligatoire
+// FIXED: Added options for sync mode
 // ─────────────────────────────────────────────
-poulaillerSchema.pre("save", function (next) {
+poulaillerSchema.pre("save", { document: true, query: false }, function (next) {
   try {
     if (this.isModified("animalCount") || this.isModified("surface")) {
       const count = Number(this.animalCount);

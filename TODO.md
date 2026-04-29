@@ -1,19 +1,21 @@
-# Smart Poultry Project - Fix Syntax Error Plan
+# Smart Poultry Project TODO
 
-## Current Task: Fix Babel Syntax Error in AddPoultryScreen.js
+## Active Task: Fix Mongoose "next is not a function" in Poulailler pre("save")
 
 ### Steps:
 
-- [x] 1. Create TODO.md tracking progress (done).
-- [x] 2. Edit `mobile/src/features/poultry/screens/AddPoultryScreen.js` to add missing `const poultryData = {` declaration.
-  - Fixed: Added `const poultryData = {` before object literal in handleSubmit.
-  - Syntax now valid; Babel bundling error resolved.
-- [x] 3. Update TODO.md to mark edit complete.
-- [ ] 4. Run `cd mobile && npx expo start --clear` to test bundling.
-- [ ] 5. Verify form submission works (create/update poulailler).
+- [ ] 1. Create/update TODO.md (done).
+- [ ] 2. Edit backend/models/Poulailler.js: Add `{ document: true, query: false }` to pre("save").
+- [ ] 3. Update TODO.md (mark edit complete).
+- [ ] 4. Restart backend: `cd backend && npm start`.
+- [ ] 5. Test POST /api/poulaillers.
 
-**Status**: Approved by user. Starting implementation.
+**Status**: User approved. Implementing.
+
+## Previous Task (Syntax Fixed ✅)
+
+_(archived)_
 
 ## Other TODOs
 
-_(Previous content preserved below)_
+_(previous preserved)_
