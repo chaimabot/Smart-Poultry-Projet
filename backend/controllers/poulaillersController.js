@@ -150,12 +150,17 @@ exports.createPoulailler = async (req, res) => {
   let poulailler = null;
 
   try {
+    console.log("[CREATE] STEP 1 — getDefaultThresholds...");
     const defaultThresholds = await getDefaultThresholds();
-    console.log("[CREATE] thresholds OK :", defaultThresholds); // ← ajoute
-    const uniqueCode = generateUniqueCode();
-    console.log("[CREATE] uniqueCode :", uniqueCode); // ← ajoute
+    console.log(
+      "[CREATE] STEP 2 — thresholds OK:",
+      JSON.stringify(defaultThresholds),
+    );
 
-    poulailler = await Poulailler.create({
+    const uniqueCode = generateUniqueCode();
+    console.log("[CREATE] STEP 3 — uniqueCode:", uniqueCode);
+
+    const doc = {
       name: value.name.trim(),
       animalCount: value.animalCount,
       surface: value.surface,
@@ -166,19 +171,30 @@ exports.createPoulailler = async (req, res) => {
       status: "en_attente_module",
       uniqueCode,
       thresholds: { ...defaultThresholds },
-    });
+    };
+    console.log("[CREATE] STEP 4 — doc à insérer:", JSON.stringify(doc));
 
-    console.log(`[CREATE] Poulailler créé : ${poulailler._id} (${uniqueCode})`);
+    poulailler = await Poulailler.create(doc);
+    console.log(
+      "[CREATE] STEP 5 — Poulailler créé:",
+      poulailler._id.toString(),
+    );
   } catch (err) {
+    console.error("[CREATE] CRASH à l'étape Poulailler :");
+    console.error("  message :", err.message);
+    console.error("  name    :", err.name);
+    console.error("  errors  :", JSON.stringify(err.errors ?? null));
     console.error(
-      "[CREATE] Échec Poulailler.create() :",
-      err.message,
-      "| full:",
-      err,
+      "  stack   :",
+      err.stack?.split("\n").slice(0, 5).join(" | "),
     );
     return res
       .status(500)
-      .json({ success: false, error: "Impossible de créer le poulailler." });
+      .json({
+        success: false,
+        error: "Impossible de créer le poulailler.",
+        detail: err.message,
+      });
   }
 
   let dossier = null;
@@ -290,10 +306,12 @@ exports.updatePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     const { error, value } = updatePoulaillerSchema.validate(
@@ -353,10 +371,12 @@ exports.deletePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     await Poulailler.deleteOne({ _id: req.params.id });
@@ -383,10 +403,12 @@ exports.archivePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     poulailler.isArchived = true;
