@@ -9,136 +9,53 @@ const User = require("../models/User");
 // ─────────────────────────────────────────────────────────────
 const getDossiers = async (req, res) => {
   try {
-    const dossiersBruts = await Dossier.find().lean().sort({ createdAt: -1 });
+    const dossiers = await Dossier.find()
+      .populate("eleveur", "firstName lastName phone email adresse")
+      .populate("poulailler")
+      .lean();
 
-    if (dossiersBruts.length === 0) {
-      return res.json({ success: true, count: 0, data: [] });
-    }
+    const result = dossiers.map((d) => {
+      const p = d.poulailler || {};
 
-    // ── Extraire les IDs ─────────────────────────────────────────────────────
-    const eleveurIds = [
-      ...new Set(
-        dossiersBruts.map((d) => d.eleveur?.toString()).filter(Boolean),
-      ),
-    ];
-    const poulaillerIds = [
-      ...new Set(
-        dossiersBruts.map((d) => d.poulailler?.toString()).filter(Boolean),
-      ),
-    ];
+      const surface =
+        typeof p.surface === "number" && p.surface > 0 ? p.surface : 0;
 
-    // ── Requêtes parallèles ──────────────────────────────────────────────────
-    const [users, poulaillersPrincipaux, tousLesPoulaillers] =
-      await Promise.all([
-        // Tous les champs utiles du schéma User
-        User.find({ _id: { $in: eleveurIds } })
-          .select(
-            "firstName lastName phone email photoUrl role status isActive lastLogin createdAt",
-          )
-          .lean(),
+      const animalCount = typeof p.animalCount === "number" ? p.animalCount : 0;
 
-        // Poulailler principal référencé dans le dossier — tous les champs du schéma
-        Poulailler.find({ _id: { $in: poulaillerIds } })
-          .select(
-            "name type animalCount description location photoUrl status " +
-              "isOnline isArchived isCritical uniqueCode moduleId " +
-              "installationDate lastCommunicationAt lastMeasureAt lastAlert lastCriticalCheck " +
-              "lastMonitoring seuils autoThresholds actuatorStates owner createdAt",
-          )
-          .lean(),
+      const densite = surface > 0 ? animalCount / surface : 0;
 
-        // Tous les poulaillers appartenant aux éleveurs concernés
-        Poulailler.find({ owner: { $in: eleveurIds } })
-          .select(
-            "owner name type animalCount description location photoUrl status " +
-              "isOnline isArchived isCritical uniqueCode moduleId " +
-              "installationDate lastCommunicationAt lastMeasureAt lastAlert lastCriticalCheck " +
-              "lastMonitoring seuils autoThresholds actuatorStates createdAt",
-          )
-          .lean(),
-      ]);
-
-    // ── Maps ─────────────────────────────────────────────────────────────────
-    const userMap = {};
-    users.forEach((u) => {
-      userMap[u._id.toString()] = u;
-    });
-
-    const poulaillerMap = {};
-    poulaillersPrincipaux.forEach((p) => {
-      poulaillerMap[p._id.toString()] = p;
-    });
-
-    const poulaillersByEleveur = {};
-    tousLesPoulaillers.forEach((p) => {
-      const ownerId = p.owner?.toString();
-      if (!ownerId) return;
-      if (!poulaillersByEleveur[ownerId]) poulaillersByEleveur[ownerId] = [];
-      poulaillersByEleveur[ownerId].push(p);
-    });
-
-    // ── Construire la réponse ─────────────────────────────────────────────────
-    const sanitizedDossiers = dossiersBruts.map((dossier) => {
-      const eleveurId = dossier.eleveur?.toString();
-      const poulailler1Id = dossier.poulailler?.toString();
-
-      const eleveur = eleveurId
-        ? (userMap[eleveurId] ?? {
-            firstName: "Inconnu",
-            lastName: "",
-            phone: null,
-            email: "",
-            photoUrl: null,
-            role: "eleveur",
-            status: "pending",
-            isActive: false,
-          })
-        : {
-            firstName: "Inconnu",
-            lastName: "",
-            phone: null,
-            email: "",
-            photoUrl: null,
-            role: "eleveur",
-            status: "pending",
-            isActive: false,
-          };
-
-      const poulailler = poulailler1Id
-        ? (poulaillerMap[poulailler1Id] ?? buildEmptyPoulailler())
-        : buildEmptyPoulailler();
-
-      const tousPoulaillers = eleveurId
-        ? (poulaillersByEleveur[eleveurId] ?? [])
-        : [];
+      const totalAmount = d.totalAmount ?? 0;
+      const advanceAmount = d.advanceAmount ?? 0;
 
       return {
-        ...dossier,
-        eleveur,
-        poulailler: formatPoulailler(poulailler),
-        tousPoulaillers: tousPoulaillers.map(formatPoulailler),
-        nbPoulaillers: tousPoulaillers.length,
-        totalVolailles: tousPoulaillers.reduce(
-          (s, p) => s + (p.animalCount ?? 0),
-          0,
-        ),
+        ...d,
+
+        // sécurité frontend
+        poulailler: {
+          ...p,
+          surface,
+          animalCount,
+          densite, // 🔥 ajouté proprement ici
+        },
+
+        // recalcul propre backend
+        remainedAmount: totalAmount - advanceAmount,
       };
     });
 
-    res.json({
+    return res.status(200).json({
       success: true,
-      count: sanitizedDossiers.length,
-      data: sanitizedDossiers,
+      count: result.length,
+      data: result,
     });
-  } catch (error) {
-    console.error("Erreur getDossiers:", error.message, error.stack);
-    res.status(500).json({
+  } catch (err) {
+    console.error("[GET DOSSIERS ERROR]", err);
+    return res.status(500).json({
       success: false,
-      message: "Erreur lors de la récupération des dossiers",
+      message: "Erreur serveur lors de la récupération des dossiers",
     });
   }
 };
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function buildEmptyPoulailler() {
