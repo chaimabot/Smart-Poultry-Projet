@@ -143,13 +143,19 @@ poulaillerSchema.virtual("hasAlert").get(function () {
 // CRITIQUE : function(next) synchrone — PAS async, next() est obligatoire
 // ─────────────────────────────────────────────
 poulaillerSchema.pre("save", function (next) {
-  if (this.isModified("animalCount") || this.isModified("surface")) {
-    this.densite =
-      this.animalCount > 0 && this.surface > 0
-        ? parseFloat((this.animalCount / this.surface).toFixed(2))
-        : null;
+  try {
+    if (this.isModified("animalCount") || this.isModified("surface")) {
+      const count = Number(this.animalCount);
+      const surface = Number(this.surface);
+
+      this.densite =
+        count > 0 && surface > 0 ? Number((count / surface).toFixed(2)) : null;
+    }
+
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 });
 
 // ─────────────────────────────────────────────
