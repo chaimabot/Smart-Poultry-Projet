@@ -23,9 +23,17 @@ export const getPoultryById = async (id) => {
 // Crée un nouveau poulailler
 export const createPoultry = async (poultryData) => {
   try {
+    console.log(
+      "[createPoultry] body envoyé :",
+      JSON.stringify(poultryData, null, 2),
+    ); // ← ajoute
     const response = await api.post("/poulaillers", poultryData);
     return response.data;
   } catch (error) {
+    console.log(
+      "[createPoultry] erreur complète :",
+      JSON.stringify(error.response?.data, null, 2),
+    ); // ← ajoute
     throw error.response ? error.response.data : { error: "Erreur réseau" };
   }
 };
