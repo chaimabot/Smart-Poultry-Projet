@@ -148,49 +148,52 @@ exports.createPoulailler = async (req, res) => {
       });
     }
 
-    // =========================================================
-    // 1️⃣ CREATE POULAILLER (TOUJOURS PENDING)
-    // =========================================================
     const poulailler = await Poulailler.create({
       name: value.name || generateAutoName(),
       animalCount: value.animalCount,
       surface: value.surface,
       densite: calculerDensite(value.animalCount, value.surface),
       owner: req.user.id,
-      status: "pending",
+      status: "en_attente_module",
       isActive: false,
       uniqueCode: generateUniqueCode(),
     });
 
-    // =========================================================
-    // 2️⃣ IMPORTANT : CREATE DOSSIER (OBLIGATOIRE)
-    // =========================================================
-    const dossier = await Dossier.create({
-      eleveur: req.user.id,
-      poulailler: poulailler._id,
-      status: "EN_ATTENTE",
-      source: "dashboard",
-      createdAt: new Date(),
-      totalAmount: req.body.totalAmount || 0,
-      advanceAmount: req.body.advanceAmount || 0,
-    });
+    // ✅ Dossier créé séparément avec gestion d'erreur explicite
+    let dossier = null;
+    try {
+      dossier = await Dossier.create({
+        eleveur: req.user.id,
+        poulailler: poulailler._id,
+        status: "EN_ATTENTE",
+        source: "mobile-app",      // ✅ champ maintenant dans le schéma
+        totalAmount: req.body.totalAmount || 0,
+        advanceAmount: req.body.advanceAmount || 0,
+        remainedAmount: req.body.totalAmount || 0,
+      });
+    } catch (dossierError) {
+      // Le poulailler est créé mais le dossier a échoué → on nettoie
+      console.error("Erreur création dossier:", dossierError.message);
+      await Poulailler.deleteOne({ _id: poulailler._id });
+      return res.status(500).json({
+        success: false,
+        message: "Erreur lors de la création du dossier : " + dossierError.message,
+      });
+    }
 
     return res.status(201).json({
       success: true,
       message: "Demande envoyée à l'administrateur",
-      data: {
-        poulailler,
-        dossier, // ✅ maintenant toujours créé
-      },
+      data: { poulailler, dossier },
     });
   } catch (err) {
-    console.error(err);
+    console.error("Erreur createPoulailler:", err.message);
     return res.status(500).json({
       success: false,
-      message: "Erreur serveur",
+      message: "Erreur serveur : " + err.message,
     });
   }
-};
+};s
 
 // ============================================================
 // @desc    Obtenir tous les poulaillers
