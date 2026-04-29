@@ -43,13 +43,25 @@ async function syncConfig(poulaillerId, mqttSvc) {
 }
 
 // ============================================================
-// SCHEMA Joi — champs mis à jour
-// - type et location supprimés
-// - surface (obligatoire), remarque, address ajoutés
+// SCHEMA JOI — champs mis à jour
+// Accepte: name (optionnel), animalCount, surface (obligatoires),
+//          remarque, address, attachments (optionnels)
 // ============================================================
+const attachmentSchema = Joi.object({
+  name: Joi.string().required(),
+  type: Joi.string().required(),
+  size: Joi.number().optional().allow(null),
+  uri: Joi.string().optional().allow("", null),
+  base64: Joi.string().optional().allow("", null),
+});
+
 const poulaillerSchema = Joi.object({
   name: Joi.string().min(2).max(80).optional().allow("", null),
-  animalCount: Joi.number().integer().min(1).required(),
+  animalCount: Joi.number().integer().min(1).required().messages({
+    "number.base": "Le nombre de volailles doit être un nombre",
+    "number.min": "Le nombre de volailles doit être au moins 1",
+    "any.required": "Le nombre de volailles est requis",
+  }),
   surface: Joi.number().positive().required().messages({
     "number.base": "La surface doit être un nombre",
     "number.positive": "La surface doit être supérieure à 0",
@@ -57,11 +69,12 @@ const poulaillerSchema = Joi.object({
   }),
   remarque: Joi.string().max(200).optional().allow("", null),
   address: Joi.string().max(300).optional().allow("", null),
-  photoUrl: Joi.string().optional().allow("", null),
+  // Pièces jointes : images, PDFs, archives
+  attachments: Joi.array().items(attachmentSchema).optional().default([]),
 });
 
 // ============================================================
-// HELPER : générer un nom automatique si absent
+// HELPERS
 // ============================================================
 function generateAutoName() {
   return (
@@ -69,17 +82,46 @@ function generateAutoName() {
   );
 }
 
-// ============================================================
-// HELPER : calculer la densité (volailles / m²)
-// ============================================================
+function generateUniqueCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
 function calculerDensite(animalCount, surface) {
   if (!animalCount || !surface || surface <= 0) return null;
   return parseFloat((animalCount / surface).toFixed(2));
 }
 
-// ============================================================
-// HELPER : obtenir les seuils par défaut depuis SystemConfig
-// ============================================================
+/**
+ * Valide les types MIME des pièces jointes.
+ * Accepte : images (image/*), PDF, archives zip/rar/7z/tar
+ */
+function validateAttachmentTypes(attachments = []) {
+  const allowedMimePatterns = [
+    /^image\//,
+    /^application\/pdf$/,
+    /^application\/zip$/,
+    /^application\/x-zip-compressed$/,
+    /^application\/x-rar-compressed$/,
+    /^application\/x-tar$/,
+    /^application\/x-7z-compressed$/,
+    /^multipart\/x-zip$/,
+    /^application\/octet-stream$/, // fallback générique
+  ];
+
+  for (const file of attachments) {
+    const allowed = allowedMimePatterns.some((pattern) =>
+      pattern.test(file.type),
+    );
+    if (!allowed) {
+      return {
+        valid: false,
+        message: `Type de fichier non autorisé : ${file.type}`,
+      };
+    }
+  }
+  return { valid: true };
+}
+
 async function getDefaultThresholds() {
   try {
     return await SystemConfig.getDefaultThresholds();
@@ -98,9 +140,6 @@ async function getDefaultThresholds() {
   }
 }
 
-// ============================================================
-// HELPER : échantillonner un tableau à N points max
-// ============================================================
 function sampleHistory(arr, n) {
   if (!arr || arr.length === 0) return [];
   if (arr.length <= n) return arr;
@@ -109,41 +148,47 @@ function sampleHistory(arr, n) {
 }
 
 // ============================================================
-// HELPER : générer un code unique pour le poulailler
-// ============================================================
-function generateUniqueCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
-}
-
 // @desc    Créer un nouveau poulailler
 // @route   POST /api/poulaillers
-// @access  Private (Eleveur)
+// @access  Private
+// ============================================================
 exports.createPoulailler = async (req, res) => {
   try {
-    const { error } = poulaillerSchema.validate(req.body);
+    const { error, value } = poulaillerSchema.validate(req.body);
     if (error) {
       return res
         .status(400)
         .json({ success: false, error: error.details[0].message });
     }
 
+    // Validation des types de pièces jointes
+    const attachCheck = validateAttachmentTypes(value.attachments);
+    if (!attachCheck.valid) {
+      return res
+        .status(400)
+        .json({ success: false, error: attachCheck.message });
+    }
+
     const defaultThresholds = await getDefaultThresholds();
     const uniqueCode = generateUniqueCode();
-
-    // Nom auto si vide
-    const name = req.body.name?.trim() || generateAutoName();
-
-    // Densité calculée
-    const densite = calculerDensite(req.body.animalCount, req.body.surface);
+    const name = value.name?.trim() || generateAutoName();
+    const densite = calculerDensite(value.animalCount, value.surface);
 
     const poulailler = await Poulailler.create({
       name,
-      animalCount: req.body.animalCount,
-      surface: req.body.surface,
+      animalCount: value.animalCount,
+      surface: value.surface,
       densite,
-      remarque: req.body.remarque || null,
-      address: req.body.address || null,
-      photoUrl: req.body.photoUrl || null,
+      remarque: value.remarque || null,
+      address: value.address || null,
+      // Stocker uniquement les métadonnées (name, type, size) + uri/base64
+      attachments: (value.attachments || []).map((f) => ({
+        name: f.name,
+        type: f.type,
+        size: f.size || null,
+        uri: f.uri || null,
+        base64: f.base64 || null,
+      })),
       owner: req.user.id,
       status: "en_attente_module",
       thresholds: { ...defaultThresholds },
@@ -151,11 +196,7 @@ exports.createPoulailler = async (req, res) => {
     });
 
     console.log(
-      "[CREATE POULAILLER] Créé:",
-      name,
-      "| Densité:",
-      densite,
-      "vol/m²",
+      `[CREATE POULAILLER] "${name}" | ${value.animalCount} volailles | ${value.surface}m² | Densité: ${densite} vol/m² | Fichiers: ${(value.attachments || []).length}`,
     );
 
     res.status(201).json({ success: true, data: poulailler });
@@ -165,52 +206,47 @@ exports.createPoulailler = async (req, res) => {
   }
 };
 
-// @desc    Obtenir tous les poulaillers de l'utilisateur connecté
+// ============================================================
+// @desc    Obtenir tous les poulaillers
 // @route   GET /api/poulaillers
 // @access  Private
+// ============================================================
 exports.getPoulaillers = async (req, res) => {
   try {
     const { search } = req.query;
     let query = { owner: req.user.id };
-
-    if (search) {
-      query.name = { $regex: search, $options: "i" };
-    }
+    if (search) query.name = { $regex: search, $options: "i" };
 
     const poulaillers = await Poulailler.find({
       ...query,
       isArchived: false,
     }).sort({ createdAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: poulaillers.length,
-      data: poulaillers,
-    });
+    res
+      .status(200)
+      .json({ success: true, count: poulaillers.length, data: poulaillers });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 };
 
+// ============================================================
 // @desc    Obtenir un poulailler par ID
 // @route   GET /api/poulaillers/:id
 // @access  Private
+// ============================================================
 exports.getPoulailler = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
-        .json({ success: false, error: "Accès non autorisé à ce poulailler" });
-    }
+        .json({ success: false, error: "Accès non autorisé" });
 
     res.status(200).json({ success: true, data: poulailler });
   } catch (err) {
@@ -219,75 +255,80 @@ exports.getPoulailler = async (req, res) => {
   }
 };
 
+// ============================================================
 // @desc    Mettre à jour un poulailler
 // @route   PUT /api/poulaillers/:id
 // @access  Private
+// ============================================================
 exports.updatePoulailler = async (req, res) => {
   try {
     let poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
-    }
+        .json({ success: false, error: "Action non autorisée" });
 
     // Pas de validation complète pour simple archivage/restauration
-    if (
-      !(
-        Object.keys(req.body).length === 1 &&
-        typeof req.body.isArchived === "boolean"
-      )
-    ) {
-      const { error } = poulaillerSchema.validate(req.body);
-      if (error) {
+    const isArchiveOnly =
+      Object.keys(req.body).length === 1 &&
+      typeof req.body.isArchived === "boolean";
+
+    if (!isArchiveOnly) {
+      const { error, value: validated } = poulaillerSchema.validate(req.body);
+      if (error)
         return res
           .status(400)
           .json({ success: false, error: error.details[0].message });
-      }
+
+      const attachCheck = validateAttachmentTypes(validated.attachments);
+      if (!attachCheck.valid)
+        return res
+          .status(400)
+          .json({ success: false, error: attachCheck.message });
+
+      const newCount = validated.animalCount ?? poulailler.animalCount;
+      const newSurface = validated.surface ?? poulailler.surface;
+      const densite = calculerDensite(newCount, newSurface);
+
+      const fieldsToUpdate = {
+        name: validated.name?.trim() || poulailler.name,
+        animalCount: validated.animalCount,
+        surface: validated.surface,
+        densite,
+        remarque: validated.remarque ?? poulailler.remarque,
+        address: validated.address ?? poulailler.address,
+        attachments: (validated.attachments || []).map((f) => ({
+          name: f.name,
+          type: f.type,
+          size: f.size || null,
+          uri: f.uri || null,
+          base64: f.base64 || null,
+        })),
+      };
+
+      if (typeof req.body.isArchived === "boolean")
+        fieldsToUpdate.isArchived = req.body.isArchived;
+
+      poulailler = await Poulailler.findByIdAndUpdate(
+        req.params.id,
+        fieldsToUpdate,
+        {
+          returnDocument: "after",
+          runValidators: true,
+        },
+      );
+
+      console.log(
+        `[UPDATE POULAILLER] "${poulailler.name}" | Densité: ${densite} vol/m² | Fichiers: ${fieldsToUpdate.attachments.length}`,
+      );
+    } else {
+      poulailler.isArchived = req.body.isArchived;
+      await poulailler.save();
     }
-
-    // Recalcul densité si animalCount ou surface changent
-    const newCount = req.body.animalCount ?? poulailler.animalCount;
-    const newSurface = req.body.surface ?? poulailler.surface;
-    const densite = calculerDensite(newCount, newSurface);
-
-    const fieldsToUpdate = {
-      name: req.body.name?.trim() || poulailler.name,
-      animalCount: req.body.animalCount,
-      surface: req.body.surface,
-      densite,
-      remarque: req.body.remarque ?? poulailler.remarque,
-      address: req.body.address ?? poulailler.address,
-      photoUrl: req.body.photoUrl ?? poulailler.photoUrl,
-    };
-
-    if (typeof req.body.isArchived === "boolean") {
-      fieldsToUpdate.isArchived = req.body.isArchived;
-    }
-
-    poulailler = await Poulailler.findByIdAndUpdate(
-      req.params.id,
-      fieldsToUpdate,
-      { returnDocument: "after", runValidators: true },
-    );
-
-    console.log(
-      "[UPDATE POULAILLER]",
-      poulailler.name,
-      "| Densité recalculée:",
-      densite,
-      "vol/m²",
-    );
 
     res.status(200).json({ success: true, data: poulailler });
   } catch (err) {
@@ -296,30 +337,24 @@ exports.updatePoulailler = async (req, res) => {
   }
 };
 
+// ============================================================
 // @desc    Supprimer un poulailler
 // @route   DELETE /api/poulaillers/:id
 // @access  Private
+// ============================================================
 exports.deletePoulailler = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
-    }
+        .json({ success: false, error: "Action non autorisée" });
 
     await Poulailler.deleteOne({ _id: req.params.id });
-
     res.status(200).json({ success: true, data: {} });
   } catch (err) {
     console.error(err);
@@ -327,31 +362,25 @@ exports.deletePoulailler = async (req, res) => {
   }
 };
 
+// ============================================================
 // @desc    Archiver un poulailler
 // @route   POST /api/poulaillers/:id/archive
 // @access  Private
+// ============================================================
 exports.archivePoulailler = async (req, res) => {
   try {
-    let poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    const poulailler = await Poulailler.findById(req.params.id);
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
-    }
+        .json({ success: false, error: "Action non autorisée" });
 
     poulailler.isArchived = true;
     await poulailler.save();
-
     res.status(200).json({ success: true, data: poulailler });
   } catch (err) {
     console.error(err);
@@ -359,9 +388,11 @@ exports.archivePoulailler = async (req, res) => {
   }
 };
 
-// @desc    Obtenir le résumé statistique pour le dashboard
+// ============================================================
+// @desc    Dashboard summary
 // @route   GET /api/poulaillers/summary
 // @access  Private
+// ============================================================
 exports.getPoulaillersSummary = async (req, res) => {
   try {
     const total = await Poulailler.countDocuments({ owner: req.user.id });
@@ -373,7 +404,6 @@ exports.getPoulaillersSummary = async (req, res) => {
       owner: req.user.id,
       status: { $in: ["connecte", "maintenance"] },
     });
-
     res.status(200).json({ success: true, data: { total, critical, active } });
   } catch (err) {
     console.error(err);
@@ -381,9 +411,11 @@ exports.getPoulaillersSummary = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les poulaillers critiques uniquement
+// ============================================================
+// @desc    Poulaillers critiques
 // @route   GET /api/poulaillers/critical
 // @access  Private
+// ============================================================
 exports.getCriticalPoulaillers = async (req, res) => {
   try {
     const poulaillers = await Poulailler.find({
@@ -391,7 +423,6 @@ exports.getCriticalPoulaillers = async (req, res) => {
       isCritical: true,
       isArchived: false,
     }).sort({ updatedAt: -1 });
-
     res
       .status(200)
       .json({ success: true, count: poulaillers.length, data: poulaillers });
@@ -401,23 +432,19 @@ exports.getCriticalPoulaillers = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les seuils d'un poulailler
+// ============================================================
+// @desc    Seuils — GET
 // @route   GET /api/poulaillers/:id/thresholds
-// @access  Private
+// ============================================================
 exports.getThresholds = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
-
     res.status(200).json({ success: true, data: poulailler.thresholds });
   } catch (err) {
     console.error(err);
@@ -425,28 +452,23 @@ exports.getThresholds = async (req, res) => {
   }
 };
 
-// @desc    Mettre à jour les seuils
+// ============================================================
+// @desc    Seuils — PUT
 // @route   PUT /api/poulaillers/:id/thresholds
-// @access  Private
+// ============================================================
 exports.updateThresholds = async (req, res) => {
   try {
     let poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
 
     poulailler.thresholds = { ...poulailler.thresholds, ...req.body };
     await poulailler.save();
-
     await syncConfig(req.params.id, mqttService);
-
     res.status(200).json({ success: true, data: poulailler.thresholds });
   } catch (err) {
     console.error(err);
@@ -454,31 +476,24 @@ exports.updateThresholds = async (req, res) => {
   }
 };
 
-// @desc    Réinitialiser les seuils par défaut
+// ============================================================
+// @desc    Seuils — RESET
 // @route   POST /api/poulaillers/:id/thresholds/reset
-// @access  Private
+// ============================================================
 exports.resetThresholds = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
 
     const defaultThresholds = await getDefaultThresholds();
     poulailler.thresholds = { ...defaultThresholds };
     await poulailler.save();
-
-    console.log("[RESET THRESHOLDS] Seuils réinitialisés:", defaultThresholds);
-
     await syncConfig(req.params.id, mqttService);
-
     res.status(200).json({ success: true, data: poulailler.thresholds });
   } catch (err) {
     console.error(err);
@@ -486,44 +501,43 @@ exports.resetThresholds = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les mesures actuelles
+// ============================================================
+// @desc    Mesures actuelles
 // @route   GET /api/poulaillers/:id/current-measures
-// @access  Private
+// ============================================================
 exports.getCurrentMeasures = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
         .json({ success: false, error: "Accès non autorisé" });
-    }
 
-    if (poulailler.lastMonitoring && poulailler.lastMonitoring.timestamp) {
-      const data = {
-        temperature: {
-          current: poulailler.lastMonitoring.temperature,
-          trend: "stable",
+    if (poulailler.lastMonitoring?.timestamp) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          temperature: {
+            current: poulailler.lastMonitoring.temperature,
+            trend: "stable",
+          },
+          humidity: {
+            current: poulailler.lastMonitoring.humidity,
+            trend: "stable",
+          },
+          co2: { current: poulailler.lastMonitoring.co2 },
+          nh3: { current: poulailler.lastMonitoring.nh3 },
+          dust: { current: poulailler.lastMonitoring.dust },
+          waterLevel: { current: poulailler.lastMonitoring.waterLevel },
+          timestamp: poulailler.lastMonitoring.timestamp,
+          actuatorStates: poulailler.actuatorStates,
+          status: "connected",
         },
-        humidity: {
-          current: poulailler.lastMonitoring.humidity,
-          trend: "stable",
-        },
-        co2: { current: poulailler.lastMonitoring.co2 },
-        nh3: { current: poulailler.lastMonitoring.nh3 },
-        dust: { current: poulailler.lastMonitoring.dust },
-        waterLevel: { current: poulailler.lastMonitoring.waterLevel },
-        timestamp: poulailler.lastMonitoring.timestamp,
-        actuatorStates: poulailler.actuatorStates,
-        status: "connected",
-      };
-      return res.status(200).json({ success: true, data });
+      });
     }
 
     res.status(200).json({
@@ -539,16 +553,16 @@ exports.getCurrentMeasures = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les poulaillers archivés
+// ============================================================
+// @desc    Poulaillers archivés
 // @route   GET /api/poulaillers/archives
-// @access  Private
+// ============================================================
 exports.getArchivedPoulaillers = async (req, res) => {
   try {
     const poulaillers = await Poulailler.find({
       owner: req.user.id,
       isArchived: true,
     }).sort({ createdAt: -1 });
-
     res
       .status(200)
       .json({ success: true, count: poulaillers.length, data: poulaillers });
@@ -558,29 +572,25 @@ exports.getArchivedPoulaillers = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les données de monitoring complètes (avec historique 24h)
+// ============================================================
+// @desc    Monitoring (historique 24h)
 // @route   GET /api/poulaillers/:id/monitoring
-// @access  Private
+// ============================================================
 exports.getMonitoringData = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
         .json({ success: false, error: "Accès non autorisé" });
-    }
 
     const lastMeasure = await Measure.findOne({
       poulailler: req.params.id,
     }).sort({ timestamp: -1 });
-
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const historyRaw = await Measure.find({
       poulailler: req.params.id,
@@ -631,18 +641,17 @@ exports.getMonitoringData = async (req, res) => {
   }
 };
 
+// ============================================================
 // @desc    Contrôler un actionneur
 // @route   PATCH /api/poulaillers/:id/actuators
-// @access  Private
+// ============================================================
 exports.controlActuator = async (req, res) => {
   try {
     const { actuator, state, mode } = req.body;
-
-    if (!actuator || !state) {
+    if (!actuator || !state)
       return res
         .status(400)
         .json({ success: false, error: "actuator et state sont requis" });
-    }
 
     const validActuators = ["door", "ventilation", "lamp", "pump"];
     const validStates = {
@@ -652,38 +661,34 @@ exports.controlActuator = async (req, res) => {
       pump: ["on", "off"],
     };
 
-    if (!validActuators.includes(actuator)) {
-      return res.status(400).json({
-        success: false,
-        error: `Actionneur invalide. Valeurs acceptées : ${validActuators.join(" | ")}`,
-      });
-    }
-
-    if (!validStates[actuator].includes(state)) {
-      return res.status(400).json({
-        success: false,
-        error: `État invalide pour ${actuator} : ${validStates[actuator].join(" | ")}`,
-      });
-    }
+    if (!validActuators.includes(actuator))
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: `Actionneur invalide. Valeurs acceptées : ${validActuators.join(" | ")}`,
+        });
+    if (!validStates[actuator].includes(state))
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: `État invalide pour ${actuator} : ${validStates[actuator].join(" | ")}`,
+        });
 
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
         .json({ success: false, error: "Accès non autorisé" });
-    }
 
     poulailler.actuatorStates[actuator].status = state;
-    if (mode && ["auto", "manual"].includes(mode)) {
+    if (mode && ["auto", "manual"].includes(mode))
       poulailler.actuatorStates[actuator].mode = mode;
-    }
     await poulailler.save();
 
     const mqttClient = mqttService.getMqttClient();
@@ -696,12 +701,10 @@ exports.controlActuator = async (req, res) => {
         pump: "pump",
       };
       const espTopic = `poulailler/${poulaillerId}/cmd/${topicMap[actuator]}`;
-
       const mqttPayload =
         actuator === "door"
           ? { action: state === "open" ? "open" : "stop" }
           : { on: state === "on", mode: mode || "manual" };
-
       mqttClient.publish(espTopic, JSON.stringify(mqttPayload), { qos: 1 });
       console.log(`[MQTT→ESP32] ${espTopic}: ${JSON.stringify(mqttPayload)}`);
     } else {
@@ -747,28 +750,24 @@ exports.controlActuator = async (req, res) => {
   }
 };
 
-// @desc    Obtenir l'historique des mesures par capteur et période
-// @route   GET /api/poulaillers/:id/history?sensor=temperature&period=24h
-// @access  Private
+// ============================================================
+// @desc    Historique mesures
+// @route   GET /api/poulaillers/:id/history
+// ============================================================
 exports.getMeasureHistory = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res
         .status(403)
         .json({ success: false, error: "Accès non autorisé" });
-    }
 
     const sensor = req.query.sensor || "temperature";
     const period = req.query.period || "24h";
-
     const validSensors = [
       "temperature",
       "humidity",
@@ -777,20 +776,18 @@ exports.getMeasureHistory = async (req, res) => {
       "dust",
       "waterLevel",
     ];
-    if (!validSensors.includes(sensor)) {
-      return res.status(400).json({
-        success: false,
-        error: `Capteur invalide. Valeurs acceptées : ${validSensors.join(", ")}`,
-      });
-    }
+    if (!validSensors.includes(sensor))
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: `Capteur invalide. Valeurs acceptées : ${validSensors.join(", ")}`,
+        });
 
-    const periodMap = {
-      "24h": 24 * 60 * 60 * 1000,
-      "7d": 7 * 24 * 60 * 60 * 1000,
-      "30d": 30 * 24 * 60 * 60 * 1000,
-    };
-    const duration = periodMap[period] || periodMap["24h"];
-    const since = new Date(Date.now() - duration);
+    const periodMap = { "24h": 864e5, "7d": 6048e5, "30d": 2592e6 };
+    const since = new Date(
+      Date.now() - (periodMap[period] || periodMap["24h"]),
+    );
 
     const measures = await Measure.find({
       poulailler: req.params.id,
@@ -804,7 +801,6 @@ exports.getMeasureHistory = async (req, res) => {
       timestamp: m.timestamp,
       value: m[sensor],
     }));
-
     res
       .status(200)
       .json({ success: true, sensor, period, count: data.length, data });
@@ -814,5 +810,4 @@ exports.getMeasureHistory = async (req, res) => {
   }
 };
 
-// Export syncConfig pour usage dans mqttService
 exports.syncConfig = syncConfig;

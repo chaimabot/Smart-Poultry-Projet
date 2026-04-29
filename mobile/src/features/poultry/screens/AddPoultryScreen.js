@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   View,
   Text,
@@ -16,17 +16,44 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { MaterialIcons, MaterialCommunityIcons } from "@expo/vector-icons";
-
 import { useTheme } from "../../../context/ThemeContext";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import { createPoultry, updatePoultry } from "../../../services/poultry";
 import Toast from "../../../components/Toast";
 
-// Génère un nom automatique style "Poulailler-A3F2"
 function generateAutoName() {
   return (
     "Poulailler-" + Math.random().toString(36).substring(2, 6).toUpperCase()
   );
+}
+
+function calculerDensite(animalCount, surface) {
+  const c = parseFloat(animalCount);
+  const s = parseFloat(surface);
+  if (c > 0 && s > 0) return parseFloat((c / s).toFixed(2));
+  return null;
+}
+
+function getFileIcon(type) {
+  if (!type) return "insert-drive-file";
+  if (type.startsWith("image/")) return "image";
+  if (type === "application/pdf") return "picture-as-pdf";
+  return "folder-zip"; // archive
+}
+
+function getFileColor(type, primaryColor) {
+  if (!type) return "#64748b";
+  if (type.startsWith("image/")) return primaryColor;
+  if (type === "application/pdf") return "#ef4444";
+  return "#8b5cf6";
+}
+
+function formatFileSize(bytes) {
+  if (!bytes) return "";
+  if (bytes < 1024) return `${bytes} o`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
 }
 
 export default function AddPoultryScreen({ navigation, route }) {
@@ -44,7 +71,9 @@ export default function AddPoultryScreen({ navigation, route }) {
   );
   const [remarque, setRemarque] = useState(poultryToEdit?.remarque || "");
   const [address, setAddress] = useState(poultryToEdit?.address || "");
-  const [photo, setPhoto] = useState(poultryToEdit?.image || null);
+  const [attachments, setAttachments] = useState(
+    poultryToEdit?.attachments || [],
+  );
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState({
@@ -55,74 +84,119 @@ export default function AddPoultryScreen({ navigation, route }) {
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
-  // Densité calculée automatiquement (volailles / m²)
-  const densite = (() => {
-    const count = parseFloat(animalCount);
-    const surf = parseFloat(surface);
-    if (count > 0 && surf > 0) {
-      return (count / surf).toFixed(2);
-    }
-    return null;
-  })();
-
-  // Indicateur de densité
+  const densite = calculerDensite(animalCount, surface);
   const densiteStatus = (() => {
     if (!densite) return null;
-    const d = parseFloat(densite);
-    if (d <= 6) return { label: "Optimale", color: "#22c55e" };
-    if (d <= 10) return { label: "Acceptable", color: "#f59e0b" };
+    if (densite <= 6) return { label: "Optimale", color: "#22c55e" };
+    if (densite <= 10) return { label: "Acceptable", color: "#f59e0b" };
     return { label: "Trop dense", color: "#ef4444" };
   })();
 
+  // ── Galerie images ──────────────────────────────────────────
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.5,
+      allowsMultipleSelection: true,
+      quality: 0.6,
       base64: true,
     });
     if (!result.canceled) {
-      setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      const newFiles = result.assets.map((a) => ({
+        uri: a.uri,
+        name: a.fileName || `photo_${Date.now()}.jpg`,
+        type: "image/jpeg",
+        size: a.fileSize || null,
+        base64: a.base64 ? `data:image/jpeg;base64,${a.base64}` : null,
+      }));
+      addAttachments(newFiles);
     }
   };
 
+  // ── Caméra ──────────────────────────────────────────────────
   const takePhoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
       setToast({
         visible: true,
-        message: "Nous avons besoin de la permission de caméra.",
+        message: "Permission caméra refusée.",
         type: "error",
       });
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 0.5,
+      quality: 0.6,
       base64: true,
     });
     if (!result.canceled) {
-      setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      const a = result.assets[0];
+      addAttachments([
+        {
+          uri: a.uri,
+          name: `photo_${Date.now()}.jpg`,
+          type: "image/jpeg",
+          size: a.fileSize || null,
+          base64: a.base64 ? `data:image/jpeg;base64,${a.base64}` : null,
+        },
+      ]);
     }
   };
 
-  const handlePhotoPick = () => {
-    Alert.alert(
-      "Choisir une photo",
-      "Voulez-vous prendre une nouvelle photo ou en choisir une depuis la galerie ?",
-      [
-        { text: "Annuler", style: "cancel" },
-        { text: "Galerie", onPress: pickImage },
-        { text: "Caméra", onPress: takePhoto },
-      ],
-    );
+  // ── PDF / Archives ──────────────────────────────────────────
+  const pickDocument = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          "application/pdf",
+          "application/zip",
+          "application/x-zip-compressed",
+          "application/x-rar-compressed",
+          "application/x-tar",
+          "application/x-7z-compressed",
+          "multipart/x-zip",
+        ],
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (!result.canceled && result.assets?.length > 0) {
+        const newFiles = result.assets.map((a) => ({
+          uri: a.uri,
+          name: a.name,
+          type: a.mimeType || "application/octet-stream",
+          size: a.size || null,
+          base64: null,
+        }));
+        addAttachments(newFiles);
+      }
+    } catch {
+      setToast({
+        visible: true,
+        message: "Erreur lors de la sélection.",
+        type: "error",
+      });
+    }
   };
 
+  const addAttachments = (newFiles) => {
+    setAttachments((prev) => {
+      const existing = new Set(prev.map((f) => f.name));
+      const unique = newFiles.filter((f) => !existing.has(f.name));
+      if (unique.length < newFiles.length)
+        setToast({
+          visible: true,
+          message: "Certains fichiers déjà ajoutés ont été ignorés.",
+          type: "error",
+        });
+      return [...prev, ...unique];
+    });
+  };
+
+  const removeAttachment = (index) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // ── Validation ──────────────────────────────────────────────
   const validate = () => {
-    let newErrors = {};
+    const newErrors = {};
     if (
       !animalCount.trim() ||
       isNaN(parseInt(animalCount)) ||
@@ -135,51 +209,55 @@ export default function AddPoultryScreen({ navigation, route }) {
       parseFloat(surface) <= 0
     )
       newErrors.surface = "La surface est requise (ex: 25)";
-
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
+  // ── Soumission ──────────────────────────────────────────────
   const handleSubmit = async () => {
-    if (validate()) {
-      setLoading(true);
-      try {
-        const finalName = name.trim() || generateAutoName();
-        const poultryData = {
-          name: finalName,
-          animalCount: parseInt(animalCount),
-          surface: parseFloat(surface),
-          remarque: remarque,
-          address: address,
-          photoUrl: photo,
-        };
-
-        if (isEditing) {
-          await updatePoultry(poultryToEdit.id, poultryData);
-          setToast({
-            visible: true,
-            message: "Poulailler modifié !",
-            type: "success",
-          });
-          setTimeout(() => navigation.goBack(), 1500);
-        } else {
-          await createPoultry(poultryData);
-          setToast({
-            visible: true,
-            message: "Poulailler ajouté !",
-            type: "success",
-          });
-          setTimeout(() => navigation.goBack(), 1500);
-        }
-      } catch (error) {
+    if (!validate()) return;
+    setLoading(true);
+    try {
+      const finalName = name.trim() || generateAutoName();
+      const poultryData = {
+        name: finalName,
+        animalCount: parseInt(animalCount),
+        surface: parseFloat(surface),
+        densite: calculerDensite(animalCount, surface),
+        remarque,
+        address,
+        attachments: attachments.map((f) => ({
+          name: f.name,
+          type: f.type,
+          size: f.size,
+          uri: f.uri,
+          base64: f.base64 || null,
+        })),
+      };
+      if (isEditing) {
+        await updatePoultry(poultryToEdit.id, poultryData);
         setToast({
           visible: true,
-          message: error.error || "Une erreur est survenue",
-          type: "error",
+          message: "Poulailler modifié !",
+          type: "success",
         });
-      } finally {
-        setLoading(false);
+      } else {
+        await createPoultry(poultryData);
+        setToast({
+          visible: true,
+          message: "Poulailler ajouté !",
+          type: "success",
+        });
       }
+      setTimeout(() => navigation.goBack(), 1500);
+    } catch (error) {
+      setToast({
+        visible: true,
+        message: error.error || "Une erreur est survenue",
+        type: "error",
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -241,7 +319,10 @@ export default function AddPoultryScreen({ navigation, route }) {
         ]}
       >
         <TouchableOpacity
-          style={[styles.submitButton, { backgroundColor: colors.primary }]}
+          style={[
+            styles.submitButton,
+            { backgroundColor: colors.primary, opacity: loading ? 0.7 : 1 },
+          ]}
           onPress={handleSubmit}
           disabled={loading}
         >
@@ -254,7 +335,6 @@ export default function AddPoultryScreen({ navigation, route }) {
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={0}
         style={{ flex: 1 }}
       >
         <ScrollView
@@ -264,56 +344,8 @@ export default function AddPoultryScreen({ navigation, route }) {
             { paddingBottom: dynamicPaddingBottom },
           ]}
         >
-          {/* Photo Section */}
-          <View style={styles.photoSection}>
-            <View
-              style={[
-                styles.photoContainer,
-                {
-                  backgroundColor: darkMode ? colors.slate800 : colors.slate100,
-                  borderColor: darkMode
-                    ? colors.borderDark
-                    : colors.borderLight,
-                },
-              ]}
-            >
-              {photo ? (
-                <Image source={{ uri: photo }} style={styles.photo} />
-              ) : (
-                <View style={styles.photoPlaceholder}>
-                  <MaterialIcons
-                    name="add-a-photo"
-                    size={40}
-                    color={colors.primary}
-                  />
-                  <Text
-                    style={[
-                      styles.photoText,
-                      {
-                        color: darkMode
-                          ? colors.textSubDark
-                          : colors.textSubLight,
-                      },
-                    ]}
-                  >
-                    Ajoutez une photo
-                  </Text>
-                </View>
-              )}
-            </View>
-            <TouchableOpacity
-              style={[styles.photoBtn, { borderColor: colors.primary }]}
-              onPress={handlePhotoPick}
-            >
-              <Text style={[styles.photoBtnText, { color: colors.primary }]}>
-                {photo ? "Changer la photo" : "Ajouter une photo"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Form Fields */}
           <View style={styles.formContainer}>
-            {/* Nom (optionnel) */}
+            {/* Nom */}
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
                 <Text
@@ -395,8 +427,8 @@ export default function AddPoultryScreen({ navigation, route }) {
               >
                 <TouchableOpacity
                   onPress={() =>
-                    setAnimalCount((prev) =>
-                      String(Math.max(0, (parseInt(prev) || 0) - 10)),
+                    setAnimalCount((p) =>
+                      String(Math.max(0, (parseInt(p) || 0) - 10)),
                     )
                   }
                   style={[
@@ -435,7 +467,7 @@ export default function AddPoultryScreen({ navigation, route }) {
                 />
                 <TouchableOpacity
                   onPress={() =>
-                    setAnimalCount((prev) => String((parseInt(prev) || 0) + 10))
+                    setAnimalCount((p) => String((parseInt(p) || 0) + 10))
                   }
                   style={[
                     styles.roundBtn,
@@ -479,7 +511,6 @@ export default function AddPoultryScreen({ navigation, route }) {
                   style={[
                     styles.input,
                     styles.inputFlex,
-                    errors.surface && styles.inputError,
                     {
                       backgroundColor: darkMode
                         ? colors.cardDark
@@ -531,7 +562,7 @@ export default function AddPoultryScreen({ navigation, route }) {
               )}
             </View>
 
-            {/* Densité calculée automatiquement */}
+            {/* Densité */}
             <View
               style={[
                 styles.densiteCard,
@@ -614,7 +645,7 @@ export default function AddPoultryScreen({ navigation, route }) {
               )}
             </View>
 
-            {/* Remarque (optionnel) */}
+            {/* Remarque */}
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
                 <Text
@@ -660,7 +691,7 @@ export default function AddPoultryScreen({ navigation, route }) {
               <Text style={styles.charCount}>{remarque.length}/200</Text>
             </View>
 
-            {/* Adresse du poulailler (optionnel) */}
+            {/* Adresse */}
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
                 <Text
@@ -720,6 +751,227 @@ export default function AddPoultryScreen({ navigation, route }) {
                 Ex : Route de Bizerte, Km 12, Menzel Bourguiba
               </Text>
             </View>
+
+            {/* ── Pièces jointes ──────────────────────────────── */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text
+                  style={[
+                    styles.label,
+                    {
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                >
+                  Pièces jointes
+                </Text>
+                <Text style={styles.optionalBadge}>Optionnel</Text>
+              </View>
+
+              {/* 3 boutons : Image | PDF | Dossier */}
+              <View style={styles.attachBtnRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.attachBtn,
+                    {
+                      backgroundColor: darkMode ? colors.cardDark : "#fff7ed",
+                      borderColor: colors.primary,
+                    },
+                  ]}
+                  onPress={() =>
+                    Alert.alert("Ajouter une image", "", [
+                      { text: "Annuler", style: "cancel" },
+                      { text: "Galerie", onPress: pickImage },
+                      { text: "Caméra", onPress: takePhoto },
+                    ])
+                  }
+                >
+                  <MaterialIcons
+                    name="image"
+                    size={20}
+                    color={colors.primary}
+                  />
+                  <Text
+                    style={[styles.attachBtnText, { color: colors.primary }]}
+                  >
+                    Image
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.attachBtn,
+                    {
+                      backgroundColor: darkMode ? colors.cardDark : "#fff1f2",
+                      borderColor: "#ef4444",
+                    },
+                  ]}
+                  onPress={pickDocument}
+                >
+                  <MaterialIcons
+                    name="picture-as-pdf"
+                    size={20}
+                    color="#ef4444"
+                  />
+                  <Text style={[styles.attachBtnText, { color: "#ef4444" }]}>
+                    PDF
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.attachBtn,
+                    {
+                      backgroundColor: darkMode ? colors.cardDark : "#f5f3ff",
+                      borderColor: "#8b5cf6",
+                    },
+                  ]}
+                  onPress={pickDocument}
+                >
+                  <MaterialCommunityIcons
+                    name="folder-zip"
+                    size={20}
+                    color="#8b5cf6"
+                  />
+                  <Text style={[styles.attachBtnText, { color: "#8b5cf6" }]}>
+                    Dossier
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Liste fichiers */}
+              {attachments.length > 0 ? (
+                <View
+                  style={[
+                    styles.attachList,
+                    {
+                      backgroundColor: darkMode
+                        ? colors.cardDark
+                        : colors.cardLight,
+                      borderColor: darkMode
+                        ? colors.borderDark
+                        : colors.borderLight,
+                    },
+                  ]}
+                >
+                  {attachments.map((file, index) => {
+                    const isImage = file.type?.startsWith("image/");
+                    const iconName = getFileIcon(file.type);
+                    const iconColor = getFileColor(file.type, colors.primary);
+                    const isArchive =
+                      !isImage && file.type !== "application/pdf";
+
+                    return (
+                      <View
+                        key={index}
+                        style={[
+                          styles.attachItem,
+                          index < attachments.length - 1 && {
+                            borderBottomWidth: 1,
+                            borderBottomColor: darkMode
+                              ? colors.borderDark
+                              : "#e2e8f0",
+                          },
+                        ]}
+                      >
+                        {/* Aperçu ou icône */}
+                        {isImage && (file.base64 || file.uri) ? (
+                          <Image
+                            source={{ uri: file.base64 || file.uri }}
+                            style={styles.attachThumb}
+                          />
+                        ) : (
+                          <View
+                            style={[
+                              styles.attachIconBox,
+                              { backgroundColor: iconColor + "18" },
+                            ]}
+                          >
+                            {isArchive ? (
+                              <MaterialCommunityIcons
+                                name="folder-zip"
+                                size={22}
+                                color={iconColor}
+                              />
+                            ) : (
+                              <MaterialIcons
+                                name={iconName}
+                                size={22}
+                                color={iconColor}
+                              />
+                            )}
+                          </View>
+                        )}
+
+                        {/* Nom + meta */}
+                        <View style={styles.attachInfo}>
+                          <Text
+                            style={[
+                              styles.attachName,
+                              {
+                                color: darkMode
+                                  ? colors.textMainDark
+                                  : colors.textMainLight,
+                              },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {file.name}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.attachMeta,
+                              {
+                                color: darkMode
+                                  ? colors.textSubDark
+                                  : colors.textSubLight,
+                              },
+                            ]}
+                          >
+                            {isImage
+                              ? "Image"
+                              : file.type === "application/pdf"
+                                ? "PDF"
+                                : "Archive"}
+                            {file.size
+                              ? `  ·  ${formatFileSize(file.size)}`
+                              : ""}
+                          </Text>
+                        </View>
+
+                        {/* Supprimer */}
+                        <TouchableOpacity
+                          onPress={() => removeAttachment(index)}
+                          style={styles.attachRemove}
+                        >
+                          <MaterialIcons
+                            name="close"
+                            size={18}
+                            color="#94a3b8"
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : (
+                <Text
+                  style={[
+                    styles.attachEmpty,
+                    {
+                      color: darkMode
+                        ? colors.textSubDark
+                        : colors.textSubLight,
+                    },
+                  ]}
+                >
+                  Aucun fichier joint — images, PDF ou dossiers compressés
+                  acceptés
+                </Text>
+              )}
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -742,24 +994,18 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 20,
     paddingVertical: 16,
-    backgroundColor: "#ffffff",
     borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
   },
   backButton: { padding: 8, marginLeft: -8 },
-  headerTitle: { fontSize: 20, fontWeight: "800", color: "#0f172a" },
+  headerTitle: { fontSize: 20, fontWeight: "800" },
   actionBar: {
     flexDirection: "row",
     padding: 16,
     paddingHorizontal: 20,
-    backgroundColor: "#ffffff",
     borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
-    alignItems: "center",
   },
   submitButton: {
     flex: 1,
-    backgroundColor: "#f97316",
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
@@ -773,36 +1019,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   submitText: { fontWeight: "700", color: "#ffffff", fontSize: 16 },
-  scrollContent: { padding: 24, paddingBottom: 20 },
-
-  // Photo
-  photoSection: { alignItems: "center", marginBottom: 32 },
-  photoContainer: {
-    width: 220,
-    height: 220,
-    borderRadius: 24,
-    backgroundColor: "#f1f5f9",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#e2e8f0",
-    borderStyle: "dashed",
-    marginBottom: 16,
-    overflow: "hidden",
-  },
-  photoPlaceholder: { alignItems: "center", gap: 8 },
-  photo: { width: "100%", height: "100%" },
-  photoText: { color: "#94a3b8", fontWeight: "600" },
-  photoBtn: {
-    borderWidth: 1,
-    borderColor: "#f97316",
-    paddingHorizontal: 24,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  photoBtnText: { color: "#f97316", fontWeight: "700" },
-
-  // Form
+  scrollContent: { padding: 24 },
   formContainer: { gap: 20 },
   inputGroup: { marginBottom: 4 },
   labelRow: {
@@ -811,7 +1028,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 8,
   },
-  label: { fontSize: 14, fontWeight: "700", color: "#334155" },
+  label: { fontSize: 14, fontWeight: "700" },
   required: { color: "#ef4444" },
   optionalBadge: {
     fontSize: 11,
@@ -822,45 +1039,29 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 10,
   },
-  hintText: { fontSize: 12, marginTop: 4, color: "#94a3b8" },
-  input: {
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    borderRadius: 12,
-    padding: 14,
-    fontSize: 15,
-    color: "#0f172a",
-  },
+  hintText: { fontSize: 12, marginTop: 4 },
+  input: { borderWidth: 1, borderRadius: 12, padding: 14, fontSize: 15 },
   inputFlex: { flex: 1 },
-  inputError: { borderColor: "#ef4444" },
-  errorText: { color: "#ef4444", fontSize: 12, marginTop: 4 },
   inputWithUnit: { flexDirection: "row", gap: 10, alignItems: "center" },
   unitTag: {
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderRadius: 12,
-    backgroundColor: "#f1f5f9",
     alignItems: "center",
     justifyContent: "center",
   },
-  unitText: { fontWeight: "700", fontSize: 15, color: "#475569" },
-
-  // Number input
+  unitText: { fontWeight: "700", fontSize: 15 },
   numberInputContainer: {
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#e2e8f0",
     borderRadius: 12,
-    backgroundColor: "#ffffff",
     padding: 4,
   },
   roundBtn: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#f1f5f9",
     alignItems: "center",
     justifyContent: "center",
   },
@@ -869,51 +1070,17 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 16,
     fontWeight: "600",
-    color: "#0f172a",
     paddingVertical: 8,
   },
-
-  // Densité
-  densiteCard: {
-    borderWidth: 1.5,
-    borderRadius: 14,
-    padding: 16,
-    gap: 10,
-  },
-  densiteHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  densiteTitle: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#334155",
-  },
-  densiteResult: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  densiteValue: {
-    fontSize: 22,
-    fontWeight: "800",
-  },
-  densiteBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-  densiteBadgeText: {
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  densitePlaceholder: {
-    fontSize: 13,
-    color: "#94a3b8",
-  },
-
-  // Textarea
+  errorText: { color: "#ef4444", fontSize: 12, marginTop: 4 },
+  densiteCard: { borderWidth: 1.5, borderRadius: 14, padding: 16, gap: 10 },
+  densiteHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  densiteTitle: { fontSize: 14, fontWeight: "700" },
+  densiteResult: { flexDirection: "row", alignItems: "center", gap: 12 },
+  densiteValue: { fontSize: 22, fontWeight: "800" },
+  densiteBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
+  densiteBadgeText: { fontSize: 12, fontWeight: "700" },
+  densitePlaceholder: { fontSize: 13 },
   textArea: { height: 100, textAlignVertical: "top" },
   charCount: {
     textAlign: "right",
@@ -921,9 +1088,50 @@ const styles = StyleSheet.create({
     color: "#94a3b8",
     marginTop: 4,
   },
-
-  // Address
   addressInputWrapper: { flexDirection: "row", alignItems: "center" },
   addressIcon: { position: "absolute", left: 14, zIndex: 1 },
   inputWithIcon: { paddingLeft: 40 },
+  // Pièces jointes
+  attachBtnRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  attachBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1.5,
+  },
+  attachBtnText: { fontSize: 13, fontWeight: "700" },
+  attachList: { borderWidth: 1, borderRadius: 14, overflow: "hidden" },
+  attachItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    gap: 12,
+  },
+  attachThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: "#e2e8f0",
+  },
+  attachIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attachInfo: { flex: 1 },
+  attachName: { fontSize: 14, fontWeight: "600" },
+  attachMeta: { fontSize: 12, marginTop: 2 },
+  attachRemove: { padding: 4 },
+  attachEmpty: {
+    fontSize: 13,
+    fontStyle: "italic",
+    textAlign: "center",
+    marginTop: 4,
+  },
 });
