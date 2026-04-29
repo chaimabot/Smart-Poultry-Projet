@@ -1,8 +1,5 @@
 const mongoose = require("mongoose");
 
-// ─────────────────────────────────────────────
-// Sub-schema : Pièce jointe
-// ─────────────────────────────────────────────
 const attachmentSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -14,9 +11,6 @@ const attachmentSchema = new mongoose.Schema(
   { _id: false },
 );
 
-// ─────────────────────────────────────────────
-// Schema principal : Poulailler
-// ─────────────────────────────────────────────
 const poulaillerSchema = new mongoose.Schema(
   {
     owner: {
@@ -111,16 +105,10 @@ const poulaillerSchema = new mongoose.Schema(
   },
 );
 
-// ─────────────────────────────────────────────
-// Index composés
-// ─────────────────────────────────────────────
 poulaillerSchema.index({ owner: 1, isArchived: 1 });
 poulaillerSchema.index({ owner: 1, isCritical: 1 });
 poulaillerSchema.index({ owner: 1, status: 1 });
 
-// ─────────────────────────────────────────────
-// Virtual : alerte active ?
-// ─────────────────────────────────────────────
 poulaillerSchema.virtual("hasAlert").get(function () {
   const m = this.lastMonitoring;
   const t = this.thresholds;
@@ -137,29 +125,21 @@ poulaillerSchema.virtual("hasAlert").get(function () {
   );
 });
 
-// ─────────────────────────────────────────────
-// Middleware : recalcul automatique de la densité
-// FIXED: Added options for sync mode
-// ─────────────────────────────────────────────
-poulaillerSchema.pre("save", { document: true, query: false }, function (next) {
+// FIXED: Mongoose middleware - async arrow function (no next needed)
+poulaillerSchema.pre("save", async function (next) {
   try {
     if (this.isModified("animalCount") || this.isModified("surface")) {
       const count = Number(this.animalCount);
       const surface = Number(this.surface);
-
       this.densite =
         count > 0 && surface > 0 ? Number((count / surface).toFixed(2)) : null;
     }
-
     next();
   } catch (err) {
     next(err);
   }
 });
 
-// ─────────────────────────────────────────────
-// Méthode d'instance : payload config → ESP32
-// ─────────────────────────────────────────────
 poulaillerSchema.methods.toMqttConfig = function () {
   return {
     tempMin: this.thresholds.temperatureMin,
