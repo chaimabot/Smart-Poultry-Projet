@@ -272,48 +272,96 @@ const validateDossier = async (req, res) => {
   try {
     const dossier = await Dossier.findById(req.params.id);
 
-    if (!dossier)
+    if (!dossier) {
       return res.status(404).json({
         success: false,
         message: "Dossier non trouvé",
       });
+    }
 
-    if (dossier.status !== "EN_ATTENTE")
+    if (dossier.status !== "EN_ATTENTE") {
       return res.status(400).json({
         success: false,
         message: "Ce dossier est déjà traité.",
       });
-
-    // ✅ Validation admin du dossier
-    dossier.status = "AVANCE_PAYEE";
-    dossier.dateValidation = Date.now();
-    dossier.validatedBy = req.user.id;
-
-    // ✅ IMPORTANT : déclenche préparation poulailler
-    if (dossier.poulailler) {
-      await Poulailler.findByIdAndUpdate(dossier.poulailler, {
-        status: "en_installation",
-        isActive: true,
-        installationDate: new Date(),
-      });
     }
 
+    // =========================================================
+    // 1. VALIDATION DOSSIER
+    // =========================================================
+    dossier.status = "AVANCE_PAYEE";
+    dossier.dateValidation = new Date();
+    dossier.validatedBy = req.user.id;
+
+    // =========================================================
+    // 2. ACTIVER / PRÉPARER POULAILLER
+    // =========================================================
+    let poulaillerUpdated = null;
+
+    if (dossier.poulailler) {
+      poulaillerUpdated = await Poulailler.findByIdAndUpdate(
+        dossier.poulailler,
+        {
+          status: "en_installation",
+          isActive: true,
+          installationDate: new Date(),
+        },
+        { new: true },
+      );
+    }
+
+    // =========================================================
+    // 3. ACTIVER ÉLEVEUR (COMPTE EXISTANT OU NON)
+    // =========================================================
+    let userUpdated = null;
+
+    if (dossier.eleveur) {
+      const user = await User.findById(dossier.eleveur);
+
+      if (user) {
+        // si compte existe déjà → juste activer
+        user.status = "active";
+        user.isActive = true;
+        user.role = "eleveur";
+
+        userUpdated = await user.save();
+      } else {
+        // ⚠️ cas rare : dossier lié mais user supprimé → fallback
+        userUpdated = await User.create({
+          _id: dossier.eleveur,
+          status: "active",
+          isActive: true,
+          role: "eleveur",
+        });
+      }
+    }
+
+    // =========================================================
+    // 4. SAUVEGARDE DOSSIER
+    // =========================================================
     await dossier.save();
 
-    res.json({
+    // =========================================================
+    // 5. RESPONSE PROPRE
+    // =========================================================
+    return res.json({
       success: true,
-      message: "Dossier validé. L’installation du poulailler peut commencer.",
-      data: dossier,
+      message: "Dossier validé. Poulailler en installation.",
+      data: {
+        dossier,
+        poulailler: poulaillerUpdated,
+        user: userUpdated,
+      },
     });
   } catch (error) {
     console.error("Erreur validateDossier:", error);
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
       message: "Erreur lors de la validation du dossier",
     });
   }
 };
-
 // ─────────────────────────────────────────────────────────────
 // @desc    Clôturer définitivement un dossier (TERMINE)
 // @route   PATCH /api/admin/dossiers/clore/:id
