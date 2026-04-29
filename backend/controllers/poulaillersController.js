@@ -136,64 +136,84 @@ function normalizeAttachments(attachments = []) {
 // @access  Private
 // ============================================================
 exports.createPoulailler = async (req, res) => {
+  console.log("=== createPoulailler START ===");
+  console.log("user:", req.user);
+  console.log("body:", JSON.stringify(req.body, null, 2));
+
   try {
     const { error, value } = poulaillerSchema.validate(req.body, {
       stripUnknown: true,
     });
 
     if (error) {
+      console.log("Validation Joi échouée:", error.details[0].message);
       return res.status(400).json({
         success: false,
         message: error.details[0].message,
       });
     }
 
-    const poulailler = await Poulailler.create({
-      name: value.name || generateAutoName(),
-      animalCount: value.animalCount,
-      surface: value.surface,
-      densite: calculerDensite(value.animalCount, value.surface),
-      owner: req.user.id,
-      status: "en_attente_module",
-      isActive: false,
-      uniqueCode: generateUniqueCode(),
-    });
+    console.log("Joi OK, value:", value);
 
-    // ✅ Dossier créé séparément avec gestion d'erreur explicite
-    let dossier = null;
+    let poulailler;
     try {
-      dossier = await Dossier.create({
+      poulailler = await Poulailler.create({
+        name: value.name || generateAutoName(),
+        animalCount: value.animalCount,
+        surface: value.surface,
+        densite: calculerDensite(value.animalCount, value.surface),
+        owner: req.user.id,
+        status: "en_attente_module",
+        uniqueCode: generateUniqueCode(),
+      });
+      console.log("Poulailler créé:", poulailler._id);
+    } catch (pErr) {
+      console.error("ERREUR création poulailler:", pErr.message, pErr);
+      return res
+        .status(500)
+        .json({
+          success: false,
+          message: "Erreur poulailler: " + pErr.message,
+        });
+    }
+
+    let dossier;
+    try {
+      const dossierData = {
         eleveur: req.user.id,
         poulailler: poulailler._id,
         status: "EN_ATTENTE",
-        source: "mobile-app",      // ✅ champ maintenant dans le schéma
-        totalAmount: req.body.totalAmount || 0,
-        advanceAmount: req.body.advanceAmount || 0,
-        remainedAmount: req.body.totalAmount || 0,
-      });
-    } catch (dossierError) {
-      // Le poulailler est créé mais le dossier a échoué → on nettoie
-      console.error("Erreur création dossier:", dossierError.message);
+        source: "mobile-app",
+        totalAmount: 0,
+        advanceAmount: 0,
+        remainedAmount: 0,
+      };
+      console.log("Tentative création dossier avec:", dossierData);
+      dossier = await Dossier.create(dossierData);
+      console.log("Dossier créé:", dossier._id);
+    } catch (dErr) {
+      console.error("ERREUR création dossier:", dErr.message);
+      console.error("Stack:", dErr.stack);
+      console.error("Détail validation:", JSON.stringify(dErr.errors, null, 2));
       await Poulailler.deleteOne({ _id: poulailler._id });
-      return res.status(500).json({
-        success: false,
-        message: "Erreur lors de la création du dossier : " + dossierError.message,
-      });
+      return res
+        .status(500)
+        .json({ success: false, message: "Erreur dossier: " + dErr.message });
     }
 
+    console.log("=== createPoulailler SUCCESS ===");
     return res.status(201).json({
       success: true,
       message: "Demande envoyée à l'administrateur",
       data: { poulailler, dossier },
     });
   } catch (err) {
-    console.error("Erreur createPoulailler:", err.message);
-    return res.status(500).json({
-      success: false,
-      message: "Erreur serveur : " + err.message,
-    });
+    console.error("ERREUR GLOBALE:", err.message, err.stack);
+    return res
+      .status(500)
+      .json({ success: false, message: "Erreur serveur: " + err.message });
   }
-};s
+};
 
 // ============================================================
 // @desc    Obtenir tous les poulaillers
