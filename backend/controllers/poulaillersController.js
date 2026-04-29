@@ -43,9 +43,8 @@ async function syncConfig(poulaillerId, mqttSvc) {
 }
 
 // ============================================================
-// SCHEMA JOI — champs mis à jour
-// Accepte: name (optionnel), animalCount, surface (obligatoires),
-//          remarque, address, attachments (optionnels)
+// SCHEMA JOI
+// Accepte tout type de fichier (pas de restriction MIME côté schema)
 // ============================================================
 const attachmentSchema = Joi.object({
   name: Joi.string().required(),
@@ -67,9 +66,10 @@ const poulaillerSchema = Joi.object({
     "number.positive": "La surface doit être supérieure à 0",
     "any.required": "La surface est requise",
   }),
+  densite: Joi.number().optional().allow(null),
   remarque: Joi.string().max(200).optional().allow("", null),
   address: Joi.string().max(300).optional().allow("", null),
-  // Pièces jointes : images, PDFs, archives
+  // Tout type de fichier accepté
   attachments: Joi.array().items(attachmentSchema).optional().default([]),
 });
 
@@ -89,37 +89,6 @@ function generateUniqueCode() {
 function calculerDensite(animalCount, surface) {
   if (!animalCount || !surface || surface <= 0) return null;
   return parseFloat((animalCount / surface).toFixed(2));
-}
-
-/**
- * Valide les types MIME des pièces jointes.
- * Accepte : images (image/*), PDF, archives zip/rar/7z/tar
- */
-function validateAttachmentTypes(attachments = []) {
-  const allowedMimePatterns = [
-    /^image\//,
-    /^application\/pdf$/,
-    /^application\/zip$/,
-    /^application\/x-zip-compressed$/,
-    /^application\/x-rar-compressed$/,
-    /^application\/x-tar$/,
-    /^application\/x-7z-compressed$/,
-    /^multipart\/x-zip$/,
-    /^application\/octet-stream$/, // fallback générique
-  ];
-
-  for (const file of attachments) {
-    const allowed = allowedMimePatterns.some((pattern) =>
-      pattern.test(file.type),
-    );
-    if (!allowed) {
-      return {
-        valid: false,
-        message: `Type de fichier non autorisé : ${file.type}`,
-      };
-    }
-  }
-  return { valid: true };
 }
 
 async function getDefaultThresholds() {
@@ -147,6 +116,17 @@ function sampleHistory(arr, n) {
   return Array.from({ length: n }, (_, i) => arr[i * step]);
 }
 
+// Normalise les pièces jointes pour la BDD
+function normalizeAttachments(attachments = []) {
+  return attachments.map((f) => ({
+    name: f.name,
+    type: f.type,
+    size: f.size || null,
+    uri: f.uri || null,
+    base64: f.base64 || null,
+  }));
+}
+
 // ============================================================
 // @desc    Créer un nouveau poulailler
 // @route   POST /api/poulaillers
@@ -161,14 +141,6 @@ exports.createPoulailler = async (req, res) => {
         .json({ success: false, error: error.details[0].message });
     }
 
-    // Validation des types de pièces jointes
-    const attachCheck = validateAttachmentTypes(value.attachments);
-    if (!attachCheck.valid) {
-      return res
-        .status(400)
-        .json({ success: false, error: attachCheck.message });
-    }
-
     const defaultThresholds = await getDefaultThresholds();
     const uniqueCode = generateUniqueCode();
     const name = value.name?.trim() || generateAutoName();
@@ -181,14 +153,7 @@ exports.createPoulailler = async (req, res) => {
       densite,
       remarque: value.remarque || null,
       address: value.address || null,
-      // Stocker uniquement les métadonnées (name, type, size) + uri/base64
-      attachments: (value.attachments || []).map((f) => ({
-        name: f.name,
-        type: f.type,
-        size: f.size || null,
-        uri: f.uri || null,
-        base64: f.base64 || null,
-      })),
+      attachments: normalizeAttachments(value.attachments),
       owner: req.user.id,
       status: "en_attente_module",
       thresholds: { ...defaultThresholds },
@@ -196,7 +161,7 @@ exports.createPoulailler = async (req, res) => {
     });
 
     console.log(
-      `[CREATE POULAILLER] "${name}" | ${value.animalCount} volailles | ${value.surface}m² | Densité: ${densite} vol/m² | Fichiers: ${(value.attachments || []).length}`,
+      `[CREATE POULAILLER] "${name}" | ${value.animalCount} volailles | ${value.surface}m² | Densité: ${densite} | Fichiers: ${(value.attachments || []).length}`,
     );
 
     res.status(201).json({ success: true, data: poulailler });
@@ -214,14 +179,10 @@ exports.createPoulailler = async (req, res) => {
 exports.getPoulaillers = async (req, res) => {
   try {
     const { search } = req.query;
-    let query = { owner: req.user.id };
+    let query = { owner: req.user.id, isArchived: false };
     if (search) query.name = { $regex: search, $options: "i" };
 
-    const poulaillers = await Poulailler.find({
-      ...query,
-      isArchived: false,
-    }).sort({ createdAt: -1 });
-
+    const poulaillers = await Poulailler.find(query).sort({ createdAt: -1 });
     res
       .status(200)
       .json({ success: true, count: poulaillers.length, data: poulaillers });
@@ -272,7 +233,7 @@ exports.updatePoulailler = async (req, res) => {
         .status(403)
         .json({ success: false, error: "Action non autorisée" });
 
-    // Pas de validation complète pour simple archivage/restauration
+    // Archive-only shortcut
     const isArchiveOnly =
       Object.keys(req.body).length === 1 &&
       typeof req.body.isArchived === "boolean";
@@ -283,12 +244,6 @@ exports.updatePoulailler = async (req, res) => {
         return res
           .status(400)
           .json({ success: false, error: error.details[0].message });
-
-      const attachCheck = validateAttachmentTypes(validated.attachments);
-      if (!attachCheck.valid)
-        return res
-          .status(400)
-          .json({ success: false, error: attachCheck.message });
 
       const newCount = validated.animalCount ?? poulailler.animalCount;
       const newSurface = validated.surface ?? poulailler.surface;
@@ -301,13 +256,7 @@ exports.updatePoulailler = async (req, res) => {
         densite,
         remarque: validated.remarque ?? poulailler.remarque,
         address: validated.address ?? poulailler.address,
-        attachments: (validated.attachments || []).map((f) => ({
-          name: f.name,
-          type: f.type,
-          size: f.size || null,
-          uri: f.uri || null,
-          base64: f.base64 || null,
-        })),
+        attachments: normalizeAttachments(validated.attachments),
       };
 
       if (typeof req.body.isArchived === "boolean")
@@ -317,13 +266,13 @@ exports.updatePoulailler = async (req, res) => {
         req.params.id,
         fieldsToUpdate,
         {
-          returnDocument: "after",
+          new: true,
           runValidators: true,
         },
       );
 
       console.log(
-        `[UPDATE POULAILLER] "${poulailler.name}" | Densité: ${densite} vol/m² | Fichiers: ${fieldsToUpdate.attachments.length}`,
+        `[UPDATE POULAILLER] "${poulailler.name}" | Densité: ${densite} | Fichiers: ${fieldsToUpdate.attachments.length}`,
       );
     } else {
       poulailler.isArchived = req.body.isArchived;
@@ -466,7 +415,10 @@ exports.updateThresholds = async (req, res) => {
     if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
 
-    poulailler.thresholds = { ...poulailler.thresholds, ...req.body };
+    poulailler.thresholds = {
+      ...poulailler.thresholds.toObject(),
+      ...req.body,
+    };
     await poulailler.save();
     await syncConfig(req.params.id, mqttService);
     res.status(200).json({ success: true, data: poulailler.thresholds });
@@ -490,8 +442,7 @@ exports.resetThresholds = async (req, res) => {
     if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
 
-    const defaultThresholds = await getDefaultThresholds();
-    poulailler.thresholds = { ...defaultThresholds };
+    poulailler.thresholds = await getDefaultThresholds();
     await poulailler.save();
     await syncConfig(req.params.id, mqttService);
     res.status(200).json({ success: true, data: poulailler.thresholds });
@@ -590,7 +541,9 @@ exports.getMonitoringData = async (req, res) => {
 
     const lastMeasure = await Measure.findOne({
       poulailler: req.params.id,
-    }).sort({ timestamp: -1 });
+    }).sort({
+      timestamp: -1,
+    });
     const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const historyRaw = await Measure.find({
       poulailler: req.params.id,
@@ -662,19 +615,15 @@ exports.controlActuator = async (req, res) => {
     };
 
     if (!validActuators.includes(actuator))
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: `Actionneur invalide. Valeurs acceptées : ${validActuators.join(" | ")}`,
-        });
+      return res.status(400).json({
+        success: false,
+        error: `Actionneur invalide. Valeurs acceptées : ${validActuators.join(" | ")}`,
+      });
     if (!validStates[actuator].includes(state))
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: `État invalide pour ${actuator} : ${validStates[actuator].join(" | ")}`,
-        });
+      return res.status(400).json({
+        success: false,
+        error: `État invalide pour ${actuator} : ${validStates[actuator].join(" | ")}`,
+      });
 
     const poulailler = await Poulailler.findById(req.params.id);
     if (!poulailler)
@@ -777,12 +726,10 @@ exports.getMeasureHistory = async (req, res) => {
       "waterLevel",
     ];
     if (!validSensors.includes(sensor))
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: `Capteur invalide. Valeurs acceptées : ${validSensors.join(", ")}`,
-        });
+      return res.status(400).json({
+        success: false,
+        error: `Capteur invalide. Valeurs acceptées : ${validSensors.join(", ")}`,
+      });
 
     const periodMap = { "24h": 864e5, "7d": 6048e5, "30d": 2592e6 };
     const since = new Date(

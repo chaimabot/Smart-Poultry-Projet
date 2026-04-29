@@ -7,7 +7,7 @@ import {
   ScrollView,
   StyleSheet,
   Image,
-  Alert,
+  Modal,
   Platform,
   KeyboardAvoidingView,
 } from "react-native";
@@ -22,6 +22,9 @@ import * as DocumentPicker from "expo-document-picker";
 import { createPoultry, updatePoultry } from "../../../services/poultry";
 import Toast from "../../../components/Toast";
 
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
 function generateAutoName() {
   return (
     "Poulailler-" + Math.random().toString(36).substring(2, 6).toUpperCase()
@@ -39,14 +42,30 @@ function getFileIcon(type) {
   if (!type) return "insert-drive-file";
   if (type.startsWith("image/")) return "image";
   if (type === "application/pdf") return "picture-as-pdf";
-  return "folder-zip"; // archive
+  if (
+    type.includes("zip") ||
+    type.includes("rar") ||
+    type.includes("tar") ||
+    type.includes("7z")
+  )
+    return "folder-zip";
+  if (type.startsWith("video/")) return "videocam";
+  if (type.startsWith("audio/")) return "audiotrack";
+  if (type.includes("word") || type.includes("document")) return "description";
+  if (type.includes("sheet") || type.includes("excel")) return "table-chart";
+  return "insert-drive-file";
 }
 
 function getFileColor(type, primaryColor) {
   if (!type) return "#64748b";
   if (type.startsWith("image/")) return primaryColor;
   if (type === "application/pdf") return "#ef4444";
-  return "#8b5cf6";
+  if (type.startsWith("video/")) return "#8b5cf6";
+  if (type.startsWith("audio/")) return "#f59e0b";
+  if (type.includes("zip") || type.includes("rar")) return "#8b5cf6";
+  if (type.includes("word") || type.includes("document")) return "#3b82f6";
+  if (type.includes("sheet") || type.includes("excel")) return "#22c55e";
+  return "#64748b";
 }
 
 function formatFileSize(bytes) {
@@ -56,6 +75,197 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
 }
 
+function getFileLabel(type) {
+  if (!type) return "Fichier";
+  if (type.startsWith("image/")) return "Image";
+  if (type === "application/pdf") return "PDF";
+  if (type.startsWith("video/")) return "Vidéo";
+  if (type.startsWith("audio/")) return "Audio";
+  if (type.includes("zip") || type.includes("rar") || type.includes("7z"))
+    return "Archive";
+  if (type.includes("word") || type.includes("document")) return "Document";
+  if (type.includes("sheet") || type.includes("excel")) return "Tableur";
+  return "Fichier";
+}
+
+// ─────────────────────────────────────────────
+// FilePickerModal — cross-platform (web + mobile)
+// Remplace Alert.alert qui ne fonctionne que sur mobile natif
+// ─────────────────────────────────────────────
+function FilePickerModal({
+  visible,
+  onClose,
+  onCamera,
+  onGallery,
+  onFiles,
+  colors,
+  darkMode,
+}) {
+  const options = [
+    {
+      key: "camera",
+      icon: "photo-camera",
+      label: "Prendre une photo",
+      sub: "Ouvrir l'appareil photo",
+      color: "#3b82f6",
+      bg: "#3b82f620",
+      // Sur web, la caméra n'est pas toujours accessible via expo-image-picker
+      disabled: Platform.OS === "web",
+      disabledNote: "Non disponible sur web",
+      onPress: onCamera,
+    },
+    {
+      key: "gallery",
+      icon: "photo-library",
+      label: "Galerie — photos & vidéos",
+      sub: "Sélectionner depuis la galerie",
+      color: "#8b5cf6",
+      bg: "#8b5cf620",
+      onPress: onGallery,
+    },
+    {
+      key: "files",
+      icon: "folder-open",
+      label: "Fichiers",
+      sub:
+        Platform.OS === "web"
+          ? "PDF, doc, archive… depuis votre ordinateur"
+          : "PDF, doc, archive… depuis le stockage",
+      color: "#f59e0b",
+      bg: "#f59e0b20",
+      onPress: onFiles,
+    },
+  ];
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      {/* Overlay */}
+      <TouchableOpacity
+        style={styles.modalOverlay}
+        activeOpacity={1}
+        onPress={onClose}
+      >
+        {/* Sheet — stop propagation so tapping inside doesn't close */}
+        <TouchableOpacity
+          activeOpacity={1}
+          style={[
+            styles.modalSheet,
+            {
+              backgroundColor: darkMode ? colors.cardDark : "#ffffff",
+              shadowColor: "#000",
+            },
+          ]}
+        >
+          {/* Handle */}
+          <View style={styles.modalHandle} />
+
+          <Text
+            style={[
+              styles.modalTitle,
+              { color: darkMode ? colors.textMainDark : colors.textMainLight },
+            ]}
+          >
+            Ajouter un fichier
+          </Text>
+          <Text
+            style={[
+              styles.modalSub,
+              { color: darkMode ? colors.textSubDark : colors.textSubLight },
+            ]}
+          >
+            Choisissez la source
+          </Text>
+
+          <View style={styles.modalOptions}>
+            {options.map((opt) => (
+              <TouchableOpacity
+                key={opt.key}
+                style={[
+                  styles.modalOption,
+                  {
+                    backgroundColor: darkMode
+                      ? colors.backgroundDark
+                      : "#f8fafc",
+                    borderColor: darkMode ? colors.borderDark : "#e2e8f0",
+                    opacity: opt.disabled ? 0.45 : 1,
+                  },
+                ]}
+                onPress={() => {
+                  if (opt.disabled) return;
+                  onClose();
+                  // Léger délai pour laisser le modal se fermer avant d'ouvrir le picker
+                  setTimeout(() => opt.onPress(), 200);
+                }}
+                disabled={opt.disabled}
+              >
+                <View
+                  style={[styles.modalOptionIcon, { backgroundColor: opt.bg }]}
+                >
+                  <MaterialIcons name={opt.icon} size={24} color={opt.color} />
+                </View>
+                <View style={styles.modalOptionText}>
+                  <Text
+                    style={[
+                      styles.modalOptionLabel,
+                      {
+                        color: darkMode
+                          ? colors.textMainDark
+                          : colors.textMainLight,
+                      },
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.modalOptionSub,
+                      {
+                        color: darkMode
+                          ? colors.textSubDark
+                          : colors.textSubLight,
+                      },
+                    ]}
+                  >
+                    {opt.disabled ? opt.disabledNote : opt.sub}
+                  </Text>
+                </View>
+                {!opt.disabled && (
+                  <MaterialIcons
+                    name="chevron-right"
+                    size={20}
+                    color="#94a3b8"
+                  />
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Bouton Annuler explicite */}
+          <TouchableOpacity
+            style={[
+              styles.modalCancelBtn,
+              { borderColor: darkMode ? colors.borderDark : "#e2e8f0" },
+            ]}
+            onPress={onClose}
+          >
+            <Text style={[styles.modalCancelText, { color: "#64748b" }]}>
+              Annuler
+            </Text>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Composant principal
+// ─────────────────────────────────────────────
 export default function AddPoultryScreen({ navigation, route }) {
   const { colors, darkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -64,7 +274,7 @@ export default function AddPoultryScreen({ navigation, route }) {
 
   const [name, setName] = useState(poultryToEdit?.name || "");
   const [animalCount, setAnimalCount] = useState(
-    poultryToEdit?.count ? String(poultryToEdit.count) : "",
+    poultryToEdit?.animalCount ? String(poultryToEdit.animalCount) : "",
   );
   const [surface, setSurface] = useState(
     poultryToEdit?.surface ? String(poultryToEdit.surface) : "",
@@ -76,6 +286,7 @@ export default function AddPoultryScreen({ navigation, route }) {
   );
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
+  const [pickerVisible, setPickerVisible] = useState(false); // ← remplace Alert
   const [toast, setToast] = useState({
     visible: false,
     message: "",
@@ -83,7 +294,6 @@ export default function AddPoultryScreen({ navigation, route }) {
   });
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
-
   const densite = calculerDensite(animalCount, surface);
   const densiteStatus = (() => {
     if (!densite) return null;
@@ -92,27 +302,9 @@ export default function AddPoultryScreen({ navigation, route }) {
     return { label: "Trop dense", color: "#ef4444" };
   })();
 
-  // ── Galerie images ──────────────────────────────────────────
-  const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: true,
-      quality: 0.6,
-      base64: true,
-    });
-    if (!result.canceled) {
-      const newFiles = result.assets.map((a) => ({
-        uri: a.uri,
-        name: a.fileName || `photo_${Date.now()}.jpg`,
-        type: "image/jpeg",
-        size: a.fileSize || null,
-        base64: a.base64 ? `data:image/jpeg;base64,${a.base64}` : null,
-      }));
-      addAttachments(newFiles);
-    }
-  };
-
-  // ── Caméra ──────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Prise de photo via caméra
+  // ─────────────────────────────────────────────
   const takePhoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
@@ -124,68 +316,121 @@ export default function AddPoultryScreen({ navigation, route }) {
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
-      quality: 0.6,
+      quality: 0.7,
       base64: true,
     });
-    if (!result.canceled) {
+    if (!result.canceled && result.assets?.length > 0) {
       const a = result.assets[0];
+      const mimeType = a.mimeType || "image/jpeg";
       addAttachments([
         {
           uri: a.uri,
           name: `photo_${Date.now()}.jpg`,
-          type: "image/jpeg",
+          type: mimeType,
           size: a.fileSize || null,
-          base64: a.base64 ? `data:image/jpeg;base64,${a.base64}` : null,
+          base64: a.base64 ? `data:${mimeType};base64,${a.base64}` : null,
         },
       ]);
     }
   };
 
-  // ── PDF / Archives ──────────────────────────────────────────
-  const pickDocument = async () => {
-    try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: [
-          "application/pdf",
-          "application/zip",
-          "application/x-zip-compressed",
-          "application/x-rar-compressed",
-          "application/x-tar",
-          "application/x-7z-compressed",
-          "multipart/x-zip",
-        ],
-        multiple: true,
-        copyToCacheDirectory: true,
-      });
-      if (!result.canceled && result.assets?.length > 0) {
-        const newFiles = result.assets.map((a) => ({
-          uri: a.uri,
-          name: a.name,
-          type: a.mimeType || "application/octet-stream",
-          size: a.size || null,
-          base64: null,
-        }));
-        addAttachments(newFiles);
-      }
-    } catch {
+  // ─────────────────────────────────────────────
+  // Galerie (photos + vidéos) — mobile & web
+  // Sur web, expo-image-picker utilise <input type="file"> en interne
+  // ─────────────────────────────────────────────
+  const pickFromGallery = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
       setToast({
         visible: true,
-        message: "Erreur lors de la sélection.",
+        message: "Permission galerie refusée.",
         type: "error",
       });
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
+      quality: 0.7,
+      base64: true,
+    });
+    if (!result.canceled && result.assets?.length > 0) {
+      const newFiles = result.assets.map((a) => {
+        const mimeType =
+          a.mimeType || (a.type === "video" ? "video/mp4" : "image/jpeg");
+        return {
+          uri: a.uri,
+          name:
+            a.fileName ||
+            `media_${Date.now()}.${a.type === "video" ? "mp4" : "jpg"}`,
+          type: mimeType,
+          size: a.fileSize || null,
+          base64: a.base64 ? `data:${mimeType};base64,${a.base64}` : null,
+        };
+      });
+      addAttachments(newFiles);
     }
   };
 
+  // ─────────────────────────────────────────────
+  // Fichiers depuis le stockage / explorateur natif
+  // Sur web  : ouvre le sélecteur de fichiers du navigateur
+  // Sur mobile : ouvre le gestionnaire de fichiers natif
+  // ─────────────────────────────────────────────
+  const pickFromFiles = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "*/*",
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) return;
+
+      const assets = result.assets ?? [];
+      if (assets.length === 0) return;
+
+      const newFiles = assets.map((a) => ({
+        uri: a.uri,
+        name: a.name ?? `fichier_${Date.now()}`,
+        type: a.mimeType ?? "application/octet-stream",
+        size: a.size ?? null,
+        base64: null,
+      }));
+
+      addAttachments(newFiles);
+    } catch (err) {
+      if (!DocumentPicker.isCancel?.(err)) {
+        setToast({
+          visible: true,
+          message: "Erreur lors de la sélection du fichier.",
+          type: "error",
+        });
+      }
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // Ouvre le modal cross-platform (remplace Alert.alert)
+  // ─────────────────────────────────────────────
+  const handlePickFile = () => {
+    setPickerVisible(true);
+  };
+
+  // ─────────────────────────────────────────────
+  // Gestion pièces jointes
+  // ─────────────────────────────────────────────
   const addAttachments = (newFiles) => {
     setAttachments((prev) => {
       const existing = new Set(prev.map((f) => f.name));
       const unique = newFiles.filter((f) => !existing.has(f.name));
-      if (unique.length < newFiles.length)
+      if (unique.length < newFiles.length) {
         setToast({
           visible: true,
           message: "Certains fichiers déjà ajoutés ont été ignorés.",
           type: "error",
         });
+      }
       return [...prev, ...unique];
     });
   };
@@ -194,7 +439,9 @@ export default function AddPoultryScreen({ navigation, route }) {
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // ── Validation ──────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Validation
+  // ─────────────────────────────────────────────
   const validate = () => {
     const newErrors = {};
     if (
@@ -202,7 +449,7 @@ export default function AddPoultryScreen({ navigation, route }) {
       isNaN(parseInt(animalCount)) ||
       parseInt(animalCount) < 1
     )
-      newErrors.animalCount = "Requis (nombre valide)";
+      newErrors.animalCount = "Requis (nombre valide ≥ 1)";
     if (
       !surface.trim() ||
       isNaN(parseFloat(surface)) ||
@@ -213,7 +460,9 @@ export default function AddPoultryScreen({ navigation, route }) {
     return Object.keys(newErrors).length === 0;
   };
 
-  // ── Soumission ──────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Soumission
+  // ─────────────────────────────────────────────
   const handleSubmit = async () => {
     if (!validate()) return;
     setLoading(true);
@@ -224,18 +473,19 @@ export default function AddPoultryScreen({ navigation, route }) {
         animalCount: parseInt(animalCount),
         surface: parseFloat(surface),
         densite: calculerDensite(animalCount, surface),
-        remarque,
-        address,
+        remarque: remarque || null,
+        address: address || null,
         attachments: attachments.map((f) => ({
           name: f.name,
           type: f.type,
-          size: f.size,
-          uri: f.uri,
-          base64: f.base64 || null,
+          size: f.size ?? null,
+          uri: f.uri ?? null,
+          base64: f.base64 ?? null,
         })),
       };
+
       if (isEditing) {
-        await updatePoultry(poultryToEdit.id, poultryData);
+        await updatePoultry(poultryToEdit._id || poultryToEdit.id, poultryData);
         setToast({
           visible: true,
           message: "Poulailler modifié !",
@@ -253,7 +503,7 @@ export default function AddPoultryScreen({ navigation, route }) {
     } catch (error) {
       setToast({
         visible: true,
-        message: error.error || "Une erreur est survenue",
+        message: error?.error || error?.message || "Une erreur est survenue",
         type: "error",
       });
     } finally {
@@ -261,6 +511,9 @@ export default function AddPoultryScreen({ navigation, route }) {
     }
   };
 
+  // ─────────────────────────────────────────────
+  // Rendu
+  // ─────────────────────────────────────────────
   return (
     <SafeAreaView
       style={[
@@ -273,6 +526,17 @@ export default function AddPoultryScreen({ navigation, route }) {
       ]}
       edges={["top", "bottom"]}
     >
+      {/* ── Modal cross-platform (web + mobile) ── */}
+      <FilePickerModal
+        visible={pickerVisible}
+        onClose={() => setPickerVisible(false)}
+        onCamera={takePhoto}
+        onGallery={pickFromGallery}
+        onFiles={pickFromFiles}
+        colors={colors}
+        darkMode={darkMode}
+      />
+
       {/* Header */}
       <View
         style={[
@@ -328,7 +592,9 @@ export default function AddPoultryScreen({ navigation, route }) {
         >
           <MaterialIcons name="check" size={20} color="#ffffff" />
           <Text style={styles.submitText}>
-            {isEditing ? "Modifier" : "Ajouter le poulailler"}
+            {isEditing
+              ? "Enregistrer les modifications"
+              : "Ajouter le poulailler"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -396,7 +662,7 @@ export default function AddPoultryScreen({ navigation, route }) {
               </Text>
             </View>
 
-            {/* NB Volailles */}
+            {/* Nombre de volailles */}
             <View style={styles.inputGroup}>
               <Text
                 style={[
@@ -752,7 +1018,7 @@ export default function AddPoultryScreen({ navigation, route }) {
               </Text>
             </View>
 
-            {/* ── Pièces jointes ──────────────────────────────── */}
+            {/* ── Pièces jointes ─────────────────────────────── */}
             <View style={styles.inputGroup}>
               <View style={styles.labelRow}>
                 <Text
@@ -770,79 +1036,77 @@ export default function AddPoultryScreen({ navigation, route }) {
                 <Text style={styles.optionalBadge}>Optionnel</Text>
               </View>
 
-              {/* 3 boutons : Image | PDF | Dossier */}
-              <View style={styles.attachBtnRow}>
-                <TouchableOpacity
+              {/* Bouton → ouvre FilePickerModal */}
+              <TouchableOpacity
+                style={[
+                  styles.uploadBtn,
+                  {
+                    backgroundColor: darkMode ? colors.cardDark : "#f8fafc",
+                    borderColor: colors.primary,
+                  },
+                ]}
+                onPress={handlePickFile}
+              >
+                <View
                   style={[
-                    styles.attachBtn,
-                    {
-                      backgroundColor: darkMode ? colors.cardDark : "#fff7ed",
-                      borderColor: colors.primary,
-                    },
+                    styles.uploadIconWrap,
+                    { backgroundColor: colors.primary + "18" },
                   ]}
-                  onPress={() =>
-                    Alert.alert("Ajouter une image", "", [
-                      { text: "Annuler", style: "cancel" },
-                      { text: "Galerie", onPress: pickImage },
-                      { text: "Caméra", onPress: takePhoto },
-                    ])
-                  }
                 >
                   <MaterialIcons
-                    name="image"
-                    size={20}
+                    name="attach-file"
+                    size={22}
                     color={colors.primary}
                   />
+                </View>
+                <View style={styles.uploadTextWrap}>
                   <Text
-                    style={[styles.attachBtnText, { color: colors.primary }]}
+                    style={[styles.uploadBtnLabel, { color: colors.primary }]}
                   >
-                    Image
+                    Ajouter un fichier
                   </Text>
-                </TouchableOpacity>
+                  <Text
+                    style={[
+                      styles.uploadBtnSub,
+                      {
+                        color: darkMode
+                          ? colors.textSubDark
+                          : colors.textSubLight,
+                      },
+                    ]}
+                  >
+                    {Platform.OS === "web"
+                      ? "Galerie · Fichiers depuis l'ordinateur"
+                      : "Caméra · Galerie · Stockage du téléphone"}
+                  </Text>
+                </View>
+                <MaterialIcons
+                  name="chevron-right"
+                  size={20}
+                  color={colors.primary}
+                />
+              </TouchableOpacity>
 
-                <TouchableOpacity
+              {/* Compteur */}
+              {attachments.length > 0 && (
+                <Text
                   style={[
-                    styles.attachBtn,
+                    styles.attachCount,
                     {
-                      backgroundColor: darkMode ? colors.cardDark : "#fff1f2",
-                      borderColor: "#ef4444",
+                      color: darkMode
+                        ? colors.textSubDark
+                        : colors.textSubLight,
                     },
                   ]}
-                  onPress={pickDocument}
                 >
-                  <MaterialIcons
-                    name="picture-as-pdf"
-                    size={20}
-                    color="#ef4444"
-                  />
-                  <Text style={[styles.attachBtnText, { color: "#ef4444" }]}>
-                    PDF
-                  </Text>
-                </TouchableOpacity>
+                  {attachments.length} fichier
+                  {attachments.length > 1 ? "s" : ""} joint
+                  {attachments.length > 1 ? "s" : ""}
+                </Text>
+              )}
 
-                <TouchableOpacity
-                  style={[
-                    styles.attachBtn,
-                    {
-                      backgroundColor: darkMode ? colors.cardDark : "#f5f3ff",
-                      borderColor: "#8b5cf6",
-                    },
-                  ]}
-                  onPress={pickDocument}
-                >
-                  <MaterialCommunityIcons
-                    name="folder-zip"
-                    size={20}
-                    color="#8b5cf6"
-                  />
-                  <Text style={[styles.attachBtnText, { color: "#8b5cf6" }]}>
-                    Dossier
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Liste fichiers */}
-              {attachments.length > 0 ? (
+              {/* Liste */}
+              {attachments.length > 0 && (
                 <View
                   style={[
                     styles.attachList,
@@ -861,11 +1125,14 @@ export default function AddPoultryScreen({ navigation, route }) {
                     const iconName = getFileIcon(file.type);
                     const iconColor = getFileColor(file.type, colors.primary);
                     const isArchive =
-                      !isImage && file.type !== "application/pdf";
+                      file.type?.includes("zip") ||
+                      file.type?.includes("rar") ||
+                      file.type?.includes("7z") ||
+                      file.type?.includes("tar");
 
                     return (
                       <View
-                        key={index}
+                        key={`${file.name}-${index}`}
                         style={[
                           styles.attachItem,
                           index < attachments.length - 1 && {
@@ -876,7 +1143,6 @@ export default function AddPoultryScreen({ navigation, route }) {
                           },
                         ]}
                       >
-                        {/* Aperçu ou icône */}
                         {isImage && (file.base64 || file.uri) ? (
                           <Image
                             source={{ uri: file.base64 || file.uri }}
@@ -905,7 +1171,6 @@ export default function AddPoultryScreen({ navigation, route }) {
                           </View>
                         )}
 
-                        {/* Nom + meta */}
                         <View style={styles.attachInfo}>
                           <Text
                             style={[
@@ -930,21 +1195,17 @@ export default function AddPoultryScreen({ navigation, route }) {
                               },
                             ]}
                           >
-                            {isImage
-                              ? "Image"
-                              : file.type === "application/pdf"
-                                ? "PDF"
-                                : "Archive"}
+                            {getFileLabel(file.type)}
                             {file.size
                               ? `  ·  ${formatFileSize(file.size)}`
                               : ""}
                           </Text>
                         </View>
 
-                        {/* Supprimer */}
                         <TouchableOpacity
                           onPress={() => removeAttachment(index)}
                           style={styles.attachRemove}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                         >
                           <MaterialIcons
                             name="close"
@@ -956,7 +1217,9 @@ export default function AddPoultryScreen({ navigation, route }) {
                     );
                   })}
                 </View>
-              ) : (
+              )}
+
+              {attachments.length === 0 && (
                 <Text
                   style={[
                     styles.attachEmpty,
@@ -967,8 +1230,7 @@ export default function AddPoultryScreen({ navigation, route }) {
                     },
                   ]}
                 >
-                  Aucun fichier joint — images, PDF ou dossiers compressés
-                  acceptés
+                  Aucun fichier joint
                 </Text>
               )}
             </View>
@@ -986,6 +1248,9 @@ export default function AddPoultryScreen({ navigation, route }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// Styles
+// ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
@@ -1091,19 +1356,27 @@ const styles = StyleSheet.create({
   addressInputWrapper: { flexDirection: "row", alignItems: "center" },
   addressIcon: { position: "absolute", left: 14, zIndex: 1 },
   inputWithIcon: { paddingLeft: 40 },
-  // Pièces jointes
-  attachBtnRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
-  attachBtn: {
-    flex: 1,
+  uploadBtn: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingVertical: 12,
-    borderRadius: 12,
+    gap: 12,
     borderWidth: 1.5,
+    borderStyle: "dashed",
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 10,
   },
-  attachBtnText: { fontSize: 13, fontWeight: "700" },
+  uploadIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  uploadTextWrap: { flex: 1 },
+  uploadBtnLabel: { fontSize: 15, fontWeight: "700" },
+  uploadBtnSub: { fontSize: 12, marginTop: 2 },
+  attachCount: { fontSize: 12, marginBottom: 8, marginLeft: 2 },
   attachList: { borderWidth: 1, borderRadius: 14, overflow: "hidden" },
   attachItem: {
     flexDirection: "row",
@@ -1134,4 +1407,81 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 4,
   },
+
+  // ── Modal styles ──────────────────────────────
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    justifyContent: "flex-end", // bottom sheet sur mobile
+    alignItems: "center",
+    // Sur web on centre plutôt verticalement
+    ...(Platform.OS === "web" && {
+      justifyContent: "center",
+    }),
+  },
+  modalSheet: {
+    width: "100%",
+    maxWidth: 480, // cap sur grands écrans web
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    ...(Platform.OS === "web" && {
+      borderRadius: 20,
+      marginHorizontal: 16,
+      width: "auto",
+      minWidth: 340,
+    }),
+    paddingHorizontal: 20,
+    paddingBottom: 32,
+    paddingTop: 12,
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 20,
+    elevation: 20,
+  },
+  modalHandle: {
+    alignSelf: "center",
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#cbd5e1",
+    marginBottom: 20,
+    // Caché sur web (pas de bottom sheet)
+    ...(Platform.OS === "web" && { display: "none" }),
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    marginBottom: 4,
+  },
+  modalSub: {
+    fontSize: 13,
+    marginBottom: 20,
+  },
+  modalOptions: { gap: 10 },
+  modalOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  modalOptionIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalOptionText: { flex: 1 },
+  modalOptionLabel: { fontSize: 15, fontWeight: "700" },
+  modalOptionSub: { fontSize: 12, marginTop: 2 },
+  modalCancelBtn: {
+    marginTop: 16,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  modalCancelText: { fontSize: 15, fontWeight: "600" },
 });
