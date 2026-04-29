@@ -468,6 +468,7 @@ export default function AddPoultryScreen({ navigation, route }) {
     setLoading(true);
     try {
       const finalName = name.trim() || generateAutoName();
+
       const poultryData = {
         name: finalName,
         animalCount: parseInt(animalCount),
