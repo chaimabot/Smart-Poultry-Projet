@@ -56,7 +56,7 @@ const dossierSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// FIXED: Contract number generation - synchronous, no middleware
+// FIXED: Contract number generation - no middleware, direct pre-save logic
 dossierSchema.pre("save", function (next) {
   if (!this.contractNumber) {
     this.contractNumber = `CTR-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
