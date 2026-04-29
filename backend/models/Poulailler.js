@@ -36,7 +36,7 @@ const poulaillerSchema = new mongoose.Schema(
     },
     uniqueCode: {
       type: String,
-      unique: true,
+      unique: true, // ← crée l'index automatiquement, pas besoin de schema.index()
       sparse: true,
       uppercase: true,
       trim: true,
@@ -45,14 +45,16 @@ const poulaillerSchema = new mongoose.Schema(
     // ── Caractéristiques physiques ────────────
     animalCount: { type: Number, required: true, min: 1 },
     surface: { type: Number, required: true, min: 0.1 },
-densite: { 
-      type: Number, 
-      default: null, 
+    densite: {
+      type: Number,
+      default: null,
       min: 0,
       validate: {
-        validator: function(v) { return v === null || v >= 0; },
-        message: 'La densité doit être null ou supérieure ou égale à 0'
-      }
+        validator: function (v) {
+          return v === null || v >= 0;
+        },
+        message: "La densité doit être null ou supérieure ou égale à 0",
+      },
     },
 
     // ── Informations complémentaires ──────────
@@ -120,8 +122,8 @@ densite: {
     },
   },
   {
-    timestamps: true, // createdAt, updatedAt automatiques
-    versionKey: false, // supprime __v inutile
+    timestamps: true,
+    versionKey: false,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
   },
@@ -133,7 +135,7 @@ densite: {
 poulaillerSchema.index({ owner: 1, isArchived: 1 });
 poulaillerSchema.index({ owner: 1, isCritical: 1 });
 poulaillerSchema.index({ owner: 1, status: 1 });
-poulaillerSchema.index({ uniqueCode: 1 }); // lookup MQTT très fréquent
+// uniqueCode : index déjà créé par unique:true ci-dessus — ligne supprimée
 
 // ─────────────────────────────────────────────
 // Virtual : alerte active ?
