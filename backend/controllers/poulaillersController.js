@@ -118,10 +118,8 @@ function sampleHistory(arr, n) {
 // @access  Private (Eleveur)
 // ============================================================
 exports.createPoulailler = async (req, res) => {
-  // FIX DOSSIER #1 : stripUnknown:true — sans cette option, tout champ inattendu
-  //   dans req.body (ex: un champ envoyé par le mobile non déclaré dans le schéma Joi)
-  //   provoquait une erreur de validation Joi et bloquait la fonction avant même
-  //   d'atteindre Poulailler.create() ou Dossier.create().
+  console.log("[CREATE] req.body reçu :", JSON.stringify(req.body, null, 2));
+  console.log("[CREATE] req.user :", req.user);
   const { error, value } = poulaillerSchema.validate(req.body, JOI_OPTS);
   if (error) {
     return res.status(400).json({
@@ -273,12 +271,10 @@ exports.updatePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     const { error, value } = updatePoulaillerSchema.validate(
@@ -338,12 +334,10 @@ exports.deletePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     await Poulailler.deleteOne({ _id: req.params.id });
@@ -370,12 +364,10 @@ exports.archivePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     poulailler.isArchived = true;
