@@ -117,51 +117,59 @@ function sampleHistory(arr, n) {
 // @access  Private (Eleveur)
 // ============================================================
 exports.createPoulailler = async (req, res) => {
-  try {
-    const { error, value } = poulaillerSchema.validate(req.body);
-    if (error) {
-      return res
-        .status(400)
-        .json({ success: false, error: error.details[0].message });
-    }
+  // FIX DOSSIER #1 : stripUnknown:true — sans cette option, tout champ inattendu
+  //   dans req.body (ex: un champ envoyé par le mobile non déclaré dans le schéma Joi)
+  //   provoquait une erreur de validation Joi et bloquait la fonction avant même
+  //   d'atteindre Poulailler.create() ou Dossier.create().
+  const { error, value } = poulaillerSchema.validate(req.body, {
+    stripUnknown: true,
+    abortEarly: false,
+  });
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      error: error.details.map((d) => d.message).join(", "),
+    });
+  }
 
+  // FIX DOSSIER #2 : création atomique avec rollback.
+  //   Dans la version précédente, si Dossier.create() échouait après que
+  //   Poulailler.create() avait réussi, le poulailler était créé en base
+  //   sans aucun dossier associé, et l'erreur était avalée par le catch générique
+  //   sans aucune trace exploitable. Désormais :
+  //   - le poulailler créé est supprimé (rollback) si le dossier échoue
+  //   - les deux erreurs (Poulailler + Dossier) sont loguées séparément
+  let poulailler = null;
+
+  try {
     const defaultThresholds = await getDefaultThresholds();
     const uniqueCode = generateUniqueCode();
 
-    // FIX #4 : generateAutoName() et calculerDensite() étaient appelées
-    //          sans être jamais définies dans ce fichier → ReferenceError.
-    //          - name : value.name est déjà validé required() par Joi, le fallback était inutile.
-    //          - densite : le middleware pre("save") du modèle Poulailler recalcule
-    //            automatiquement la densité ; pas besoin de la calculer ici.
-    const name = value.name.trim();
-
-    // FIX #5 : normalizeAttachments() était appelée sans être définie → ReferenceError.
-    //          Remplacement par un accès direct à value.attachments (déjà validé par Joi).
-    const attachments = value.attachments ?? [];
-
-    // FIX #6 : status "PENDING" n'existe pas dans l'enum du modèle Poulailler
-    //          ("en_attente_module" | "connecte" | "hors_ligne" | "maintenance").
-    //          Utilisation de la valeur correcte de l'enum.
-    // FIX #7 : isOnline n'est pas un champ du modèle Poulailler → ignoré silencieusement.
-    //          Supprimé pour éviter toute confusion.
-    const poulailler = await Poulailler.create({
-      name,
+    poulailler = await Poulailler.create({
+      name: value.name.trim(),
       animalCount: value.animalCount,
       surface: value.surface,
       remarque: value.remarque ?? null,
       address: value.address ?? null,
-      attachments,
+      attachments: value.attachments ?? [],
       owner: req.user.id,
-      status: "en_attente_module", // valeur correcte de l'enum
+      status: "en_attente_module",
       uniqueCode,
       thresholds: { ...defaultThresholds },
     });
 
-    // FIX #8 : createdAt est géré automatiquement par { timestamps: true } dans
-    //          le schéma Dossier. Passer createdAt: Date.now() en dur écrase
-    //          le comportement Mongoose et peut provoquer un cast error (Number
-    //          au lieu de Date). Champ supprimé.
-    const dossier = await Dossier.create({
+    console.log(`[CREATE] Poulailler créé : ${poulailler._id} (${uniqueCode})`);
+  } catch (err) {
+    console.error("[CREATE] Échec Poulailler.create() :", err.message);
+    return res
+      .status(500)
+      .json({ success: false, error: "Impossible de créer le poulailler." });
+  }
+
+  let dossier = null;
+
+  try {
+    dossier = await Dossier.create({
       eleveur: req.user.id,
       poulailler: poulailler._id,
       status: "EN_ATTENTE",
@@ -170,18 +178,28 @@ exports.createPoulailler = async (req, res) => {
     });
 
     console.log(
-      `[CREATE REQUEST] Poulailler + Dossier créés pour user ${req.user.id}`,
+      `[CREATE] Dossier créé : ${dossier._id} pour poulailler ${poulailler._id}`,
     );
-
-    res.status(201).json({
-      success: true,
-      message: "Demande envoyée à l'administrateur",
-      data: { poulailler, dossier },
-    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    // Rollback : suppression du poulailler déjà inséré pour éviter un état incohérent
+    console.error(
+      "[CREATE] Échec Dossier.create() — rollback poulailler :",
+      err.message,
+    );
+    await Poulailler.deleteOne({ _id: poulailler._id }).catch((e) =>
+      console.error("[CREATE] Rollback échoué :", e.message),
+    );
+    return res.status(500).json({
+      success: false,
+      error: "Impossible de créer le dossier. L'opération a été annulée.",
+    });
   }
+
+  return res.status(201).json({
+    success: true,
+    message: "Demande envoyée à l'administrateur",
+    data: { poulailler, dossier },
+  });
 };
 
 // ============================================================
