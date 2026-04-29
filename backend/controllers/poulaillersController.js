@@ -49,21 +49,22 @@ async function syncConfig(poulaillerId, mqttSvc) {
 
 // ============================================================
 // VALIDATION JOI
-// FIX #3 : le schéma Joi ne validait pas les champs réellement
-//          utilisés à la création (surface, remarque, address,
-//          attachments). Les champs type/description/location/photoUrl
-//          étaient validés mais n'existent pas dans le modèle Mongoose,
-//          entraînant des écritures silencieusement ignorées.
-//          Le schéma est maintenant aligné sur le modèle Poulailler.
+// Options communes :
+//   stripUnknown : ignore les champs inconnus au lieu de les rejeter
+//                  (évite les 400 sur des champs mobiles supplémentaires)
+//   abortEarly   : remonte toutes les erreurs en une seule réponse
+//   convert      : caste "12" → 12, "true" → true automatiquement
+//                  (fréquent depuis FormData React Native / multipart)
 // ============================================================
+const JOI_OPTS = { stripUnknown: true, abortEarly: false, convert: true };
+
 const poulaillerSchema = Joi.object({
   name: Joi.string().min(3).max(80).required(),
   animalCount: Joi.number().integer().min(1).required(),
-  surface: Joi.number().min(0.1).required(),
+  surface: Joi.number().positive().required(),
   remarque: Joi.string().max(200).allow("", null).default(null),
   address: Joi.string().max(300).allow("", null).default(null),
   attachments: Joi.array().items(Joi.object()).default([]),
-  // champs financiers transmis au dossier (optionnels)
   totalAmount: Joi.number().min(0).default(0),
   advanceAmount: Joi.number().min(0).default(0),
 });
@@ -72,7 +73,7 @@ const poulaillerSchema = Joi.object({
 const updatePoulaillerSchema = Joi.object({
   name: Joi.string().min(3).max(80),
   animalCount: Joi.number().integer().min(1),
-  surface: Joi.number().min(0.1),
+  surface: Joi.number().positive(),
   remarque: Joi.string().max(200).allow("", null),
   address: Joi.string().max(300).allow("", null),
   attachments: Joi.array().items(Joi.object()),
@@ -121,10 +122,7 @@ exports.createPoulailler = async (req, res) => {
   //   dans req.body (ex: un champ envoyé par le mobile non déclaré dans le schéma Joi)
   //   provoquait une erreur de validation Joi et bloquait la fonction avant même
   //   d'atteindre Poulailler.create() ou Dossier.create().
-  const { error, value } = poulaillerSchema.validate(req.body, {
-    stripUnknown: true,
-    abortEarly: false,
-  });
+  const { error, value } = poulaillerSchema.validate(req.body, JOI_OPTS);
   if (error) {
     return res.status(400).json({
       success: false,
@@ -283,7 +281,10 @@ exports.updatePoulailler = async (req, res) => {
         });
     }
 
-    const { error, value } = updatePoulaillerSchema.validate(req.body);
+    const { error, value } = updatePoulaillerSchema.validate(
+      req.body,
+      JOI_OPTS,
+    );
     if (error) {
       return res
         .status(400)
