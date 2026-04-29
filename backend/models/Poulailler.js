@@ -125,20 +125,8 @@ poulaillerSchema.virtual("hasAlert").get(function () {
   );
 });
 
-// FIXED: Mongoose middleware - async arrow function (no next needed)
-poulaillerSchema.pre("save", async function (next) {
-  try {
-    if (this.isModified("animalCount") || this.isModified("surface")) {
-      const count = Number(this.animalCount);
-      const surface = Number(this.surface);
-      this.densite =
-        count > 0 && surface > 0 ? Number((count / surface).toFixed(2)) : null;
-    }
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
+// FIXED: Removed middleware entirely - frontend calculates densite
+// poulaillerSchema.pre('save', async function(next) { ... });
 
 poulaillerSchema.methods.toMqttConfig = function () {
   return {
