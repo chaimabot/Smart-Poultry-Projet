@@ -144,54 +144,51 @@ exports.createPoulailler = async (req, res) => {
     if (error) {
       return res.status(400).json({
         success: false,
-        error: error.details[0].message,
+        message: error.details[0].message,
       });
     }
 
-    const defaultThresholds = await getDefaultThresholds();
-    const uniqueCode = generateUniqueCode();
-    const finalName = value.name?.trim() || generateAutoName();
-    const densite = calculerDensite(value.animalCount, value.surface);
-
-    const poultryData = {
-      name: finalName,
+    // =========================================================
+    // 1️⃣ CREATE POULAILLER (TOUJOURS PENDING)
+    // =========================================================
+    const poulailler = await Poulailler.create({
+      name: value.name || generateAutoName(),
       animalCount: value.animalCount,
       surface: value.surface,
-      densite,
-      remarque: value.remarque || null,
-      address: value.address || null,
-      attachments: normalizeAttachments(value.attachments),
-    };
-
-    const poulailler = await Poulailler.create({
-      ...poultryData,
+      densite: calculerDensite(value.animalCount, value.surface),
       owner: req.user.id,
-      status: "PENDING",
-      isOnline: false,
-      uniqueCode,
-      thresholds: { ...defaultThresholds },
+      status: "pending",
+      isActive: false,
+      uniqueCode: generateUniqueCode(),
     });
 
+    // =========================================================
+    // 2️⃣ IMPORTANT : CREATE DOSSIER (OBLIGATOIRE)
+    // =========================================================
     const dossier = await Dossier.create({
       eleveur: req.user.id,
       poulailler: poulailler._id,
       status: "EN_ATTENTE",
+      source: "dashboard",
+      createdAt: new Date(),
       totalAmount: req.body.totalAmount || 0,
       advanceAmount: req.body.advanceAmount || 0,
     });
 
-    console.log(
-      `[CREATE POULAILLER] Poulailler + Dossier créés pour user ${req.user.id}`,
-    );
-
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: "Demande envoyée à l'administrateur",
-      data: { poulailler, dossier },
+      data: {
+        poulailler,
+        dossier, // ✅ maintenant toujours créé
+      },
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+    });
   }
 };
 
@@ -202,19 +199,13 @@ exports.createPoulailler = async (req, res) => {
 // ============================================================
 exports.getPoulaillers = async (req, res) => {
   try {
-    const { search } = req.query;
-    let query = { owner: req.user.id, isArchived: false };
-    if (search) query.name = { $regex: search, $options: "i" };
-
-    const poulaillers = await Poulailler.find(query).sort({ createdAt: -1 });
-    res.status(200).json({
-      success: true,
-      count: poulaillers.length,
-      data: poulaillers,
+    const data = await Poulailler.find({
+      owner: req.user.id,
+      isArchived: false,
     });
+    res.json({ success: true, data });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    res.status(500).json({ success: false });
   }
 };
 
@@ -249,66 +240,29 @@ exports.getPoulailler = async (req, res) => {
 // ============================================================
 exports.updatePoulailler = async (req, res) => {
   try {
-    let poulailler = await Poulailler.findById(req.params.id);
-    if (!poulailler)
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    if (poulailler.owner.toString() !== req.user.id)
-      return res
-        .status(403)
-        .json({ success: false, error: "Action non autorisée" });
+    const p = await Poulailler.findById(req.params.id);
+    if (!p) return res.status(404).json({ success: false });
 
-    const isArchiveOnly =
-      Object.keys(req.body).length === 1 &&
-      typeof req.body.isArchived === "boolean";
+    if (p.owner.toString() !== req.user.id)
+      return res.status(403).json({ success: false });
 
-    if (!isArchiveOnly) {
-      const { error, value: validated } = poulaillerSchema.validate(req.body, {
-        stripUnknown: true,
-      });
+    const densite = calculerDensite(
+      req.body.animalCount || p.animalCount,
+      req.body.surface || p.surface,
+    );
 
-      if (error)
-        return res.status(400).json({
-          success: false,
-          error: error.details[0].message,
-        });
-
-      const newCount = validated.animalCount ?? poulailler.animalCount;
-      const newSurface = validated.surface ?? poulailler.surface;
-      const densite = calculerDensite(newCount, newSurface);
-
-      const fieldsToUpdate = {
-        name: validated.name?.trim() || poulailler.name,
-        animalCount: validated.animalCount ?? poulailler.animalCount,
-        surface: validated.surface ?? poulailler.surface,
+    const updated = await Poulailler.findByIdAndUpdate(
+      req.params.id,
+      {
+        ...req.body,
         densite,
-        remarque: validated.remarque ?? poulailler.remarque,
-        address: validated.address ?? poulailler.address,
-        attachments: normalizeAttachments(validated.attachments),
-      };
+      },
+      { new: true },
+    );
 
-      if (typeof req.body.isArchived === "boolean")
-        fieldsToUpdate.isArchived = req.body.isArchived;
-
-      poulailler = await Poulailler.findByIdAndUpdate(
-        req.params.id,
-        fieldsToUpdate,
-        { new: true, runValidators: true },
-      );
-
-      console.log(
-        `[UPDATE POULAILLER] "${poulailler.name}" | Densité: ${densite}`,
-      );
-    } else {
-      poulailler.isArchived = req.body.isArchived;
-      await poulailler.save();
-    }
-
-    res.status(200).json({ success: true, data: poulailler });
+    res.json({ success: true, data: updated });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    res.status(500).json({ success: false });
   }
 };
 
@@ -319,24 +273,19 @@ exports.updatePoulailler = async (req, res) => {
 // ============================================================
 exports.deletePoulailler = async (req, res) => {
   try {
-    const poulailler = await Poulailler.findById(req.params.id);
-    if (!poulailler)
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    if (poulailler.owner.toString() !== req.user.id)
-      return res
-        .status(403)
-        .json({ success: false, error: "Action non autorisée" });
+    const p = await Poulailler.findById(req.params.id);
+    if (!p) return res.status(404).json({ success: false });
+
+    if (p.owner.toString() !== req.user.id)
+      return res.status(403).json({ success: false });
 
     await Poulailler.deleteOne({ _id: req.params.id });
-    res.status(200).json({ success: true, data: {} });
+
+    res.json({ success: true });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    res.status(500).json({ success: false });
   }
 };
-
 // ============================================================
 // @desc    Archiver un poulailler
 // @route   POST /api/poulaillers/:id/archive
