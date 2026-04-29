@@ -151,7 +151,9 @@ exports.createPoulailler = async (req, res) => {
 
   try {
     const defaultThresholds = await getDefaultThresholds();
+    console.log("[CREATE] thresholds OK :", defaultThresholds); // ← ajoute
     const uniqueCode = generateUniqueCode();
+    console.log("[CREATE] uniqueCode :", uniqueCode); // ← ajoute
 
     poulailler = await Poulailler.create({
       name: value.name.trim(),
@@ -288,12 +290,10 @@ exports.updatePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     const { error, value } = updatePoulaillerSchema.validate(
@@ -353,12 +353,10 @@ exports.deletePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     await Poulailler.deleteOne({ _id: req.params.id });
@@ -385,12 +383,10 @@ exports.archivePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     poulailler.isArchived = true;
