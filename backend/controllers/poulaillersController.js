@@ -136,82 +136,98 @@ function normalizeAttachments(attachments = []) {
 // @access  Private
 // ============================================================
 exports.createPoulailler = async (req, res) => {
-  console.log("=== createPoulailler START ===");
-  console.log("user:", req.user);
-  console.log("body:", JSON.stringify(req.body, null, 2));
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
   try {
+    // =========================================================
+    // 1️⃣ CHECK AUTH
+    // =========================================================
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Utilisateur non authentifié",
+      });
+    }
+
+    // =========================================================
+    // 2️⃣ VALIDATION
+    // =========================================================
     const { error, value } = poulaillerSchema.validate(req.body, {
       stripUnknown: true,
     });
 
     if (error) {
-      console.log("Validation Joi échouée:", error.details[0].message);
       return res.status(400).json({
         success: false,
         message: error.details[0].message,
       });
     }
 
-    console.log("Joi OK, value:", value);
+    // =========================================================
+    // 3️⃣ CREATE POULAILLER
+    // =========================================================
+    const poulaillerData = {
+      name: value.name || generateAutoName(),
+      animalCount: value.animalCount,
+      surface: value.surface,
+      densite: calculerDensite(value.animalCount, value.surface),
+      owner: req.user.id,
+      status: "en_attente_module",
+      uniqueCode: generateUniqueCode(),
+      remarque: value.remarque || null,
+      address: value.address || null,
+      attachments: normalizeAttachments(value.attachments),
+    };
 
-    let poulailler;
-    try {
-      poulailler = await Poulailler.create({
-        name: value.name || generateAutoName(),
-        animalCount: value.animalCount,
-        surface: value.surface,
-        densite: calculerDensite(value.animalCount, value.surface),
-        owner: req.user.id,
-        status: "en_attente_module",
-        uniqueCode: generateUniqueCode(),
-      });
-      console.log("Poulailler créé:", poulailler._id);
-    } catch (pErr) {
-      console.error("ERREUR création poulailler:", pErr.message, pErr);
-      return res
-        .status(500)
-        .json({
-          success: false,
-          message: "Erreur poulailler: " + pErr.message,
-        });
-    }
+    const [poulailler] = await Poulailler.create([poulaillerData], {
+      session,
+    });
 
-    let dossier;
-    try {
-      const dossierData = {
-        eleveur: req.user.id,
-        poulailler: poulailler._id,
-        status: "EN_ATTENTE",
-        source: "mobile-app",
-        totalAmount: 0,
-        advanceAmount: 0,
-        remainedAmount: 0,
-      };
-      console.log("Tentative création dossier avec:", dossierData);
-      dossier = await Dossier.create(dossierData);
-      console.log("Dossier créé:", dossier._id);
-    } catch (dErr) {
-      console.error("ERREUR création dossier:", dErr.message);
-      console.error("Stack:", dErr.stack);
-      console.error("Détail validation:", JSON.stringify(dErr.errors, null, 2));
-      await Poulailler.deleteOne({ _id: poulailler._id });
-      return res
-        .status(500)
-        .json({ success: false, message: "Erreur dossier: " + dErr.message });
-    }
+    // =========================================================
+    // 4️⃣ CREATE DOSSIER (IMPORTANT)
+    // =========================================================
+    const dossierData = {
+      eleveur: req.user.id,
+      poulailler: poulailler._id,
+      status: "EN_ATTENTE",
+      source: "mobile-app",
+      totalAmount: req.body.totalAmount || 0,
+      advanceAmount: req.body.advanceAmount || 0,
+      remainedAmount:
+        (req.body.totalAmount || 0) - (req.body.advanceAmount || 0),
+    };
 
-    console.log("=== createPoulailler SUCCESS ===");
+    const [dossier] = await Dossier.create([dossierData], { session });
+
+    // =========================================================
+    // 5️⃣ COMMIT
+    // =========================================================
+    await session.commitTransaction();
+    session.endSession();
+
     return res.status(201).json({
       success: true,
-      message: "Demande envoyée à l'administrateur",
-      data: { poulailler, dossier },
+      message: "Poulailler et dossier créés avec succès",
+      data: {
+        poulailler,
+        dossier,
+      },
     });
   } catch (err) {
-    console.error("ERREUR GLOBALE:", err.message, err.stack);
-    return res
-      .status(500)
-      .json({ success: false, message: "Erreur serveur: " + err.message });
+    // =========================================================
+    // ❌ ROLLBACK
+    // =========================================================
+    await session.abortTransaction();
+    session.endSession();
+
+    console.error("CREATE ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Erreur lors de la création",
+      error: err.message,
+    });
   }
 };
 
