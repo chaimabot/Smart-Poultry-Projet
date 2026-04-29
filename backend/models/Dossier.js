@@ -49,7 +49,8 @@ const dossierSchema = new mongoose.Schema(
 
 dossierSchema.pre("save", async function () {
   if (!this.contractNumber) {
-    this.contractNumber = "CTR-" + Date.now();
+    this.contractNumber =
+      "CTR-" + Date.now() + "-" + Math.floor(Math.random() * 1000);
   }
 });
 
