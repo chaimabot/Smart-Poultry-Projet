@@ -473,7 +473,6 @@ export default function AddPoultryScreen({ navigation, route }) {
         name: finalName,
         animalCount: parseInt(animalCount),
         surface: parseFloat(surface),
-        densite: calculerDensite(animalCount, surface),
         remarque: remarque || null,
         address: address || null,
         attachments: attachments.map((f) => ({
