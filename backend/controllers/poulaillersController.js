@@ -146,6 +146,7 @@ exports.createPoulailler = async (req, res) => {
     const name = value.name?.trim() || generateAutoName();
     const densite = calculerDensite(value.animalCount, value.surface);
 
+    // 1. CREATE POULAILLER (PENDING)
     const poulailler = await Poulailler.create({
       name,
       animalCount: value.animalCount,
@@ -155,16 +156,41 @@ exports.createPoulailler = async (req, res) => {
       address: value.address || null,
       attachments: normalizeAttachments(value.attachments),
       owner: req.user.id,
-      status: "en_attente_module",
-      thresholds: { ...defaultThresholds },
+
+      // 🔴 IMPORTANT: pas actif directement
+      status: "PENDING",
+      isOnline: false,
       uniqueCode,
+
+      thresholds: { ...defaultThresholds },
+    });
+
+    // 2. CREATE DOSSIER (IMPORTANT AJOUT)
+    const dossier = await Dossier.create({
+      eleveur: req.user.id,
+      poulailler: poulailler._id,
+
+      status: "EN_ATTENTE",
+
+      createdAt: Date.now(),
+
+      // optionnel si tu as finance
+      totalAmount: req.body.totalAmount || 0,
+      advanceAmount: req.body.advanceAmount || 0,
     });
 
     console.log(
-      `[CREATE POULAILLER] "${name}" | ${value.animalCount} volailles | ${value.surface}m² | Densité: ${densite} | Fichiers: ${(value.attachments || []).length}`,
+      `[CREATE REQUEST] Poulailler + Dossier created for user ${req.user.id}`,
     );
 
-    res.status(201).json({ success: true, data: poulailler });
+    res.status(201).json({
+      success: true,
+      message: "Demande envoyée à l’administrateur",
+      data: {
+        poulailler,
+        dossier,
+      },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
@@ -244,6 +270,9 @@ exports.updatePoulailler = async (req, res) => {
         return res
           .status(400)
           .json({ success: false, error: error.details[0].message });
+
+      // Defensive: let middleware compute density
+      delete validated.densite;
 
       const newCount = validated.animalCount ?? poulailler.animalCount;
       const newSurface = validated.surface ?? poulailler.surface;
