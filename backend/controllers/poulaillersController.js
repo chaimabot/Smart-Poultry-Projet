@@ -64,7 +64,17 @@ const poulaillerSchema = Joi.object({
   surface: Joi.number().positive().required(),
   remarque: Joi.string().max(200).allow("", null).default(null),
   address: Joi.string().max(300).allow("", null).default(null),
-  attachments: Joi.array().items(Joi.object()).default([]),
+  attachments: Joi.array()
+    .items(
+      Joi.object({
+        name: Joi.string().required(),
+        type: Joi.string().required(),
+        size: Joi.number().allow(null).default(null),
+        uri: Joi.string().allow(null, "").default(null),
+        base64: Joi.string().allow(null, "").default(null),
+      }).unknown(true), // tolère d'éventuels champs supplémentaires
+    )
+    .default([]),
   totalAmount: Joi.number().min(0).default(0),
   advanceAmount: Joi.number().min(0).default(0),
 });
@@ -118,8 +128,10 @@ function sampleHistory(arr, n) {
 // @access  Private (Eleveur)
 // ============================================================
 exports.createPoulailler = async (req, res) => {
-  console.log("[CREATE] req.body reçu :", JSON.stringify(req.body, null, 2));
-  console.log("[CREATE] req.user :", req.user);
+  // FIX DOSSIER #1 : stripUnknown:true — sans cette option, tout champ inattendu
+  //   dans req.body (ex: un champ envoyé par le mobile non déclaré dans le schéma Joi)
+  //   provoquait une erreur de validation Joi et bloquait la fonction avant même
+  //   d'atteindre Poulailler.create() ou Dossier.create().
   const { error, value } = poulaillerSchema.validate(req.body, JOI_OPTS);
   if (error) {
     return res.status(400).json({
@@ -156,7 +168,12 @@ exports.createPoulailler = async (req, res) => {
 
     console.log(`[CREATE] Poulailler créé : ${poulailler._id} (${uniqueCode})`);
   } catch (err) {
-    console.error("[CREATE] Échec Poulailler.create() :", err.message);
+    console.error(
+      "[CREATE] Échec Poulailler.create() :",
+      err.message,
+      "| full:",
+      err,
+    );
     return res
       .status(500)
       .json({ success: false, error: "Impossible de créer le poulailler." });
@@ -271,10 +288,12 @@ exports.updatePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     const { error, value } = updatePoulaillerSchema.validate(
@@ -334,10 +353,12 @@ exports.deletePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     await Poulailler.deleteOne({ _id: req.params.id });
@@ -364,10 +385,12 @@ exports.archivePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     poulailler.isArchived = true;
