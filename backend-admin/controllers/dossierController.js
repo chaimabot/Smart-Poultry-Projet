@@ -271,32 +271,38 @@ function getEleveurId(dossier) {
 const validateDossier = async (req, res) => {
   try {
     const dossier = await Dossier.findById(req.params.id);
-    if (!dossier)
-      return res
-        .status(404)
-        .json({ success: false, message: "Dossier non trouvé" });
-    if (dossier.status !== "EN_ATTENTE")
-      return res
-        .status(400)
-        .json({ success: false, message: "Ce dossier est déjà traité." });
 
+    if (!dossier)
+      return res.status(404).json({
+        success: false,
+        message: "Dossier non trouvé",
+      });
+
+    if (dossier.status !== "EN_ATTENTE")
+      return res.status(400).json({
+        success: false,
+        message: "Ce dossier est déjà traité.",
+      });
+
+    // ✅ Validation admin du dossier
     dossier.status = "AVANCE_PAYEE";
     dossier.dateValidation = Date.now();
     dossier.validatedBy = req.user.id;
 
-    const eleveurId = getEleveurId(dossier);
-    if (eleveurId) {
-      await User.findByIdAndUpdate(eleveurId, {
-        status: "active",
+    // ✅ IMPORTANT : déclenche préparation poulailler
+    if (dossier.poulailler) {
+      await Poulailler.findByIdAndUpdate(dossier.poulailler, {
+        status: "en_installation",
         isActive: true,
-        role: "eleveur",
+        installationDate: new Date(),
       });
     }
 
     await dossier.save();
+
     res.json({
       success: true,
-      message: "Dossier validé avec succès. Compte éleveur activé.",
+      message: "Dossier validé. L’installation du poulailler peut commencer.",
       data: dossier,
     });
   } catch (error) {

@@ -45,7 +45,15 @@ const poulaillerSchema = new mongoose.Schema(
     // ── Caractéristiques physiques ────────────
     animalCount: { type: Number, required: true, min: 1 },
     surface: { type: Number, required: true, min: 0.1 },
-    densite: { type: Number, default: null, min: 0 },
+densite: { 
+      type: Number, 
+      default: null, 
+      min: 0,
+      validate: {
+        validator: function(v) { return v === null || v >= 0; },
+        message: 'La densité doit être null ou supérieure ou égale à 0'
+      }
+    },
 
     // ── Informations complémentaires ──────────
     remarque: { type: String, maxlength: 200, default: null, trim: true },
