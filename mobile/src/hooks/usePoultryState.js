@@ -8,10 +8,10 @@ import {
   createActuatorAlert,
   markAllAlertsAsRead,
   getThresholds,
-  getDeviceByPoulailler, // ✅ NOUVEAU — récupère le device (macAddress) lié au poulailler
+  getDeviceByPoulailler,
 } from "../services/poultry";
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── Config capteurs ───────────────────────────────────────────────────────────
 
 export const SENSOR_CONFIG = [
   {
@@ -46,7 +46,6 @@ export const SENSOR_CONFIG = [
     icon: "warning",
     key: "nh3",
   },
-  // ✅ key = "waterLevel" — correspond exactement au champ publié par l'ESP32
   {
     name: "Niveau eau",
     value: "--",
@@ -57,16 +56,73 @@ export const SENSOR_CONFIG = [
   },
 ];
 
-// ── Helper ────────────────────────────────────────────────────────────────────
+// ── Mapping clé capteur → champs BD ──────────────────────────────────────────
+//
+// La BD (poulailler.thresholds) stocke :
+//   temperatureMin, temperatureMax, humidityMin, humidityMax,
+//   co2Max, nh3Max, dustMax, waterLevelMin
+//
+const THRESHOLD_MAP = {
+  temperature: { min: "temperatureMin", max: "temperatureMax" },
+  humidity: { min: "humidityMin", max: "humidityMax" },
+  co2: { min: null, max: "co2Max" },
+  nh3: { min: null, max: "nh3Max" },
+  dust: { min: null, max: "dustMax" },
+  waterLevel: { min: "waterLevelMin", max: null },
+};
 
-function calculateSensorStatus(key, value, currentThresholds) {
+// Marge au-delà du seuil max/min pour passer en "danger"
+const DANGER_MARGINS = {
+  temperature: 3,
+  humidity: 10,
+  co2: 500,
+  nh3: 10,
+  dust: 100,
+  waterLevel: 10,
+};
+
+// ── Calcul du status ──────────────────────────────────────────────────────────
+//
+// dbThresholds = poulailler.thresholds tel que renvoyé par le backend :
+//   { temperatureMin: 11, temperatureMax: 12, humidityMin: 30, humidityMax: 60, ... }
+//
+function calculateSensorStatus(key, value, dbThresholds) {
   const numVal = Number(value);
-  if (isNaN(numVal) || !currentThresholds || !currentThresholds[key])
-    return "normal";
-  const t = currentThresholds[key];
-  if (numVal >= t.danger) return "danger";
-  if (numVal >= t.warn) return "warn";
+  if (isNaN(numVal) || !dbThresholds) return "normal";
+
+  const map = THRESHOLD_MAP[key];
+  if (!map) return "normal";
+
+  const margin = DANGER_MARGINS[key] ?? 0;
+  const max = map.max ? Number(dbThresholds[map.max]) : null;
+  const min = map.min ? Number(dbThresholds[map.min]) : null;
+
+  if (max !== null && !isNaN(max) && numVal > max) {
+    return numVal > max + margin ? "danger" : "warn";
+  }
+  if (min !== null && !isNaN(min) && numVal < min) {
+    return numVal < min - margin ? "danger" : "warn";
+  }
   return "normal";
+}
+
+// ── Formate les seuils pour l'affichage dans OverviewTab ─────────────────────
+// Retourne : { temperature: { warn: "max 12", danger: "max 15" }, ... }
+export function buildThresholdsForDisplay(dbThresholds) {
+  if (!dbThresholds) return {};
+  const result = {};
+  for (const key of Object.keys(THRESHOLD_MAP)) {
+    const map = THRESHOLD_MAP[key];
+    const margin = DANGER_MARGINS[key] ?? 0;
+    if (map.max && dbThresholds[map.max] != null) {
+      const maxVal = Number(dbThresholds[map.max]);
+      result[key] = { warn: `max ${maxVal}`, danger: `max ${maxVal + margin}` };
+    } else if (map.min && dbThresholds[map.min] != null) {
+      const minVal = Number(dbThresholds[map.min]);
+      result[key] = { warn: `min ${minVal}`, danger: `min ${minVal - margin}` };
+    }
+  }
+  return result;
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -76,20 +132,16 @@ export default function usePoultryState({ poultryId, poultryName }) {
   const pulseAnimRef = useRef(new Animated.Value(1));
   const pulseAnim = pulseAnimRef.current;
   const isMountedRef = useRef(true);
+  // Ref pour avoir la dernière valeur de thresholds dans les callbacks MQTT (évite stale closure)
+  const thresholdsRef = useRef(null);
 
-  // ✅ CLE DU FIX : macAddress séparée du poultryId
-  // - poultryId  → utilisé UNIQUEMENT pour les appels API REST
-  // - macAddress → utilisé UNIQUEMENT pour construire les topics MQTT
-  // L'ESP32 publie sur poulailler/{MAC}/... pas poulailler/{mongoId}/...
   const [macAddress, setMacAddress] = useState(null);
-
-  // ── UI state ──────────────────────────────────────────────────────────────
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
-  const [thresholds, setThresholds] = useState(null);
+  const [thresholds, setThresholds] = useState(null); // valeur brute BD
   const [sensors, setSensors] = useState(SENSOR_CONFIG);
 
   const [poultryInfo, setPoultryInfo] = useState({
@@ -103,13 +155,12 @@ export default function usePoultryState({ poultryId, poultryName }) {
     lamp: false,
     fanAuto: true,
     lampAuto: true,
-    door: false, // true = OPEN ou OPENING
-    doorState: "UNKNOWN", // état riche : "OPEN","CLOSED","OPENING","CLOSING","BLOCKED"
+    door: false,
+    doorState: "UNKNOWN",
     doorMoving: false,
   });
 
   const [pumpData, setPumpData] = useState({ pumpAuto: false, pumpOn: false });
-
   const [doorMode, setDoorMode] = useState("horaire");
   const [doorSchedule, setDoorSchedule] = useState({
     openHour: 7,
@@ -146,12 +197,28 @@ export default function usePoultryState({ poultryId, poultryName }) {
     return () => anim.stop();
   }, []);
 
+  // ── FIX : quand thresholds change → mettre à jour le ref ET recalculer tous les capteurs
+  useEffect(() => {
+    thresholdsRef.current = thresholds;
+    if (!thresholds) return;
+    setSensors((prev) =>
+      prev.map((sensor) => {
+        if (sensor.value === "--") return sensor;
+        return {
+          ...sensor,
+          status: calculateSensorStatus(sensor.key, sensor.value, thresholds),
+        };
+      }),
+    );
+  }, [thresholds]);
+
   // ── API fetchers ──────────────────────────────────────────────────────────
 
   const fetchThresholds = useCallback(async () => {
     if (!poultryId) return;
     try {
       const res = await getThresholds(poultryId);
+      // res.data = { temperatureMin: 11, temperatureMax: 12, humidityMin: 30, ... }
       if (res?.success && isMountedRef.current) setThresholds(res.data);
     } catch (e) {
       console.warn("[API] seuils:", e?.message);
@@ -170,7 +237,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     }
   }, [poultryId]);
 
-  // ✅ FIX PRINCIPAL — fetchPoultryInfo récupère aussi la macAddress du device associé
   const fetchPoultryInfo = useCallback(async () => {
     if (!poultryId) return;
     try {
@@ -185,9 +251,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     } catch (e) {
       console.warn("[API] getPoultryById:", e?.message);
     }
-
-    // ✅ Récupère le device lié pour obtenir la macAddress
-    // Exemple de réponse attendue : { success: true, data: { macAddress: "142B2FC7D704", ... } }
     try {
       const deviceRes = await getDeviceByPoulailler(poultryId);
       if (
@@ -195,23 +258,17 @@ export default function usePoultryState({ poultryId, poultryName }) {
         deviceRes.data?.macAddress &&
         isMountedRef.current
       ) {
-        const mac = deviceRes.data.macAddress; // ex: "142B2FC7D704"
-        console.log("[DEVICE] macAddress récupérée:", mac);
-        setMacAddress(mac);
-      } else {
-        console.warn("[DEVICE] Aucun device associé ou macAddress manquante");
+        setMacAddress(deviceRes.data.macAddress);
       }
     } catch (e) {
       console.warn("[API] getDeviceByPoulailler:", e?.message);
     }
-
     await fetchAlerts();
   }, [poultryId, poultryName, fetchAlerts]);
 
-  // ── MQTT — se connecte UNIQUEMENT quand macAddress est disponible ─────────
+  // ── MQTT ──────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!poultryId || !macAddress) return; // ✅ attend la MAC avant de connecter
-
+    if (!poultryId || !macAddress) return;
     let client;
     try {
       client = mqtt.connect(process.env.EXPO_PUBLIC_MQTT_BROKER, {
@@ -233,12 +290,8 @@ export default function usePoultryState({ poultryId, poultryName }) {
     client.on("connect", () => {
       if (!isMountedRef.current) return;
       setIsConnected(true);
-      // ✅ Topics construits avec la macAddress — correspondent exactement à l'ESP32
       client.subscribe(`poulailler/${macAddress}/measures`);
       client.subscribe(`poulailler/${macAddress}/status`);
-      console.log(
-        `[MQTT] Souscrit à poulailler/${macAddress}/measures & /status`,
-      );
     });
 
     client.on("message", (topic, message) => {
@@ -246,25 +299,27 @@ export default function usePoultryState({ poultryId, poultryName }) {
       try {
         const data = JSON.parse(message.toString());
 
-        // ── Mesures capteurs ────────────────────────────────────────────────
         if (topic.endsWith("/measures")) {
           setSensors((prev) =>
             prev.map((sensor) => {
               const raw = data[sensor.key];
               if (raw === undefined || raw === null) return sensor;
               const numVal = Number(raw);
+              if (isNaN(numVal)) return sensor;
               return {
                 ...sensor,
-                value: isNaN(numVal) ? "--" : numVal.toFixed(1),
-                status: calculateSensorStatus(sensor.key, numVal, thresholds),
+                value: numVal.toFixed(1),
+                // thresholdsRef.current = toujours la valeur à jour, pas de stale closure
+                status: calculateSensorStatus(
+                  sensor.key,
+                  numVal,
+                  thresholdsRef.current,
+                ),
               };
             }),
           );
         }
 
-        // ── État actionneurs ────────────────────────────────────────────────
-        // L'ESP32 publie : fanOn, lampOn, pumpOn, doorOpen, doorState,
-        //                  fanAuto, lampAuto, pumpAuto, doorAuto
         if (topic.endsWith("/status")) {
           setActuators((prev) => ({
             ...prev,
@@ -277,15 +332,12 @@ export default function usePoultryState({ poultryId, poultryName }) {
             doorMoving:
               data.doorState === "OPENING" || data.doorState === "CLOSING",
           }));
-
           setPumpData({
             pumpOn: data.pumpOn ?? false,
             pumpAuto: data.pumpAuto ?? false,
           });
-
-          if (data.doorAuto !== undefined) {
+          if (data.doorAuto !== undefined)
             setDoorMode(data.doorAuto ? "horaire" : "manuel");
-          }
         }
       } catch (e) {
         console.error("[MQTT] parse error:", e?.message);
@@ -299,10 +351,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
     client.on("offline", () => {
       if (isMountedRef.current) setIsConnected(false);
     });
-    client.on("error", (e) => {
-      console.error("[MQTT] erreur:", e?.message);
-      if (isMountedRef.current) setIsConnected(false);
-    });
+    client.on("error", (e) => console.error("[MQTT] erreur:", e?.message));
 
     return () => {
       if (client) {
@@ -311,7 +360,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
       }
       mqttClientRef.current = null;
     };
-  }, [macAddress]); // ✅ se (re)connecte quand la MAC change
+  }, [macAddress]);
 
   // ── Chargement initial ────────────────────────────────────────────────────
   useEffect(() => {
@@ -320,30 +369,26 @@ export default function usePoultryState({ poultryId, poultryName }) {
       return;
     }
     (async () => {
-      await fetchThresholds();
-      await fetchPoultryInfo(); // ← récupère aussi la macAddress
+      await fetchThresholds(); // ← seuils chargés EN PREMIER
+      await fetchPoultryInfo(); // ← info + macAddress → déclenche MQTT
       if (isMountedRef.current) setLoading(false);
     })();
   }, [poultryId]);
 
   // ── Publish ───────────────────────────────────────────────────────────────
-  // ✅ Utilise macAddress pour les topics — pas poultryId
   const publishCommand = useCallback(
     (command, value) => {
       const client = mqttClientRef.current;
       if (!client?.connected) {
-        console.warn("[MQTT] publishCommand ignoré — non connecté");
+        console.warn("[MQTT] non connecté");
         return;
       }
       if (!macAddress) {
-        console.warn("[MQTT] publishCommand ignoré — macAddress inconnue");
+        console.warn("[MQTT] macAddress inconnue");
         return;
       }
-
       const base = `poulailler/${macAddress}`;
-
       if (command === "fan" || command === "fanAuto") {
-        // ESP32 attend : { on: bool, mode: "auto"|"manual" }
         const isAuto = command === "fanAuto" ? value : false;
         client.publish(
           `${base}/cmd/fan`,
@@ -374,11 +419,8 @@ export default function usePoultryState({ poultryId, poultryName }) {
           { qos: 1 },
         );
       } else if (command === "door") {
-        // ESP32 attend : { action: "open"|"close"|"stop" }
-        let action;
-        if (value === "stop") action = "stop";
-        else if (value === true) action = "open";
-        else action = "close";
+        const action =
+          value === "stop" ? "stop" : value === true ? "open" : "close";
         client.publish(`${base}/cmd/door`, JSON.stringify({ action }), {
           qos: 1,
         });
@@ -389,7 +431,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     [macAddress],
   );
 
-  // ── Publish planning porte ────────────────────────────────────────────────
   const publishDoorSchedule = useCallback(
     (sched, active) => {
       publishCommand("config", {
@@ -405,7 +446,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     [publishCommand],
   );
 
-  // ── Publish heure courante → ESP32 ───────────────────────────────────────
   const publishCurrentTime = useCallback(() => {
     const now = new Date();
     publishCommand("config", {
@@ -414,19 +454,16 @@ export default function usePoultryState({ poultryId, poultryName }) {
   }, [publishCommand]);
 
   // ── Actuator handlers ─────────────────────────────────────────────────────
-
   const toggleFanAuto = () => {
     const v = !actuators.fanAuto;
     publishCommand("fanAuto", v);
     setActuators((p) => ({ ...p, fanAuto: v }));
   };
-
   const toggleLampAuto = () => {
     const v = !actuators.lampAuto;
     publishCommand("lampAuto", v);
     setActuators((p) => ({ ...p, lampAuto: v }));
   };
-
   const setFan = async (v) => {
     publishCommand("fan", v);
     setActuators((p) => ({ ...p, fan: v }));
@@ -437,7 +474,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
       console.warn("[setFan]", e?.message);
     }
   };
-
   const setLamp = async (v) => {
     publishCommand("lamp", v);
     setActuators((p) => ({ ...p, lamp: v }));
@@ -448,7 +484,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
       console.warn("[setLamp]", e?.message);
     }
   };
-
   const setPump = async (v) => {
     publishCommand("pump", v);
     setPumpData((p) => ({ ...p, pumpOn: v }));
@@ -459,13 +494,11 @@ export default function usePoultryState({ poultryId, poultryName }) {
       console.warn("[setPump]", e?.message);
     }
   };
-
   const togglePumpAuto = () => {
     const v = !pumpData.pumpAuto;
     publishCommand("pumpAuto", v);
     setPumpData((p) => ({ ...p, pumpAuto: v }));
   };
-
   const toggleDoor = async (v) => {
     if (v === actuators.door && !actuators.doorMoving) return;
     publishCommand("door", v);
@@ -477,12 +510,10 @@ export default function usePoultryState({ poultryId, poultryName }) {
       console.warn("[toggleDoor]", e?.message);
     }
   };
-
   const stopDoor = useCallback(async () => {
     publishCommand("door", "stop");
     setActuators((p) => ({ ...p, doorMoving: false }));
   }, [publishCommand]);
-
   const updateActuator = useCallback(
     async (actuator, mode, action) => {
       if (actuator !== "ventilation") return;
@@ -506,7 +537,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     [fetchAlerts, poultryId, publishCommand],
   );
 
-  // ── Mark all read ─────────────────────────────────────────────────────────
   const markAllRead = useCallback(async () => {
     setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
     setAlertCount(0);
@@ -519,7 +549,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     }
   }, [poultryId, fetchAlerts]);
 
-  // ── Refresh ───────────────────────────────────────────────────────────────
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([fetchPoultryInfo(), fetchThresholds(), fetchAlerts()]);
@@ -533,12 +562,13 @@ export default function usePoultryState({ poultryId, poultryName }) {
     isConnected,
     alertCount,
     alerts,
-    thresholds,
+    // thresholds formatés { temperature: { warn: "max 12", danger: "max 15" }, ... }
+    thresholds: buildThresholdsForDisplay(thresholds),
     sensors,
     poultryInfo,
     actuators,
     pumpData,
-    macAddress, // ✅ exposée si besoin d'affichage debug
+    macAddress,
     doorMode,
     setDoorMode,
     doorSchedule,
@@ -557,5 +587,11 @@ export default function usePoultryState({ poultryId, poultryName }) {
     publishCurrentTime,
     markAllRead,
     onRefresh,
+    feeder: undefined,
+    setFeeder: () => {},
+    distributeFood: () => {},
+    addSchedule: () => {},
+    removeSchedule: () => {},
+    updateSchedule: () => {},
   };
 }

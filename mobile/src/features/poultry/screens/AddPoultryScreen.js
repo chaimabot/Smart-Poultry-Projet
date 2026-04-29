@@ -22,6 +22,13 @@ import * as ImagePicker from "expo-image-picker";
 import { createPoultry, updatePoultry } from "../../../services/poultry";
 import Toast from "../../../components/Toast";
 
+// Génère un nom automatique style "Poulailler-A3F2"
+function generateAutoName() {
+  return (
+    "Poulailler-" + Math.random().toString(36).substring(2, 6).toUpperCase()
+  );
+}
+
 export default function AddPoultryScreen({ navigation, route }) {
   const { colors, darkMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -29,11 +36,14 @@ export default function AddPoultryScreen({ navigation, route }) {
   const isEditing = !!poultryToEdit;
 
   const [name, setName] = useState(poultryToEdit?.name || "");
-  const [breedingType, setBreedingType] = useState(poultryToEdit?.type || null);
   const [animalCount, setAnimalCount] = useState(
     poultryToEdit?.count ? String(poultryToEdit.count) : "",
   );
-  const [location, setLocation] = useState(poultryToEdit?.location || "");
+  const [surface, setSurface] = useState(
+    poultryToEdit?.surface ? String(poultryToEdit.surface) : "",
+  );
+  const [remarque, setRemarque] = useState(poultryToEdit?.remarque || "");
+  const [address, setAddress] = useState(poultryToEdit?.address || "");
   const [photo, setPhoto] = useState(poultryToEdit?.image || null);
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
@@ -45,13 +55,24 @@ export default function AddPoultryScreen({ navigation, route }) {
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
-  const breedingTypes = [
-    { id: "pondeuses", label: "Pondeuses", icon: "egg" },
-    { id: "chair", label: "Chair", icon: "food-drumstick" },
-    { id: "dindes", label: "Dindes", icon: "turkey" },
-    { id: "canards", label: "Canards", icon: "duck" },
-    { id: "autre", label: "Autre", icon: "bird" },
-  ];
+  // Densité calculée automatiquement (volailles / m²)
+  const densite = (() => {
+    const count = parseFloat(animalCount);
+    const surf = parseFloat(surface);
+    if (count > 0 && surf > 0) {
+      return (count / surf).toFixed(2);
+    }
+    return null;
+  })();
+
+  // Indicateur de densité
+  const densiteStatus = (() => {
+    if (!densite) return null;
+    const d = parseFloat(densite);
+    if (d <= 6) return { label: "Optimale", color: "#22c55e" };
+    if (d <= 10) return { label: "Acceptable", color: "#f59e0b" };
+    return { label: "Trop dense", color: "#ef4444" };
+  })();
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -61,7 +82,6 @@ export default function AddPoultryScreen({ navigation, route }) {
       quality: 0.5,
       base64: true,
     });
-
     if (!result.canceled) {
       setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
     }
@@ -70,10 +90,13 @@ export default function AddPoultryScreen({ navigation, route }) {
   const takePhoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== "granted") {
-      setToast({ visible: true, message: "Nous avons besoin de la permission de caméra.", type: "error" });
+      setToast({
+        visible: true,
+        message: "Nous avons besoin de la permission de caméra.",
+        type: "error",
+      });
       return;
     }
-
     const result = await ImagePicker.launchCameraAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
@@ -81,7 +104,6 @@ export default function AddPoultryScreen({ navigation, route }) {
       quality: 0.5,
       base64: true,
     });
-
     if (!result.canceled) {
       setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
     }
@@ -101,9 +123,18 @@ export default function AddPoultryScreen({ navigation, route }) {
 
   const validate = () => {
     let newErrors = {};
-    if (!name.trim()) newErrors.name = "Le nom est requis";
-    if (!breedingType) newErrors.breedingType = "Le type est requis";
-    if (!animalCount.trim()) newErrors.animalCount = "Requis";
+    if (
+      !animalCount.trim() ||
+      isNaN(parseInt(animalCount)) ||
+      parseInt(animalCount) < 1
+    )
+      newErrors.animalCount = "Requis (nombre valide)";
+    if (
+      !surface.trim() ||
+      isNaN(parseFloat(surface)) ||
+      parseFloat(surface) <= 0
+    )
+      newErrors.surface = "La surface est requise (ex: 25)";
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -113,26 +144,39 @@ export default function AddPoultryScreen({ navigation, route }) {
     if (validate()) {
       setLoading(true);
       try {
+        const finalName = name.trim() || generateAutoName();
         const poultryData = {
-          name,
-          type: breedingType,
+          name: finalName,
           animalCount: parseInt(animalCount),
-          description: location,
-          location: location,
+          surface: parseFloat(surface),
+          remarque: remarque,
+          address: address,
           photoUrl: photo,
         };
 
         if (isEditing) {
           await updatePoultry(poultryToEdit.id, poultryData);
-          setToast({ visible: true, message: "Poulailler modifié !", type: "success" });
+          setToast({
+            visible: true,
+            message: "Poulailler modifié !",
+            type: "success",
+          });
           setTimeout(() => navigation.goBack(), 1500);
         } else {
           await createPoultry(poultryData);
-          setToast({ visible: true, message: "Poulailler ajouté !", type: "success" });
+          setToast({
+            visible: true,
+            message: "Poulailler ajouté !",
+            type: "success",
+          });
           setTimeout(() => navigation.goBack(), 1500);
         }
       } catch (error) {
-        setToast({ visible: true, message: error.error || "Une erreur est survenue", type: "error" });
+        setToast({
+          visible: true,
+          message: error.error || "Une erreur est survenue",
+          type: "error",
+        });
       } finally {
         setLoading(false);
       }
@@ -184,7 +228,7 @@ export default function AddPoultryScreen({ navigation, route }) {
         <View style={{ width: 40 }} />
       </View>
 
-      {/* Action Buttons - Moved to Top */}
+      {/* Action Bar */}
       <View
         style={[
           styles.actionBar,
@@ -199,6 +243,7 @@ export default function AddPoultryScreen({ navigation, route }) {
         <TouchableOpacity
           style={[styles.submitButton, { backgroundColor: colors.primary }]}
           onPress={handleSubmit}
+          disabled={loading}
         >
           <MaterialIcons name="check" size={20} color="#ffffff" />
           <Text style={styles.submitText}>
@@ -214,7 +259,6 @@ export default function AddPoultryScreen({ navigation, route }) {
       >
         <ScrollView
           keyboardShouldPersistTaps="handled"
-          scrollEnabled={true}
           contentContainerStyle={[
             styles.scrollContent,
             { paddingBottom: dynamicPaddingBottom },
@@ -257,38 +301,38 @@ export default function AddPoultryScreen({ navigation, route }) {
                 </View>
               )}
             </View>
-            <View style={styles.photoActions}>
-              <TouchableOpacity
-                style={[styles.photoBtn, { borderColor: colors.primary }]}
-                onPress={handlePhotoPick}
-              >
-                <Text style={[styles.photoBtnText, { color: colors.primary }]}>
-                  {photo ? "Changer la photo" : "Ajouter une photo"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              style={[styles.photoBtn, { borderColor: colors.primary }]}
+              onPress={handlePhotoPick}
+            >
+              <Text style={[styles.photoBtnText, { color: colors.primary }]}>
+                {photo ? "Changer la photo" : "Ajouter une photo"}
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {/* Form Fields */}
           <View style={styles.formContainer}>
-            {/* Name */}
+            {/* Nom (optionnel) */}
             <View style={styles.inputGroup}>
-              <Text
-                style={[
-                  styles.label,
-                  {
-                    color: darkMode
-                      ? colors.textMainDark
-                      : colors.textMainLight,
-                  },
-                ]}
-              >
-                Nom du poulailler <Text style={styles.required}>*</Text>
-              </Text>
+              <View style={styles.labelRow}>
+                <Text
+                  style={[
+                    styles.label,
+                    {
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                >
+                  Nom du poulailler
+                </Text>
+                <Text style={styles.optionalBadge}>Optionnel</Text>
+              </View>
               <TextInput
                 style={[
                   styles.input,
-                  errors.name && styles.inputError,
                   {
                     backgroundColor: darkMode
                       ? colors.cardDark
@@ -301,88 +345,26 @@ export default function AddPoultryScreen({ navigation, route }) {
                       : colors.textMainLight,
                   },
                 ]}
-                placeholder="Ex : Poulailler Nord – A1"
+                placeholder="Généré automatiquement si vide"
                 placeholderTextColor={
                   darkMode ? colors.textSubDark : colors.textSubLight
                 }
                 value={name}
                 onChangeText={setName}
               />
-              {errors.name && (
-                <Text style={styles.errorText}>{errors.name}</Text>
-              )}
-            </View>
-
-            {/* Type */}
-            <View style={styles.inputGroup}>
               <Text
                 style={[
-                  styles.label,
+                  styles.hintText,
                   {
-                    color: darkMode
-                      ? colors.textMainDark
-                      : colors.textMainLight,
+                    color: darkMode ? colors.textSubDark : colors.textSubLight,
                   },
                 ]}
               >
-                Type d'élevage <Text style={styles.required}>*</Text>
+                Ex : Poulailler Nord – A1
               </Text>
-              <View style={styles.typesGrid}>
-                {breedingTypes.map((type) => (
-                  <TouchableOpacity
-                    key={type.id}
-                    style={[
-                      styles.typeCard,
-                      {
-                        backgroundColor: darkMode
-                          ? colors.cardDark
-                          : colors.cardLight,
-                        borderColor: darkMode
-                          ? colors.borderDark
-                          : colors.borderLight,
-                      },
-                      breedingType === type.id && {
-                        borderColor: colors.primary,
-                        backgroundColor: darkMode
-                          ? "rgba(249, 115, 22, 0.1)"
-                          : colors.primaryLight,
-                      },
-                    ]}
-                    onPress={() => setBreedingType(type.id)}
-                  >
-                    <MaterialCommunityIcons
-                      name={type.icon}
-                      size={24}
-                      color={
-                        breedingType === type.id
-                          ? colors.primary
-                          : darkMode
-                            ? colors.textSubDark
-                            : colors.textSubLight
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.typeLabel,
-                        {
-                          color: darkMode
-                            ? colors.textSubDark
-                            : colors.textSubLight,
-                        },
-                        breedingType === type.id && { color: colors.primary },
-                      ]}
-                    >
-                      {type.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              {errors.breedingType && (
-                <Text style={styles.errorText}>{errors.breedingType}</Text>
-              )}
             </View>
 
-            {/* Count */}
+            {/* NB Volailles */}
             <View style={styles.inputGroup}>
               <Text
                 style={[
@@ -394,7 +376,7 @@ export default function AddPoultryScreen({ navigation, route }) {
                   },
                 ]}
               >
-                Nombre d'animaux <Text style={styles.required}>*</Text>
+                Nombre de volailles <Text style={styles.required}>*</Text>
               </Text>
               <View
                 style={[
@@ -403,9 +385,11 @@ export default function AddPoultryScreen({ navigation, route }) {
                     backgroundColor: darkMode
                       ? colors.cardDark
                       : colors.cardLight,
-                    borderColor: darkMode
-                      ? colors.borderDark
-                      : colors.borderLight,
+                    borderColor: errors.animalCount
+                      ? "#ef4444"
+                      : darkMode
+                        ? colors.borderDark
+                        : colors.borderLight,
                   },
                 ]}
               >
@@ -476,7 +460,7 @@ export default function AddPoultryScreen({ navigation, route }) {
               )}
             </View>
 
-            {/* Location */}
+            {/* Surface */}
             <View style={styles.inputGroup}>
               <Text
                 style={[
@@ -488,8 +472,165 @@ export default function AddPoultryScreen({ navigation, route }) {
                   },
                 ]}
               >
-                Localisation ou description
+                Surface <Text style={styles.required}>*</Text>
               </Text>
+              <View style={styles.inputWithUnit}>
+                <TextInput
+                  style={[
+                    styles.input,
+                    styles.inputFlex,
+                    errors.surface && styles.inputError,
+                    {
+                      backgroundColor: darkMode
+                        ? colors.cardDark
+                        : colors.cardLight,
+                      borderColor: errors.surface
+                        ? "#ef4444"
+                        : darkMode
+                          ? colors.borderDark
+                          : colors.borderLight,
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                  placeholder="Ex : 50"
+                  placeholderTextColor={
+                    darkMode ? colors.textSubDark : colors.textSubLight
+                  }
+                  keyboardType="decimal-pad"
+                  value={surface}
+                  onChangeText={setSurface}
+                />
+                <View
+                  style={[
+                    styles.unitTag,
+                    {
+                      backgroundColor: darkMode
+                        ? colors.slate800
+                        : colors.slate100,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.unitText,
+                      {
+                        color: darkMode
+                          ? colors.textMainDark
+                          : colors.textMainLight,
+                      },
+                    ]}
+                  >
+                    m²
+                  </Text>
+                </View>
+              </View>
+              {errors.surface && (
+                <Text style={styles.errorText}>{errors.surface}</Text>
+              )}
+            </View>
+
+            {/* Densité calculée automatiquement */}
+            <View
+              style={[
+                styles.densiteCard,
+                {
+                  backgroundColor: darkMode
+                    ? colors.cardDark
+                    : colors.cardLight,
+                  borderColor: densiteStatus
+                    ? densiteStatus.color
+                    : darkMode
+                      ? colors.borderDark
+                      : colors.borderLight,
+                },
+              ]}
+            >
+              <View style={styles.densiteHeader}>
+                <MaterialCommunityIcons
+                  name="calculator-variant"
+                  size={18}
+                  color={
+                    densiteStatus
+                      ? densiteStatus.color
+                      : darkMode
+                        ? colors.textSubDark
+                        : colors.textSubLight
+                  }
+                />
+                <Text
+                  style={[
+                    styles.densiteTitle,
+                    {
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                >
+                  Densité (calculée auto)
+                </Text>
+              </View>
+              {densite ? (
+                <View style={styles.densiteResult}>
+                  <Text
+                    style={[
+                      styles.densiteValue,
+                      { color: densiteStatus.color },
+                    ]}
+                  >
+                    {densite} vol/m²
+                  </Text>
+                  <View
+                    style={[
+                      styles.densiteBadge,
+                      { backgroundColor: densiteStatus.color + "22" },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.densiteBadgeText,
+                        { color: densiteStatus.color },
+                      ]}
+                    >
+                      {densiteStatus.label}
+                    </Text>
+                  </View>
+                </View>
+              ) : (
+                <Text
+                  style={[
+                    styles.densitePlaceholder,
+                    {
+                      color: darkMode
+                        ? colors.textSubDark
+                        : colors.textSubLight,
+                    },
+                  ]}
+                >
+                  Renseignez le nombre de volailles et la surface
+                </Text>
+              )}
+            </View>
+
+            {/* Remarque (optionnel) */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text
+                  style={[
+                    styles.label,
+                    {
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                >
+                  Remarque
+                </Text>
+                <Text style={styles.optionalBadge}>Optionnel</Text>
+              </View>
               <TextInput
                 style={[
                   styles.input,
@@ -508,15 +649,76 @@ export default function AddPoultryScreen({ navigation, route }) {
                 ]}
                 multiline
                 numberOfLines={3}
-                placeholder="Ex : Menzel Bourguiba, près de la route principale…"
+                placeholder="Notes, observations, conditions particulières…"
                 placeholderTextColor={
                   darkMode ? colors.textSubDark : colors.textSubLight
                 }
-                value={location}
-                onChangeText={setLocation}
+                value={remarque}
+                onChangeText={setRemarque}
                 maxLength={200}
               />
-              <Text style={styles.charCount}>{location.length}/200</Text>
+              <Text style={styles.charCount}>{remarque.length}/200</Text>
+            </View>
+
+            {/* Adresse du poulailler (optionnel) */}
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text
+                  style={[
+                    styles.label,
+                    {
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                >
+                  Adresse du poulailler
+                </Text>
+                <Text style={styles.optionalBadge}>Optionnel</Text>
+              </View>
+              <View style={styles.addressInputWrapper}>
+                <MaterialIcons
+                  name="location-on"
+                  size={18}
+                  color={colors.primary}
+                  style={styles.addressIcon}
+                />
+                <TextInput
+                  style={[
+                    styles.input,
+                    styles.inputFlex,
+                    styles.inputWithIcon,
+                    {
+                      backgroundColor: darkMode
+                        ? colors.cardDark
+                        : colors.cardLight,
+                      borderColor: darkMode
+                        ? colors.borderDark
+                        : colors.borderLight,
+                      color: darkMode
+                        ? colors.textMainDark
+                        : colors.textMainLight,
+                    },
+                  ]}
+                  placeholder="Si différente de l'adresse principale"
+                  placeholderTextColor={
+                    darkMode ? colors.textSubDark : colors.textSubLight
+                  }
+                  value={address}
+                  onChangeText={setAddress}
+                />
+              </View>
+              <Text
+                style={[
+                  styles.hintText,
+                  {
+                    color: darkMode ? colors.textSubDark : colors.textSubLight,
+                  },
+                ]}
+              >
+                Ex : Route de Bizerte, Km 12, Menzel Bourguiba
+              </Text>
             </View>
           </View>
         </ScrollView>
@@ -533,9 +735,7 @@ export default function AddPoultryScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -546,23 +746,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#e2e8f0",
   },
-  backButton: {
-    padding: 8,
-    marginLeft: -8,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: "800",
-    color: "#0f172a",
-  },
-  scrollContent: {
-    padding: 24,
-    paddingBottom: 20,
-  },
-  photoSection: {
+  backButton: { padding: 8, marginLeft: -8 },
+  headerTitle: { fontSize: 20, fontWeight: "800", color: "#0f172a" },
+  actionBar: {
+    flexDirection: "row",
+    padding: 16,
+    paddingHorizontal: 20,
+    backgroundColor: "#ffffff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
     alignItems: "center",
-    marginBottom: 32,
   },
+  submitButton: {
+    flex: 1,
+    backgroundColor: "#f97316",
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    shadowColor: "#f97316",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  submitText: { fontWeight: "700", color: "#ffffff", fontSize: 16 },
+  scrollContent: { padding: 24, paddingBottom: 20 },
+
+  // Photo
+  photoSection: { alignItems: "center", marginBottom: 32 },
   photoContainer: {
     width: 220,
     height: 220,
@@ -576,18 +790,9 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     overflow: "hidden",
   },
-  photoPlaceholder: {
-    alignItems: "center",
-    gap: 8,
-  },
-  photo: {
-    width: "100%",
-    height: "100%",
-  },
-  photoText: {
-    color: "#94a3b8",
-    fontWeight: "600",
-  },
+  photoPlaceholder: { alignItems: "center", gap: 8 },
+  photo: { width: "100%", height: "100%" },
+  photoText: { color: "#94a3b8", fontWeight: "600" },
   photoBtn: {
     borderWidth: 1,
     borderColor: "#f97316",
@@ -595,25 +800,29 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 20,
   },
-  photoBtnText: {
-    color: "#f97316",
-    fontWeight: "700",
-  },
-  formContainer: {
-    gap: 20,
-  },
-  inputGroup: {
-    marginBottom: 4,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#334155",
+  photoBtnText: { color: "#f97316", fontWeight: "700" },
+
+  // Form
+  formContainer: { gap: 20 },
+  inputGroup: { marginBottom: 4 },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginBottom: 8,
   },
-  required: {
-    color: "#ef4444",
+  label: { fontSize: 14, fontWeight: "700", color: "#334155" },
+  required: { color: "#ef4444" },
+  optionalBadge: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: "#94a3b8",
+    backgroundColor: "#f1f5f9",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
   },
+  hintText: { fontSize: 12, marginTop: 4, color: "#94a3b8" },
   input: {
     backgroundColor: "#ffffff",
     borderWidth: 1,
@@ -623,45 +832,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: "#0f172a",
   },
-  inputError: {
-    borderColor: "#ef4444",
-  },
-  errorText: {
-    color: "#ef4444",
-    fontSize: 12,
-    marginTop: 4,
-  },
-  typesGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  typeCard: {
-    width: "48%",
-    padding: 16,
+  inputFlex: { flex: 1 },
+  inputError: { borderColor: "#ef4444" },
+  errorText: { color: "#ef4444", fontSize: 12, marginTop: 4 },
+  inputWithUnit: { flexDirection: "row", gap: 10, alignItems: "center" },
+  unitTag: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    backgroundColor: "#ffffff",
+    backgroundColor: "#f1f5f9",
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
   },
-  typeCardSelected: {
-    borderColor: "#f97316",
-    backgroundColor: "#fff7ed",
-  },
-  typeLabel: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#64748b",
-  },
-  typeLabelSelected: {
-    color: "#f97316",
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-  },
+  unitText: { fontWeight: "700", fontSize: 15, color: "#475569" },
+
+  // Number input
   numberInputContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -687,78 +872,58 @@ const styles = StyleSheet.create({
     color: "#0f172a",
     paddingVertical: 8,
   },
-  ageContainer: {
+
+  // Densité
+  densiteCard: {
+    borderWidth: 1.5,
+    borderRadius: 14,
+    padding: 16,
+    gap: 10,
+  },
+  densiteHeader: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 8,
   },
-  unitPicker: {
-    paddingHorizontal: 12,
-    paddingVertical: 14,
-    backgroundColor: "#f1f5f9",
-    borderRadius: 12,
+  densiteTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#334155",
   },
-  unitText: {
-    fontWeight: "600",
-    color: "#475569",
+  densiteResult: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
-  textArea: {
-    height: 100,
-    textAlignVertical: "top",
+  densiteValue: {
+    fontSize: 22,
+    fontWeight: "800",
   },
+  densiteBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  densiteBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  densitePlaceholder: {
+    fontSize: 13,
+    color: "#94a3b8",
+  },
+
+  // Textarea
+  textArea: { height: 100, textAlignVertical: "top" },
   charCount: {
     textAlign: "right",
     fontSize: 11,
     color: "#94a3b8",
     marginTop: 4,
   },
-  actionBar: {
-    flexDirection: "row",
-    padding: 16,
-    paddingHorizontal: 20,
-    backgroundColor: "#ffffff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#e2e8f0",
-    alignItems: "center",
-    gap: 12,
-  },
-  footer: {
-    flexDirection: "row",
-    padding: 20,
-    backgroundColor: "#ffffff",
-    borderTopWidth: 1,
-    borderTopColor: "#e2e8f0",
-    gap: 12,
-  },
-  cancelButton: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#94a3b8",
-    alignItems: "center",
-  },
-  cancelText: {
-    fontWeight: "700",
-    color: "#64748b",
-  },
-  submitButton: {
-    flex: 1,
-    backgroundColor: "#f97316",
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    gap: 8,
-    shadowColor: "#f97316",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  submitText: {
-    fontWeight: "700",
-    color: "#ffffff",
-    fontSize: 16,
-  },
+
+  // Address
+  addressInputWrapper: { flexDirection: "row", alignItems: "center" },
+  addressIcon: { position: "absolute", left: 14, zIndex: 1 },
+  inputWithIcon: { paddingLeft: 40 },
 });

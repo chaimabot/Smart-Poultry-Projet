@@ -5,35 +5,133 @@ const Alert = require("../models/Alert");
 // ============================================================================
 // HELPER — format d'une entrée de la liste
 // ============================================================================
+
+// Détermine le statut de connexion à partir des données temps réel
+const computeConnectionStatus = (p) => {
+  if (p.status === "en_attente_module") return "en_attente_module";
+  if (p.isOnline && p.lastCommunicationAt) {
+    const hoursSince = (Date.now() - new Date(p.lastCommunicationAt)) / 36e5;
+    if (hoursSince > 4) return "hors_ligne";
+    return "connecte";
+  }
+  return "hors_ligne";
+};
+
+// Détermine la sévérité d'alerte
+const computeAlertSeverity = (alertesCount, isCritical) => {
+  if (alertesCount === 0) return "ok";
+  if (isCritical) return "critique";
+  return "alerte";
+};
+
+// Traduit les actionneurs du modèle vers le format frontend
+const mapActuators = (actuatorStates) => {
+  if (!actuatorStates) return [];
+  const map = [];
+  if (actuatorStates.door) {
+    const doorState =
+      actuatorStates.door.status === "open" ? "Ouverte" : "Fermée";
+    const doorMode = actuatorStates.door.mode === "auto" ? "Auto" : "Manuel";
+    map.push({ name: "Porte", state: doorState, mode: doorMode, icon: "🚪" });
+  }
+  if (actuatorStates.ventilation) {
+    const ventState =
+      actuatorStates.ventilation.status === "on" ? "Allumée" : "Éteinte";
+    const ventMode =
+      actuatorStates.ventilation.mode === "auto" ? "Auto" : "Manuel";
+    map.push({
+      name: "Ventilation",
+      state: ventState,
+      mode: ventMode,
+      icon: "💨",
+    });
+  }
+  // Souvent la lampe et la pompe ne sont pas dans le modèle — fallback si absent
+  if (!actuatorStates.lampe && !map.find((a) => a.name === "Lampe")) {
+    map.push({ name: "Lampe", state: "Éteinte", mode: "Auto", icon: "💡" });
+  }
+  if (!actuatorStates.pompe && !map.find((a) => a.name === "Pompe")) {
+    map.push({ name: "Pompe", state: "Éteinte", mode: "Manuel", icon: "💧" });
+  }
+  return map;
+};
+
+// Map des seuils du modèle vers le frontend
+const mapThresholds = (seuils) => {
+  if (!seuils) return null;
+  return {
+    tempMin: seuils.temperatureMin,
+    tempMax: seuils.temperatureMax,
+    humMin: seuils.humidityMin,
+    humMax: seuils.humidityMax,
+    co2Max: seuils.co2Max,
+    nh3Max: seuils.nh3Max,
+    dustMax: seuils.dustMax,
+    waterMin: seuils.waterLevelMin,
+  };
+};
+
+// Map des seuils automatiques
+const mapAutoThresholds = (auto) => {
+  if (!auto) return null;
+  return {
+    tempVentilo: auto.ventiloThresholdTemp,
+    co2Ventilo: auto.ventiloThresholdCO2,
+    doorOpen: auto.doorOpenTime,
+    doorClose: auto.doorCloseTime,
+  };
+};
+
 const formatPoulaillerListItem = async (p) => {
   const alertesCount = await Alert.countDocuments({
     poulailler: p._id,
     resolvedAt: null,
   });
+
+  const connectionStatus = computeConnectionStatus(p);
+  const alertSeverity = computeAlertSeverity(alertesCount, p.isCritical);
+
   return {
     id: p._id,
     codeUnique: p.uniqueCode,
     name: p.name,
-    type: p.type ?? null, // FIX #6 — champ manquant dans la réponse liste
-    animalCount: p.animalCount ?? null, // FIX #6
+    type: p.type ?? null,
+    animalCount: p.animalCount ?? null,
+    description: p.description ?? null,
+    location: p.location ?? null,
+    installationDate: p.installationDate?.toISOString?.() ?? null,
+    archived: p.isArchived ?? false,
     owner: p.owner
       ? {
           id: p.owner._id,
           firstName: p.owner.firstName,
           lastName: p.owner.lastName,
-          email: p.owner.email, // FIX — email utile pour le modal
+          email: p.owner.email,
         }
       : null,
     status: p.status,
+    connectionStatus,
     lastMeasure: p.lastMonitoring
       ? {
-          temperature: p.lastMonitoring.temperature,
-          humidity: p.lastMonitoring.humidity,
+          temperature: p.lastMonitoring.temperature ?? null,
+          humidity: p.lastMonitoring.humidity ?? null,
+          co2: p.lastMonitoring.co2 ?? null,
+          nh3: p.lastMonitoring.nh3 ?? null,
+          waterLevel: p.lastMonitoring.waterLevel ?? null,
+          dust: p.lastMonitoring.dust ?? null,
         }
       : null,
+    lastMeasureDate:
+      p.lastMeasureAt?.toISOString?.() ??
+      p.lastMonitoring?.timestamp?.toISOString?.() ??
+      null,
+    lastAlertDate: p.lastAlert?.toISOString?.() ?? null,
     alertesActives: alertesCount,
-    dernierPing: p.lastCommunicationAt,
-    lastMeasureAt: p.lastMeasureAt,
+    alertSeverity,
+    dernierPing: p.lastCommunicationAt?.toISOString?.() ?? null,
+    actuators: mapActuators(p.actuatorStates),
+    thresholds: mapThresholds(p.seuils),
+    autoThresholds: mapAutoThresholds(p.autoThresholds),
   };
 };
 
@@ -130,6 +228,12 @@ exports.getPoulaillerById = async (req, res) => {
       resolvedAt: null,
     });
 
+    const connectionStatus = computeConnectionStatus(poulailler);
+    const alertSeverity = computeAlertSeverity(
+      alertesCount,
+      poulailler.isCritical,
+    );
+
     res.json({
       success: true,
       data: {
@@ -138,14 +242,41 @@ exports.getPoulaillerById = async (req, res) => {
         name: poulailler.name,
         type: poulailler.type,
         animalCount: poulailler.animalCount,
-        owner: poulailler.owner,
+        description: poulailler.description ?? null,
+        location: poulailler.location ?? null,
+        installationDate: poulailler.installationDate?.toISOString?.() ?? null,
+        archived: poulailler.isArchived ?? false,
+        owner: poulailler.owner
+          ? {
+              id: poulailler.owner._id ?? poulailler.owner.id,
+              firstName: poulailler.owner.firstName,
+              lastName: poulailler.owner.lastName,
+              email: poulailler.owner.email,
+            }
+          : null,
         status: poulailler.status,
-        thresholds: poulailler.thresholds, // FIX #5 — était "seuils" (inexistant)
-        autoThresholds: poulailler.autoThresholds,
-        actuatorStates: poulailler.actuatorStates,
-        lastMonitoring: poulailler.lastMonitoring,
-        lastMeasureAt: poulailler.lastMeasureAt,
+        connectionStatus,
+        lastMeasure: poulailler.lastMonitoring
+          ? {
+              temperature: poulailler.lastMonitoring.temperature ?? null,
+              humidity: poulailler.lastMonitoring.humidity ?? null,
+              co2: poulailler.lastMonitoring.co2 ?? null,
+              nh3: poulailler.lastMonitoring.nh3 ?? null,
+              waterLevel: poulailler.lastMonitoring.waterLevel ?? null,
+              dust: poulailler.lastMonitoring.dust ?? null,
+            }
+          : null,
+        lastMeasureDate:
+          poulailler.lastMeasureAt?.toISOString?.() ??
+          poulailler.lastMonitoring?.timestamp?.toISOString?.() ??
+          null,
+        lastAlertDate: poulailler.lastAlert?.toISOString?.() ?? null,
         alertesActives: alertesCount,
+        alertSeverity,
+        dernierPing: poulailler.lastCommunicationAt?.toISOString?.() ?? null,
+        actuators: mapActuators(poulailler.actuatorStates),
+        thresholds: mapThresholds(poulailler.seuils),
+        autoThresholds: mapAutoThresholds(poulailler.autoThresholds),
         isCritical: poulailler.isCritical,
         isOnline: poulailler.isOnline,
         lastCommunicationAt: poulailler.lastCommunicationAt,
