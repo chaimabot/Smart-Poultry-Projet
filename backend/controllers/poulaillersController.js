@@ -177,10 +177,14 @@ exports.createPoulailler = async (req, res) => {
   let dossier = null;
 
   try {
+    // Generate a unique contract number based on timestamp + random
+    const contractNumber = `CTR-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+
     dossier = await Dossier.create({
       eleveur: req.user.id,
       poulailler: poulailler._id,
       status: "EN_ATTENTE",
+      contractNumber, // FIX: Generate unique contractNumber to avoid duplicate key error on null values
       totalAmount: value.totalAmount ?? 0,
       advanceAmount: value.advanceAmount ?? 0,
     });
@@ -283,12 +287,10 @@ exports.updatePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     const { error, value } = updatePoulaillerSchema.validate(
@@ -348,12 +350,10 @@ exports.deletePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     await Poulailler.deleteOne({ _id: req.params.id });
@@ -380,12 +380,10 @@ exports.archivePoulailler = async (req, res) => {
         .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          error: "Action non autorisée sur ce poulailler",
-        });
+      return res.status(403).json({
+        success: false,
+        error: "Action non autorisée sur ce poulailler",
+      });
     }
 
     poulailler.isArchived = true;

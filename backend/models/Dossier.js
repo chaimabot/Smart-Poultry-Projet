@@ -18,6 +18,7 @@ const dossierSchema = new mongoose.Schema(
       type: String,
       unique: true,
       sparse: true,
+      default: null, // Explicitly default to null
     },
     totalAmount: { type: Number, required: true, default: 0 },
     advanceAmount: { type: Number, default: 0 },
