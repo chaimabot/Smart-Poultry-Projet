@@ -150,17 +150,10 @@ exports.createPoulailler = async (req, res) => {
   let poulailler = null;
 
   try {
-    console.log("[CREATE] STEP 1 — getDefaultThresholds...");
     const defaultThresholds = await getDefaultThresholds();
-    console.log(
-      "[CREATE] STEP 2 — thresholds OK:",
-      JSON.stringify(defaultThresholds),
-    );
-
     const uniqueCode = generateUniqueCode();
-    console.log("[CREATE] STEP 3 — uniqueCode:", uniqueCode);
 
-    const doc = {
+    poulailler = await Poulailler.create({
       name: value.name.trim(),
       animalCount: value.animalCount,
       surface: value.surface,
@@ -171,30 +164,14 @@ exports.createPoulailler = async (req, res) => {
       status: "en_attente_module",
       uniqueCode,
       thresholds: { ...defaultThresholds },
-    };
-    console.log("[CREATE] STEP 4 — doc à insérer:", JSON.stringify(doc));
+    });
 
-    poulailler = await Poulailler.create(doc);
-    console.log(
-      "[CREATE] STEP 5 — Poulailler créé:",
-      poulailler._id.toString(),
-    );
+    console.log(`[CREATE] Poulailler créé : ${poulailler._id} (${uniqueCode})`);
   } catch (err) {
-    console.error("[CREATE] CRASH à l'étape Poulailler :");
-    console.error("  message :", err.message);
-    console.error("  name    :", err.name);
-    console.error("  errors  :", JSON.stringify(err.errors ?? null));
-    console.error(
-      "  stack   :",
-      err.stack?.split("\n").slice(0, 5).join(" | "),
-    );
+    console.error("[CREATE] Échec Poulailler.create() :", err.message);
     return res
       .status(500)
-      .json({
-        success: false,
-        error: "Impossible de créer le poulailler.",
-        detail: err.message,
-      });
+      .json({ success: false, error: "Impossible de créer le poulailler." });
   }
 
   let dossier = null;
