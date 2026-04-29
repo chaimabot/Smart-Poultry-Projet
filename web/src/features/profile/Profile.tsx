@@ -34,7 +34,7 @@ export default function Profile() {
   const fetchProfile = async () => {
     try {
       const userData = localStorage.getItem("adminUser");
-      
+
       if (userData) {
         const parsedUser = JSON.parse(userData);
         setUser(parsedUser);
@@ -64,8 +64,8 @@ export default function Profile() {
     setSuccessMessage(null);
 
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
       const updatedUser: User = { ...user, ...formData };
       localStorage.setItem("adminUser", JSON.stringify(updatedUser));
       setUser(updatedUser);
@@ -129,7 +129,9 @@ export default function Profile() {
 
           {successMessage && (
             <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-              <p className="text-green-600 dark:text-green-400">{successMessage}</p>
+              <p className="text-green-600 dark:text-green-400">
+                {successMessage}
+              </p>
             </div>
           )}
 
@@ -140,7 +142,9 @@ export default function Profile() {
               <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm">
                 <div className="p-6 border-b border-slate-200 dark:border-slate-700">
                   <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary">person</span>
+                    <span className="material-symbols-outlined text-primary">
+                      person
+                    </span>
                     Informations Personnelles
                   </h2>
                   <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -240,7 +244,9 @@ export default function Profile() {
                         onClick={() => setIsEditing(true)}
                         className="px-5 py-2.5 bg-primary hover:bg-primary-dark text-white font-medium rounded-lg shadow-md transition-all duration-200 flex items-center gap-2"
                       >
-                        <span className="material-symbols-outlined text-sm">edit</span>
+                        <span className="material-symbols-outlined text-sm">
+                          edit
+                        </span>
                         Modifier le profil
                       </button>
                     ) : (
@@ -259,12 +265,16 @@ export default function Profile() {
                         >
                           {saving ? (
                             <>
-                              <span className="material-symbols-outlined animate-spin text-sm">refresh</span>
+                              <span className="material-symbols-outlined animate-spin text-sm">
+                                refresh
+                              </span>
                               Enregistrement...
                             </>
                           ) : (
                             <>
-                              <span className="material-symbols-outlined text-sm">save</span>
+                              <span className="material-symbols-outlined text-sm">
+                                save
+                              </span>
                               Enregistrer
                             </>
                           )}
@@ -279,7 +289,9 @@ export default function Profile() {
               <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm">
                 <div className="p-6 border-b border-slate-200 dark:border-slate-700">
                   <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary">security</span>
+                    <span className="material-symbols-outlined text-primary">
+                      security
+                    </span>
                     Sécurité
                   </h2>
                   <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
@@ -291,30 +303,21 @@ export default function Profile() {
                     <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
                       <div className="flex items-center gap-4">
                         <div className="p-2 bg-primary/10 rounded-lg">
-                          <span className="material-symbols-outlined text-primary">lock</span>
+                          <span className="material-symbols-outlined text-primary">
+                            lock
+                          </span>
                         </div>
                         <div>
-                          <p className="font-medium text-slate-900 dark:text-white">Mot de passe</p>
-                          <p className="text-sm text-slate-500">Dernière modification il y a 30 jours</p>
+                          <p className="font-medium text-slate-900 dark:text-white">
+                            Mot de passe
+                          </p>
+                          <p className="text-sm text-slate-500">
+                            Dernière modification il y a 30 jours
+                          </p>
                         </div>
                       </div>
                       <button className="px-4 py-2 text-sm text-primary hover:bg-primary/10 rounded-lg transition">
                         Modifier
-                      </button>
-                    </div>
-
-                    <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-900 rounded-lg">
-                      <div className="flex items-center gap-4">
-                        <div className="p-2 bg-primary/10 rounded-lg">
-                          <span className="material-symbols-outlined text-primary">smartphone</span>
-                        </div>
-                        <div>
-                          <p className="font-medium text-slate-900 dark:text-white">Authentification à deux facteurs</p>
-                          <p className="text-sm text-slate-500">Non activée</p>
-                        </div>
-                      </div>
-                      <button className="px-4 py-2 text-sm text-primary hover:bg-primary/10 rounded-lg transition">
-                        Activer
                       </button>
                     </div>
                   </div>
@@ -328,12 +331,15 @@ export default function Profile() {
               <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm p-6">
                 <div className="text-center">
                   <div className="w-24 h-24 mx-auto bg-gradient-to-br from-primary to-indigo-600 rounded-full flex items-center justify-center text-3xl font-bold text-white mb-4">
-                    {user?.firstName?.[0]}{user?.lastName?.[0]}
+                    {user?.firstName?.[0]}
+                    {user?.lastName?.[0]}
                   </div>
                   <h3 className="text-xl font-bold text-slate-900 dark:text-white">
                     {user?.firstName} {user?.lastName}
                   </h3>
-                  <p className="text-slate-500 dark:text-slate-400">{user?.email}</p>
+                  <p className="text-slate-500 dark:text-slate-400">
+                    {user?.email}
+                  </p>
                   <span className="inline-block mt-2 px-3 py-1 bg-primary/10 text-primary rounded-full text-sm font-medium capitalize">
                     {user?.role}
                   </span>
@@ -344,7 +350,9 @@ export default function Profile() {
               <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm">
                 <div className="p-6 border-b border-slate-200 dark:border-slate-700">
                   <h2 className="text-lg font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                    <span className="material-symbols-outlined text-primary">info</span>
+                    <span className="material-symbols-outlined text-primary">
+                      info
+                    </span>
                     Informations du Compte
                   </h2>
                 </div>
@@ -352,7 +360,9 @@ export default function Profile() {
                   <div className="flex justify-between">
                     <span className="text-slate-500">Dernière connexion</span>
                     <span className="text-slate-900 dark:text-white text-right">
-                      {user?.lastLogin ? new Date(user.lastLogin).toLocaleString("fr-FR") : "Jamais"}
+                      {user?.lastLogin
+                        ? new Date(user.lastLogin).toLocaleString("fr-FR")
+                        : "Jamais"}
                     </span>
                   </div>
                   <div className="flex justify-between">

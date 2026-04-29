@@ -45,6 +45,15 @@ async function createIndexes() {
     // MODULE INDEXES (Admin - See all modules)
     // ============================================================================
     console.log("📦 Creating Module indexes...");
+    // Supprimer l'ancien index unique sur serialNumber s'il existe encore
+    try {
+      await Module.collection.dropIndex("serialNumber_1");
+      console.log("   🗑️  Ancien index unique serialNumber_1 supprimé");
+    } catch (err) {
+      if (err.codeName !== "NamespaceNotFound" && !err.message.includes("index not found")) {
+        console.log("   ⚠️  Impossible de supprimer serialNumber_1:", err.message);
+      }
+    }
     await Module.collection.createIndex({ status: 1, createdAt: -1 });
     await Module.collection.createIndex({ macAddress: 1 });
     await Module.collection.createIndex({ serialNumber: 1 });
@@ -83,3 +92,4 @@ async function createIndexes() {
 }
 
 createIndexes();
+

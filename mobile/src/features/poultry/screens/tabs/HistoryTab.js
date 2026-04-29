@@ -1,3 +1,4 @@
+// tabs/HistoryTab.js
 import React, { useState } from "react";
 import {
   View,
@@ -8,19 +9,7 @@ import {
 } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 
-// ─── Détection du vrai type d'actionneur ─────────────────────────────────────
-// Le backend envoie parfois type: "actuator" avec le nom dans le message.
-// On détecte donc via type ET message.
-function detectActuatorKind(alert) {
-  const msg = (alert.message || "").toLowerCase();
-  const type = (alert.type || "").toLowerCase();
-
-  if (type === "fan" || msg.includes("ventilateur")) return "fan";
-  if (type === "lamp" || msg.includes("lampe") || msg.includes("chauffante"))
-    return "lamp";
-  if (type === "door" || msg.includes("door")) return "door";
-  return "other";
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function isSensor(alert) {
   const sensorTypes = [
@@ -34,125 +23,206 @@ function isSensor(alert) {
   return sensorTypes.includes((alert.type || "").toLowerCase());
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+function detectActuatorKind(alert) {
+  const msg = (alert.message || "").toLowerCase();
+  const type = (alert.type || "").toLowerCase();
+  if (type === "fan" || msg.includes("ventilateur")) return "fan";
+  if (type === "lamp" || msg.includes("lampe")) return "lamp";
+  if (type === "door" || msg.includes("porte")) return "door";
+  if (type === "pump" || msg.includes("pompe")) return "pump";
+  return "other";
+}
+
 function formatTime(ts) {
   if (!ts) return "";
-  return new Date(ts).toLocaleTimeString("fr-FR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const d = new Date(ts);
+  const today = new Date();
+  const isToday =
+    d.getDate() === today.getDate() &&
+    d.getMonth() === today.getMonth() &&
+    d.getFullYear() === today.getFullYear();
+
+  if (isToday) {
+    return (
+      "Aujourd'hui à " +
+      d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+    );
+  }
+  return (
+    d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" }) +
+    " à " +
+    d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+  );
 }
 
-function getIcon(alert) {
+// ─── Textes lisibles pour l'éleveur ──────────────────────────────────────────
+
+const SENSOR_LABELS = {
+  temperature: "Température",
+  humidity: "Humidité",
+  co2: "Qualité de l'air (CO2)",
+  nh3: "Gaz ammoniaque (NH3)",
+  dust: "Poussière dans l'air",
+  water_level: "Niveau d'eau",
+};
+
+const SENSOR_ICONS = {
+  temperature: "thermostat",
+  humidity: "water-drop",
+  co2: "co2",
+  nh3: "warning",
+  dust: "grain",
+  water_level: "water",
+};
+
+const ACTUATOR_LABELS = {
+  fan: "Ventilateur",
+  lamp: "Lampe",
+  door: "Porte",
+  pump: "Pompe",
+  other: "Équipement",
+};
+
+const ACTUATOR_ICONS = {
+  fan: "air",
+  lamp: "lightbulb",
+  door: "sensor-door",
+  pump: "water",
+  other: "settings",
+};
+
+// Explications lisibles selon le type d'événement
+function getEventTitle(alert) {
   if (isSensor(alert)) {
-    const map = {
-      temperature: "thermostat",
-      humidity: "water-drop",
-      co2: "co2",
-      nh3: "warning",
-      dust: "grain",
-      water_level: "water",
-    };
-    return map[alert.type] || "sensors";
+    const label = SENSOR_LABELS[alert.type] || alert.type;
+    const danger = alert.severity === "danger";
+    return danger
+      ? `⚠ ${label} à un niveau dangereux`
+      : `${label} hors de la plage normale`;
   }
   const kind = detectActuatorKind(alert);
-  const map = { fan: "cyclone", lamp: "lightbulb", door: "door-front" };
-  return map[kind] || "notifications";
+  const label = ACTUATOR_LABELS[kind] || "Équipement";
+  if (alert.auto) return `${label} activé automatiquement`;
+  return `${label} commandé manuellement`;
 }
 
-function alertTitle(alert) {
+function getEventDescription(alert) {
+  // Utilise le message brut s'il est lisible, sinon construit un message clair
+  if (alert.message && alert.message.length > 0) return alert.message;
+
   if (isSensor(alert)) {
-    const labels = {
-      temperature: "Température",
-      humidity: "Humidité",
-      co2: "CO2",
-      nh3: "NH3",
-      dust: "Poussière",
-      water_level: "Niveau eau",
-    };
-    return `Seuil de ${labels[alert.type] || alert.type} dépassé`;
+    return "Le capteur a détecté une valeur anormale. Vérifiez le poulailler.";
   }
   const kind = detectActuatorKind(alert);
-  const labels = { fan: "Ventilateur", lamp: "Lampe", door: "Porte" };
-  const name = labels[kind] || "Actionneur";
-  if (alert.auto) return `${name} activé automatiquement`;
-  return name;
+  if (kind === "fan")
+    return alert.auto
+      ? "Le ventilateur s'est déclenché pour corriger la température ou l'humidité."
+      : "Vous avez allumé ou éteint le ventilateur.";
+  if (kind === "lamp")
+    return alert.auto
+      ? "La lampe s'est allumée automatiquement selon le programme."
+      : "Vous avez allumé ou éteint la lampe.";
+  if (kind === "door")
+    return alert.auto
+      ? "La porte s'est ouverte ou fermée automatiquement."
+      : "Vous avez commandé la porte.";
+  if (kind === "pump")
+    return alert.auto
+      ? "La pompe s'est activée automatiquement pour remplir l'eau."
+      : "Vous avez activé ou arrêté la pompe.";
+  return "Action enregistrée.";
 }
 
-function alertConfig(alert) {
+// ─── Config visuelle par type d'événement ────────────────────────────────────
+
+function getCardStyle(alert) {
   if (isSensor(alert)) {
     const danger = alert.severity === "danger";
     return {
-      iconBg: danger ? "#FEF2F2" : "#FFFBEB",
-      iconColor: danger ? "#EF4444" : "#F59E0B",
-      borderColor: danger ? "#EF444420" : "#F59E0B20",
-      tag: "Seuil dépassé",
-      tagBg: danger ? "#FEF2F2" : "#FFFBEB",
-      tagColor: danger ? "#EF4444" : "#F59E0B",
+      accentColor: danger ? "#A32D2D" : "#854F0B",
+      accentBg: danger ? "#FCEBEB" : "#FAEEDA",
+      borderColor: danger ? "#F09595" : "#FAC775",
+      tagLabel: danger ? "Niveau critique" : "Valeur anormale",
+      tagColor: danger ? "#A32D2D" : "#854F0B",
+      tagBg: danger ? "#FCEBEB" : "#FAEEDA",
     };
   }
   if (alert.auto) {
     return {
-      iconBg: "#F0FDF4",
-      iconColor: "#16A34A",
-      borderColor: "#22C55E20",
-      tag: "Réponse auto",
-      tagBg: "#F0FDF4",
-      tagColor: "#16A34A",
+      accentColor: "#0F6E56",
+      accentBg: "#E1F5EE",
+      borderColor: "#9FE1CB",
+      tagLabel: "Automatique",
+      tagColor: "#0F6E56",
+      tagBg: "#E1F5EE",
     };
   }
   return {
-    iconBg: "#EFF6FF",
-    iconColor: "#3B82F6",
-    borderColor: "#3B82F620",
-    tag: "Action",
-    tagBg: "#EFF6FF",
-    tagColor: "#3B82F6",
+    accentColor: "#185FA5",
+    accentBg: "#E6F1FB",
+    borderColor: "#B5D4F4",
+    tagLabel: "Manuel",
+    tagColor: "#185FA5",
+    tagBg: "#E6F1FB",
   };
 }
 
-// ─── Carte d'alerte ───────────────────────────────────────────────────────────
-function AlertCard({ alert }) {
-  const cfg = alertConfig(alert);
+function getIcon(alert) {
+  if (isSensor(alert)) return SENSOR_ICONS[alert.type] || "sensors";
+  return ACTUATOR_ICONS[detectActuatorKind(alert)] || "notifications";
+}
+
+// ─── Carte événement ──────────────────────────────────────────────────────────
+
+function EventCard({ alert }) {
+  const style = getCardStyle(alert);
+  const unread = !alert.read;
+
   return (
     <View
       style={{
-        flexDirection: "row",
-        alignItems: "flex-start",
-        gap: 12,
         backgroundColor: "#fff",
         borderRadius: 14,
         borderWidth: 1,
-        borderColor: cfg.borderColor,
+        borderColor: style.borderColor,
         padding: 14,
-        shadowColor: "#000",
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.04,
-        shadowRadius: 6,
-        elevation: 1,
+        marginBottom: 10,
+        flexDirection: "row",
+        gap: 12,
+        // Point bleu pour non-lu
+        ...(unread
+          ? { borderLeftWidth: 3, borderLeftColor: style.accentColor }
+          : {}),
       }}
     >
+      {/* Icône */}
       <View
         style={{
-          width: 40,
-          height: 40,
+          width: 42,
+          height: 42,
           borderRadius: 12,
-          backgroundColor: cfg.iconBg,
+          backgroundColor: style.accentBg,
           alignItems: "center",
           justifyContent: "center",
           flexShrink: 0,
         }}
       >
-        <MaterialIcons name={getIcon(alert)} size={20} color={cfg.iconColor} />
+        <MaterialIcons
+          name={getIcon(alert)}
+          size={22}
+          color={style.accentColor}
+        />
       </View>
 
+      {/* Contenu */}
       <View style={{ flex: 1 }}>
+        {/* Titre + heure */}
         <View
           style={{
             flexDirection: "row",
-            alignItems: "flex-start",
             justifyContent: "space-between",
-            marginBottom: 3,
+            alignItems: "flex-start",
+            marginBottom: 4,
           }}
         >
           <Text
@@ -162,39 +232,67 @@ function AlertCard({ alert }) {
               color: "#1E293B",
               flex: 1,
               paddingRight: 8,
+              lineHeight: 18,
             }}
           >
-            {alertTitle(alert)}
+            {getEventTitle(alert)}
           </Text>
-          <Text style={{ fontSize: 12, color: "#94A3B8", flexShrink: 0 }}>
-            {formatTime(alert.timestamp)}
-          </Text>
+          {unread && (
+            <View
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: style.accentColor,
+                marginTop: 4,
+                flexShrink: 0,
+              }}
+            />
+          )}
         </View>
 
-        <Text style={{ fontSize: 12, color: "#64748B", lineHeight: 18 }}>
-          {alert.message}
-        </Text>
-
-        <View
+        {/* Description claire */}
+        <Text
           style={{
-            backgroundColor: cfg.tagBg,
-            borderRadius: 20,
-            paddingHorizontal: 8,
-            paddingVertical: 2,
-            alignSelf: "flex-start",
-            marginTop: 7,
+            fontSize: 12,
+            color: "#475569",
+            lineHeight: 18,
+            marginBottom: 8,
           }}
         >
-          <Text
+          {getEventDescription(alert)}
+        </Text>
+
+        {/* Bas de carte : tag + heure */}
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <View
             style={{
-              fontSize: 10,
-              fontWeight: "700",
-              color: cfg.tagColor,
-              textTransform: "uppercase",
-              letterSpacing: 0.3,
+              backgroundColor: style.tagBg,
+              borderRadius: 20,
+              paddingHorizontal: 9,
+              paddingVertical: 3,
             }}
           >
-            {cfg.tag}
+            <Text
+              style={{
+                fontSize: 10,
+                fontWeight: "700",
+                color: style.tagColor,
+                textTransform: "uppercase",
+                letterSpacing: 0.3,
+              }}
+            >
+              {style.tagLabel}
+            </Text>
+          </View>
+          <Text style={{ fontSize: 11, color: "#94A3B8" }}>
+            {formatTime(alert.timestamp)}
           </Text>
         </View>
       </View>
@@ -203,31 +301,39 @@ function AlertCard({ alert }) {
 }
 
 // ─── Filtres ──────────────────────────────────────────────────────────────────
+
 const FILTERS = [
-  { key: "all", label: "Toutes", icon: "list" },
-  { key: "fan", label: "Ventilateur", icon: "cyclone" },
+  { key: "all", label: "Tout", icon: "list" },
+  { key: "sensor", label: "Capteurs", icon: "sensors" },
+  { key: "fan", label: "Ventilateur", icon: "air" },
   { key: "lamp", label: "Lampe", icon: "lightbulb" },
-  { key: "door", label: "Porte", icon: "door-front" },
+  { key: "door", label: "Porte", icon: "sensor-door" },
+  { key: "pump", label: "Pompe", icon: "water" },
 ];
 
-function matchesFilter(alert, filterKey) {
-  if (filterKey === "all") return true;
-  if (isSensor(alert)) return false; // les capteurs ne matchent pas les filtres actionneur
-  return detectActuatorKind(alert) === filterKey;
+function matchesFilter(alert, key) {
+  if (key === "all") return true;
+  if (key === "sensor") return isSensor(alert);
+  if (isSensor(alert)) return false;
+  return detectActuatorKind(alert) === key;
 }
 
-// ─── Composant principal ───────────────────────────────────────────────────────
+// ─── Composant principal ──────────────────────────────────────────────────────
+
 export default function HistoryTab({
-  alerts,
+  alerts = [],
   onRefresh,
   refreshing,
   navigation,
   poultryId,
   poultryName,
+  onMarkAllRead,
 }) {
   const [filter, setFilter] = useState("all");
 
-  const filteredAlerts = alerts
+  const unreadCount = alerts.filter((a) => !a.read).length;
+
+  const filtered = [...alerts]
     .filter((a) => matchesFilter(a, filter))
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
@@ -247,6 +353,44 @@ export default function HistoryTab({
       }
       showsVerticalScrollIndicator={false}
     >
+      {/* ── En-tête ── */}
+      <View
+        style={{
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 16,
+        }}
+      >
+        <View>
+          <Text style={{ fontSize: 15, fontWeight: "700", color: "#1E293B" }}>
+            Historique des événements
+          </Text>
+          <Text style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
+            {alerts.length === 0
+              ? "Aucun événement enregistré"
+              : `${alerts.length} événement${alerts.length > 1 ? "s" : ""} au total`}
+          </Text>
+        </View>
+        {unreadCount > 0 && (
+          <TouchableOpacity
+            onPress={onMarkAllRead}
+            style={{
+              backgroundColor: "#F0FDF4",
+              borderRadius: 20,
+              paddingHorizontal: 12,
+              paddingVertical: 7,
+              borderWidth: 1,
+              borderColor: "#BBF7D0",
+            }}
+          >
+            <Text style={{ fontSize: 12, fontWeight: "700", color: "#15803D" }}>
+              Tout marquer lu ({unreadCount})
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* ── Filtres ── */}
       <ScrollView
         horizontal
@@ -260,7 +404,7 @@ export default function HistoryTab({
             f.key === "all"
               ? alerts.length
               : alerts.filter((a) => matchesFilter(a, f.key)).length;
-
+          if (f.key !== "all" && count === 0) return null; // cache les filtres vides
           return (
             <TouchableOpacity
               key={f.key}
@@ -268,18 +412,18 @@ export default function HistoryTab({
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 6,
-                paddingHorizontal: 14,
-                paddingVertical: 9,
+                gap: 5,
+                paddingHorizontal: 13,
+                paddingVertical: 8,
                 borderRadius: 20,
                 backgroundColor: active ? "#1E293B" : "#F8FAFC",
                 borderWidth: 1,
-                borderColor: active ? "#1E293B" : "#F1F5F9",
+                borderColor: active ? "#1E293B" : "#E2E8F0",
               }}
             >
               <MaterialIcons
                 name={f.icon}
-                size={14}
+                size={13}
                 color={active ? "#fff" : "#64748B"}
               />
               <Text
@@ -291,36 +435,32 @@ export default function HistoryTab({
               >
                 {f.label}
               </Text>
-              {count > 0 && (
-                <View
+              <View
+                style={{
+                  backgroundColor: active ? "rgba(255,255,255,0.2)" : "#E2E8F0",
+                  borderRadius: 10,
+                  paddingHorizontal: 5,
+                  paddingVertical: 1,
+                }}
+              >
+                <Text
                   style={{
-                    backgroundColor: active
-                      ? "rgba(255,255,255,0.2)"
-                      : "#F1F5F9",
-                    borderRadius: 10,
-                    paddingHorizontal: 6,
-                    paddingVertical: 1,
+                    fontSize: 10,
+                    fontWeight: "700",
+                    color: active ? "#fff" : "#64748B",
                   }}
                 >
-                  <Text
-                    style={{
-                      fontSize: 10,
-                      fontWeight: "700",
-                      color: active ? "#fff" : "#64748B",
-                    }}
-                  >
-                    {count}
-                  </Text>
-                </View>
-              )}
+                  {count}
+                </Text>
+              </View>
             </TouchableOpacity>
           );
         })}
       </ScrollView>
 
       {/* ── Liste ── */}
-      {filteredAlerts.length === 0 ? (
-        <View style={{ alignItems: "center", paddingVertical: 60, gap: 12 }}>
+      {filtered.length === 0 ? (
+        <View style={{ alignItems: "center", paddingVertical: 60, gap: 10 }}>
           <View
             style={{
               width: 64,
@@ -331,35 +471,24 @@ export default function HistoryTab({
               justifyContent: "center",
             }}
           >
-            <MaterialIcons
-              name="notifications-none"
-              size={32}
-              color="#CBD5E1"
-            />
+            <MaterialIcons name="history" size={30} color="#CBD5E1" />
           </View>
-          <Text style={{ fontSize: 15, fontWeight: "700", color: "#1E293B" }}>
-            Aucune notification
+          <Text style={{ fontSize: 14, fontWeight: "700", color: "#1E293B" }}>
+            Aucun événement ici
           </Text>
-          <Text
-            style={{
-              fontSize: 13,
-              color: "#94A3B8",
-              textAlign: "center",
-              lineHeight: 20,
-            }}
-          >
-            Aucune alerte correspondant à ce filtre.
+          <Text style={{ fontSize: 12, color: "#94A3B8", textAlign: "center" }}>
+            Tirez vers le bas pour actualiser.
           </Text>
         </View>
       ) : (
-        <View style={{ gap: 8 }}>
-          {filteredAlerts.map((alert, idx) => (
-            <AlertCard key={alert._id || idx} alert={alert} />
+        <View>
+          {filtered.map((alert, idx) => (
+            <EventCard key={alert._id || idx} alert={alert} />
           ))}
         </View>
       )}
 
-      {/* ── Paramètres ── */}
+      {/* ── Bouton paramètres ── */}
       {alerts.length > 0 && (
         <TouchableOpacity
           onPress={() =>
@@ -369,7 +498,7 @@ export default function HistoryTab({
             })
           }
           style={{
-            marginTop: 16,
+            marginTop: 8,
             padding: 14,
             borderRadius: 14,
             flexDirection: "row",
@@ -378,14 +507,14 @@ export default function HistoryTab({
             gap: 8,
             backgroundColor: "#F8FAFC",
             borderWidth: 1,
-            borderColor: "#F1F5F9",
+            borderColor: "#E2E8F0",
           }}
         >
-          <MaterialIcons name="settings" size={16} color="#64748B" />
+          <MaterialIcons name="tune" size={16} color="#64748B" />
           <Text style={{ fontSize: 13, fontWeight: "700", color: "#64748B" }}>
-            Gérer les paramètres d'alertes
+            Modifier les seuils d'alerte
           </Text>
-          <MaterialIcons name="arrow-forward" size={15} color="#94A3B8" />
+          <MaterialIcons name="chevron-right" size={17} color="#94A3B8" />
         </TouchableOpacity>
       )}
     </ScrollView>

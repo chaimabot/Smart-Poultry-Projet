@@ -39,12 +39,49 @@ import { getUserData } from "../../../services/auth";
 
 const { width } = Dimensions.get("window");
 
-// ── Capteurs réels : DHT22 / MQ-135 / HC-SR04 ────────────────────────────────
-// temperature, humidity, co2, nh3, waterLevel (pas de dust)
+// ── Badge config selon le status du poulailler ────────────────────────────────
+// status Mongoose : "en_attente_module" | "connecte" | "hors_ligne" | "maintenance" | "archive"
+const BADGE_CONFIG = {
+  en_attente_module: {
+    label: "En attente",
+    bg: "#F1F5F9",
+    textColor: "#64748B",
+    dot: "#94A3B8",
+  },
+  connecte: {
+    label: "Connecté",
+    bg: "rgba(255,255,255,0.9)",
+    textColor: "#1E293B",
+    dot: "#22C55E",
+  },
+  hors_ligne: {
+    label: "Hors ligne",
+    bg: "#FEF2F2",
+    textColor: "#EF4444",
+    dot: "#EF4444",
+  },
+  maintenance: {
+    label: "Maintenance",
+    bg: "#FFF7ED",
+    textColor: "#F97316",
+    dot: "#F97316",
+  },
+  // fallback si isCritical
+  alerte: {
+    label: "Alerte",
+    bg: "#EF4444",
+    textColor: "#FFF",
+    dot: "#EF4444",
+  },
+};
+
+const getBadge = (status, isCritical) => {
+  if (isCritical) return BADGE_CONFIG.alerte;
+  return BADGE_CONFIG[status] || BADGE_CONFIG.connecte;
+};
 
 /**
  * Retourne un message lisible depuis une alerte.
- * Évite d'afficher "undefined" quelles que soient les données reçues.
  */
 const resolveAlertMessage = (alert) => {
   if (alert.message && !alert.message.includes("undefined")) {
@@ -89,7 +126,6 @@ export default function DashboardScreen({ navigation }) {
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [allAlerts, setAllAlerts] = useState([]);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
-  // { poultryId: { unreadCount, dangerCount, warnCount, lastDanger, lastWarn } }
   const [poultryNotifications, setPoultryNotifications] = useState({});
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
@@ -123,6 +159,8 @@ export default function DashboardScreen({ navigation }) {
             temp: p.lastMonitoring?.temperature?.toFixed(1) || "—",
             humid: p.lastMonitoring?.humidity?.toFixed(0) || "—",
             isCritical: p.isCritical || false,
+            // ✅ status récupéré depuis l'API pour le badge
+            status: p.status || "en_attente_module",
             image:
               p.photoUrl ||
               "https://images.unsplash.com/photo-1581092160607-798aa0b7d9c6?w=800",
@@ -175,7 +213,7 @@ export default function DashboardScreen({ navigation }) {
     }
   };
 
-  // ── Load notification summary per poulailler (badge sur chaque carte) ────────
+  // ── Load notification summary per poulailler ─────────────────────────────────
   const loadPoultryNotifications = async () => {
     if (poultryList.length === 0) return;
     try {
@@ -183,7 +221,6 @@ export default function DashboardScreen({ navigation }) {
       for (const poultry of poultryList) {
         try {
           const res = await getAlerts(poultry.id);
-          // getAlerts retourne { success, data: [...] }
           const alerts =
             res?.success && Array.isArray(res.data) ? res.data : [];
 
@@ -229,7 +266,7 @@ export default function DashboardScreen({ navigation }) {
   useEffect(() => {
     if (poultryList.length > 0) {
       fetchAllAlerts();
-      loadPoultryNotifications(); // ← appelé ici
+      loadPoultryNotifications();
     }
   }, [poultryList]);
 
@@ -565,276 +602,325 @@ export default function DashboardScreen({ navigation }) {
               </TouchableOpacity>
             </View>
           ) : (
-            filteredPoultry.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                activeOpacity={0.9}
-                onPress={() =>
-                  navigation.navigate("PoultryDetail", {
-                    poultryId: item.id,
-                    poultryName: item.name,
-                  })
-                }
-                style={[
-                  styles.card,
-                  { backgroundColor: darkMode ? "#1e293b" : "#fff" },
-                ]}
-              >
-                {/* Image */}
-                <View style={styles.cardImageContainer}>
-                  <Image
-                    source={{ uri: item.image }}
-                    style={styles.cardImage}
-                  />
-                  <View
-                    style={
-                      item.isCritical
-                        ? styles.alertBadge
-                        : styles.connectedBadge
-                    }
-                  >
-                    <Text style={styles.badgeText}>
-                      {item.isCritical ? "Alerte" : "Connecté"}
-                    </Text>
-                  </View>
-                </View>
+            filteredPoultry.map((item) => {
+              // ✅ Badge dynamique selon status + isCritical
+              const badge = getBadge(item.status, item.isCritical);
 
-                <View style={styles.cardContent}>
-                  {/* Header */}
-                  <View style={styles.cardHeaderRow}>
-                    <View>
-                      <Text
-                        style={[
-                          styles.cardName,
-                          { color: darkMode ? colors.white : colors.slate900 },
-                        ]}
-                      >
-                        {item.name}
-                      </Text>
-                      <View style={styles.zoneRow}>
-                        <View
-                          style={[
-                            styles.zoneDot,
-                            {
-                              backgroundColor: item.isCritical
-                                ? "#EF4444"
-                                : "#22C55E",
-                            },
-                          ]}
-                        />
-                        <Text
-                          style={[
-                            styles.zoneText,
-                            {
-                              color: darkMode
-                                ? colors.slate400
-                                : colors.slate600,
-                            },
-                          ]}
-                        >
-                          {item.location}
-                        </Text>
-                      </View>
-                    </View>
-                    <TouchableOpacity
+              return (
+                <TouchableOpacity
+                  key={item.id}
+                  activeOpacity={0.9}
+                  onPress={() =>
+                    navigation.navigate("PoultryDetail", {
+                      poultryId: item.id,
+                      poultryName: item.name,
+                    })
+                  }
+                  style={[
+                    styles.card,
+                    { backgroundColor: darkMode ? "#1e293b" : "#fff" },
+                  ]}
+                >
+                  {/* Image */}
+                  <View style={styles.cardImageContainer}>
+                    <Image
+                      source={{ uri: item.image }}
+                      style={styles.cardImage}
+                    />
+
+                    {/* ✅ Badge unifié — couleurs dynamiques */}
+                    <View
                       style={[
-                        styles.menuBtn,
-                        { backgroundColor: darkMode ? "#334155" : "#F8FAFC" },
+                        styles.statusBadge,
+                        { backgroundColor: badge.bg },
                       ]}
-                      onPress={() => handleMenuPress(item.id)}
-                      disabled={actionInProgress === item.id}
                     >
-                      {actionInProgress === item.id ? (
-                        <ActivityIndicator
-                          size="small"
-                          color={darkMode ? colors.white : colors.slate900}
-                        />
-                      ) : (
-                        <MaterialIcons
-                          name="more-vert"
-                          size={20}
-                          color={darkMode ? colors.white : "#94A3B8"}
-                        />
-                      )}
-                    </TouchableOpacity>
+                      {/* Petit point coloré à gauche */}
+                      <View
+                        style={[
+                          styles.statusDot,
+                          { backgroundColor: badge.dot },
+                        ]}
+                      />
+                      <Text
+                        style={[styles.badgeText, { color: badge.textColor }]}
+                      >
+                        {badge.label}
+                      </Text>
+                    </View>
                   </View>
 
-                  {/* ── Notification summary block ── */}
-                  {(() => {
-                    const notif = poultryNotifications[item.id];
-                    if (!notif || notif.unreadCount === 0) return null;
-
-                    const isDanger = notif.dangerCount > 0;
-                    const lastAlert = isDanger
-                      ? notif.lastDanger
-                      : notif.lastWarn;
-                    const msg = lastAlert
-                      ? resolveAlertMessage(lastAlert)
-                      : null;
-
-                    return (
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          backgroundColor: isDanger ? "#FEF2F2" : "#FFF7ED",
-                          borderRadius: 12,
-                          padding: 10,
-                          marginBottom: 12,
-                          gap: 8,
-                        }}
-                      >
-                        <MaterialIcons
-                          name={isDanger ? "error-outline" : "warning-amber"}
-                          size={16}
-                          color={isDanger ? "#EF4444" : "#F97316"}
-                        />
+                  <View style={styles.cardContent}>
+                    {/* Header */}
+                    <View style={styles.cardHeaderRow}>
+                      <View>
                         <Text
-                          style={{
-                            flex: 1,
-                            fontSize: 11,
-                            fontWeight: "600",
-                            color: isDanger ? "#EF4444" : "#F97316",
-                          }}
-                          numberOfLines={1}
+                          style={[
+                            styles.cardName,
+                            {
+                              color: darkMode ? colors.white : colors.slate900,
+                            },
+                          ]}
                         >
-                          {msg ||
-                            (isDanger ? "Alerte critique" : "Avertissement")}
+                          {item.name}
                         </Text>
-                        <View
-                          style={{
-                            backgroundColor: isDanger ? "#EF4444" : "#F97316",
-                            borderRadius: 10,
-                            paddingHorizontal: 6,
-                            paddingVertical: 2,
-                          }}
-                        >
+                        <View style={styles.zoneRow}>
+                          <View
+                            style={[
+                              styles.zoneDot,
+                              { backgroundColor: badge.dot },
+                            ]}
+                          />
                           <Text
-                            style={{
-                              color: "#fff",
-                              fontSize: 10,
-                              fontWeight: "800",
-                            }}
+                            style={[
+                              styles.zoneText,
+                              {
+                                color: darkMode
+                                  ? colors.slate400
+                                  : colors.slate600,
+                              },
+                            ]}
                           >
-                            {notif.unreadCount}
+                            {item.location}
                           </Text>
                         </View>
                       </View>
-                    );
-                  })()}
-
-                  {/* Metrics — DHT22 : temp + humidity */}
-                  <View style={styles.metricsRow}>
-                    <View
-                      style={[
-                        styles.metricBox,
-                        { backgroundColor: darkMode ? "#0f172a" : "#F0FDF4" },
-                      ]}
-                    >
-                      <MaterialCommunityIcons
-                        name="thermometer"
-                        size={18}
-                        color="#22C55E"
-                      />
-                      <View style={styles.metricTextCol}>
-                        <Text
-                          style={[
-                            styles.metricLabel,
-                            {
-                              color: darkMode
-                                ? colors.slate400
-                                : colors.slate600,
-                            },
-                          ]}
-                        >
-                          TEMP.
-                        </Text>
-                        <Text
-                          style={[
-                            styles.metricValue,
-                            {
-                              color: darkMode ? colors.white : colors.slate900,
-                            },
-                          ]}
-                        >
-                          {item.temp !== "—" ? `${item.temp}°C` : "—"}
-                        </Text>
-                      </View>
-                    </View>
-                    <View
-                      style={[
-                        styles.metricBox,
-                        { backgroundColor: darkMode ? "#0f172a" : "#F0FDF4" },
-                      ]}
-                    >
-                      <MaterialCommunityIcons
-                        name="water-percent"
-                        size={20}
-                        color="#22C55E"
-                      />
-                      <View style={styles.metricTextCol}>
-                        <Text
-                          style={[
-                            styles.metricLabel,
-                            {
-                              color: darkMode
-                                ? colors.slate400
-                                : colors.slate600,
-                            },
-                          ]}
-                        >
-                          HUMIDITÉ
-                        </Text>
-                        <Text
-                          style={[
-                            styles.metricValue,
-                            {
-                              color: darkMode ? colors.white : colors.slate900,
-                            },
-                          ]}
-                        >
-                          {item.humid !== "—" ? `${item.humid}%` : "—"}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  {/* Footer */}
-                  <View
-                    style={[
-                      styles.cardFooter,
-                      { borderTopColor: darkMode ? "#334155" : "#F1F5F9" },
-                    ]}
-                  >
-                    <View style={styles.footerInfo}>
-                      <MaterialCommunityIcons
-                        name="air-filter"
-                        size={14}
-                        color={darkMode ? colors.slate400 : "#64748B"}
-                      />
-                      <Text
+                      <TouchableOpacity
                         style={[
-                          styles.footerText,
+                          styles.menuBtn,
                           {
-                            color: darkMode ? colors.slate400 : colors.slate600,
+                            backgroundColor: darkMode ? "#334155" : "#F8FAFC",
+                          },
+                        ]}
+                        onPress={() => handleMenuPress(item.id)}
+                        disabled={actionInProgress === item.id}
+                      >
+                        {actionInProgress === item.id ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={darkMode ? colors.white : colors.slate900}
+                          />
+                        ) : (
+                          <MaterialIcons
+                            name="more-vert"
+                            size={20}
+                            color={darkMode ? colors.white : "#94A3B8"}
+                          />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* ✅ Message "en attente module" si pas d'ESP32 associé */}
+                    {item.status === "en_attente_module" && (
+                      <View style={styles.pendingModuleBox}>
+                        <MaterialIcons
+                          name="memory"
+                          size={15}
+                          color="#64748B"
+                        />
+                        <Text style={styles.pendingModuleText}>
+                          Aucun module ESP32 associé — en attente de
+                          configuration
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* Notification summary block */}
+                    {item.status !== "en_attente_module" &&
+                      (() => {
+                        const notif = poultryNotifications[item.id];
+                        if (!notif || notif.unreadCount === 0) return null;
+
+                        const isDanger = notif.dangerCount > 0;
+                        const lastAlert = isDanger
+                          ? notif.lastDanger
+                          : notif.lastWarn;
+                        const msg = lastAlert
+                          ? resolveAlertMessage(lastAlert)
+                          : null;
+
+                        return (
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                              backgroundColor: isDanger ? "#FEF2F2" : "#FFF7ED",
+                              borderRadius: 12,
+                              padding: 10,
+                              marginBottom: 12,
+                              gap: 8,
+                            }}
+                          >
+                            <MaterialIcons
+                              name={
+                                isDanger ? "error-outline" : "warning-amber"
+                              }
+                              size={16}
+                              color={isDanger ? "#EF4444" : "#F97316"}
+                            />
+                            <Text
+                              style={{
+                                flex: 1,
+                                fontSize: 11,
+                                fontWeight: "600",
+                                color: isDanger ? "#EF4444" : "#F97316",
+                              }}
+                              numberOfLines={1}
+                            >
+                              {msg ||
+                                (isDanger
+                                  ? "Alerte critique"
+                                  : "Avertissement")}
+                            </Text>
+                            <View
+                              style={{
+                                backgroundColor: isDanger
+                                  ? "#EF4444"
+                                  : "#F97316",
+                                borderRadius: 10,
+                                paddingHorizontal: 6,
+                                paddingVertical: 2,
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  color: "#fff",
+                                  fontSize: 10,
+                                  fontWeight: "800",
+                                }}
+                              >
+                                {notif.unreadCount}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })()}
+
+                    {/* Metrics */}
+                    <View style={styles.metricsRow}>
+                      <View
+                        style={[
+                          styles.metricBox,
+                          {
+                            backgroundColor: darkMode ? "#0f172a" : "#F0FDF4",
                           },
                         ]}
                       >
-                        Qualité Air: Excellente
-                      </Text>
+                        <MaterialCommunityIcons
+                          name="thermometer"
+                          size={18}
+                          color="#22C55E"
+                        />
+                        <View style={styles.metricTextCol}>
+                          <Text
+                            style={[
+                              styles.metricLabel,
+                              {
+                                color: darkMode
+                                  ? colors.slate400
+                                  : colors.slate600,
+                              },
+                            ]}
+                          >
+                            TEMP.
+                          </Text>
+                          <Text
+                            style={[
+                              styles.metricValue,
+                              {
+                                color: darkMode
+                                  ? colors.white
+                                  : colors.slate900,
+                              },
+                            ]}
+                          >
+                            {item.temp !== "—" ? `${item.temp}°C` : "—"}
+                          </Text>
+                        </View>
+                      </View>
+                      <View
+                        style={[
+                          styles.metricBox,
+                          {
+                            backgroundColor: darkMode ? "#0f172a" : "#F0FDF4",
+                          },
+                        ]}
+                      >
+                        <MaterialCommunityIcons
+                          name="water-percent"
+                          size={20}
+                          color="#22C55E"
+                        />
+                        <View style={styles.metricTextCol}>
+                          <Text
+                            style={[
+                              styles.metricLabel,
+                              {
+                                color: darkMode
+                                  ? colors.slate400
+                                  : colors.slate600,
+                              },
+                            ]}
+                          >
+                            HUMIDITÉ
+                          </Text>
+                          <Text
+                            style={[
+                              styles.metricValue,
+                              {
+                                color: darkMode
+                                  ? colors.white
+                                  : colors.slate900,
+                              },
+                            ]}
+                          >
+                            {item.humid !== "—" ? `${item.humid}%` : "—"}
+                          </Text>
+                        </View>
+                      </View>
                     </View>
-                    <Text
+
+                    {/* Footer */}
+                    <View
                       style={[
-                        styles.footerUpdateText,
-                        { color: colors.slate500 },
+                        styles.cardFooter,
+                        {
+                          borderTopColor: darkMode ? "#334155" : "#F1F5F9",
+                        },
                       ]}
                     >
-                      Mis à jour il y a {item.lastUpdated}
-                    </Text>
+                      <View style={styles.footerInfo}>
+                        <MaterialCommunityIcons
+                          name="air-filter"
+                          size={14}
+                          color={darkMode ? colors.slate400 : "#64748B"}
+                        />
+                        <Text
+                          style={[
+                            styles.footerText,
+                            {
+                              color: darkMode
+                                ? colors.slate400
+                                : colors.slate600,
+                            },
+                          ]}
+                        >
+                          Qualité Air: Excellente
+                        </Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.footerUpdateText,
+                          { color: colors.slate500 },
+                        ]}
+                      >
+                        Mis à jour il y a {item.lastUpdated}
+                      </Text>
+                    </View>
                   </View>
-                </View>
-              </TouchableOpacity>
-            ))
+                </TouchableOpacity>
+              );
+            })
           )}
           <View style={{ height: 130 }} />
         </ScrollView>
@@ -883,7 +969,6 @@ export default function DashboardScreen({ navigation }) {
                 </View>
               ) : (
                 (() => {
-                  // Grouper par poulailler → une ligne par poulailler
                   const grouped = {};
                   allAlerts.forEach((alert) => {
                     const pid = alert.poultryId;
@@ -896,7 +981,6 @@ export default function DashboardScreen({ navigation }) {
                       };
                     }
                     grouped[pid].unreadCount += 1;
-                    // Garder la plus récente
                     if (
                       !grouped[pid].latest ||
                       new Date(alert.createdAt) >
@@ -954,7 +1038,6 @@ export default function DashboardScreen({ navigation }) {
                             },
                           ]}
                         >
-                          {/* Icône severité */}
                           <View
                             style={[
                               styles.alertIcon,
@@ -968,7 +1051,6 @@ export default function DashboardScreen({ navigation }) {
                             />
                           </View>
 
-                          {/* Contenu */}
                           <View style={{ flex: 1 }}>
                             <Text
                               style={{
@@ -1008,7 +1090,6 @@ export default function DashboardScreen({ navigation }) {
                             </Text>
                           </View>
 
-                          {/* Badge count non lues */}
                           <View
                             style={{
                               backgroundColor: iconColor,
@@ -1221,25 +1302,24 @@ const styles = StyleSheet.create({
   },
   cardImageContainer: { width: "100%", height: 160 },
   cardImage: { width: "100%", height: "100%", resizeMode: "cover" },
-  connectedBadge: {
+  // ✅ Badge unifié (remplace connectedBadge + alertBadge)
+  statusBadge: {
     position: "absolute",
     top: 12,
     right: 12,
-    backgroundColor: "rgba(255,255,255,0.9)",
-    paddingHorizontal: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 12,
   },
-  alertBadge: {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    backgroundColor: "#EF4444",
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 12,
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
-  badgeText: { fontSize: 10, fontWeight: "800", color: "#1E293B" },
+  badgeText: { fontSize: 10, fontWeight: "800" },
   cardContent: { padding: 20 },
   cardHeaderRow: {
     flexDirection: "row",
@@ -1257,6 +1337,23 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
+  },
+  // ✅ Bannière "en attente module"
+  pendingModuleBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 14,
+  },
+  pendingModuleText: {
+    flex: 1,
+    fontSize: 11,
+    color: "#64748B",
+    fontWeight: "500",
+    lineHeight: 16,
   },
   metricsRow: { flexDirection: "row", gap: 12, marginBottom: 20 },
   metricBox: {

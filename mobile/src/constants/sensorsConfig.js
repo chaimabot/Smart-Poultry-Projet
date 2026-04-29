@@ -1,3 +1,7 @@
+// ─────────────────────────────────────────────────────────────
+// sensorsConfig.js — Configuration statique des capteurs
+// ─────────────────────────────────────────────────────────────
+
 export const SENSOR_CONFIG = [
   {
     name: "Température",
@@ -33,6 +37,6 @@ export const SENSOR_CONFIG = [
     name: "Niveau eau",
     unit: "%",
     icon: "water",
-    key: "waterLevel", // ✅ FIX
+    key: "waterLevel",
   },
 ];

@@ -94,7 +94,7 @@ export const poulaillersAPI = {
   create: (data) => api.post("/admin/poulaillers", data),
   update: (id, data) => api.put(`/admin/poulaillers/${id}`, data),
   delete: (id) => api.delete(`/admin/poulaillers/${id}`),
-  getUsers: () => api.get("/admin/eleveurs"),
+  getUsers: () => api.get("/admin/poulaillers/users"),
   getSeuils: (id) => api.get(`/poulaillers/${id}/seuils`),
   updateSeuils: (id, seuils) => api.put(`/poulaillers/${id}/seuils`, seuils),
 };

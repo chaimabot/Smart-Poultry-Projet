@@ -1,0 +1,97 @@
+@startuml
+
+skinparam classAttributeIconSize 0
+skinparam style strictuml
+
+' ============================================================
+' BOUNDARY (IHM)
+' ============================================================
+class Utilisateurs <<boundary>> {
+    +users : User[]
+    +showInviteModal : boolean
+    +handleOpenInviteModal()
+    +handleInviteSubmit(formData)
+}
+
+class InviteModal <<boundary>> {
+    +inviteForm
+    +inviting : boolean
+    +inviteSuccess : boolean
+    +handleSubmit()
+}
+
+class UtilisateursTableau <<boundary>> {
+    +users : User[]
+    +onResendInvite(userId)
+    +renderStatusBadge(status)
+}
+
+class CompleteInvite <<boundary>> {
+    +token : String
+    +isValid : boolean
+    +passwordForm
+    +handleCompleteInvite()
+    +verifyToken()
+}
+
+' ============================================================
+' CONTROL
+' ============================================================
+class EleveursController <<control>> {
+    +inviteEleveur(req, res)
+    +verifyInvite(req, res)
+    +completeInvite(req, res)
+}
+
+class UtilisateursController <<control>> {
+    +inviteAdmin(req, res)
+}
+
+class EmailService <<control>> {
+    +sendInviteEmail(email, token, firstName, role)
+}
+
+' ============================================================
+' ENTITY
+' ============================================================
+class User <<entity>> {
+    +_id : ObjectId
+    +email : String
+    +password : String
+    +firstName : String
+    +lastName : String
+    +phone : String
+    +role : String
+    +isActive : Boolean
+    +inviteToken : String
+    +inviteTokenExpires : Date
+    +createdAt : Date
+    +matchPassword(pwd) : Boolean
+}
+
+' ============================================================
+' RELATIONS IHM -> CONTROL
+' ============================================================
+Utilisateurs --> InviteModal : ouvre
+Utilisateurs --> UtilisateursTableau : affiche
+
+InviteModal --> EleveursController : POST /invite
+UtilisateursTableau --> EleveursController : POST /resend-invite
+CompleteInvite --> EleveursController : GET/POST /complete-invite
+
+' ============================================================
+' CONTROL -> CONTROL
+' ============================================================
+EleveursController --> EmailService : envoi email
+UtilisateursController --> EmailService : envoi email
+
+' ============================================================
+' CONTROL -> ENTITY
+' ============================================================
+EleveursController --> User : create / update / find
+UtilisateursController --> User : create / update / find
+
+EmailService ..> User : lecture données
+
+@enduml
+

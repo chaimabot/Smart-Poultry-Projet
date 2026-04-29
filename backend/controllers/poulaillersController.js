@@ -7,8 +7,6 @@ const mqttService = require("../services/mqttService");
 
 // ============================================================
 // SYNC CONFIG → ESP32
-// BUG CORRIGÉ #1 : tempMin et waterMin étaient absents du payload
-// L'ESP32 ne pouvait pas ajuster lampe ni pompe correctement
 // ============================================================
 async function syncConfig(poulaillerId, mqttSvc) {
   try {
@@ -28,7 +26,7 @@ async function syncConfig(poulaillerId, mqttSvc) {
       tempMin: poulailler.thresholds.temperatureMin || 20,
       tempMax: poulailler.thresholds.temperatureMax || 30,
       waterMin: poulailler.thresholds.waterLevelMin || 25,
-      waterHysteresis: 10, // ← Ajouté
+      waterHysteresis: 10,
       lampMode: poulailler.actuatorStates?.lamp?.mode || "auto",
       pumpMode: poulailler.actuatorStates?.pump?.mode || "auto",
       fanMode: poulailler.actuatorStates?.ventilation?.mode || "auto",
@@ -44,23 +42,39 @@ async function syncConfig(poulaillerId, mqttSvc) {
   }
 }
 
-// Validation Joi pour la création/mise à jour de poulailler
+// ============================================================
+// SCHEMA Joi — champs mis à jour
+// - type et location supprimés
+// - surface (obligatoire), remarque, address ajoutés
+// ============================================================
 const poulaillerSchema = Joi.object({
-  name: Joi.string().min(3).max(50).required(),
-  type: Joi.string()
-    .valid("pondeuses", "chair", "dindes", "canards", "autre")
-    .required(),
-  animalCount: Joi.number().min(1).required(),
-  description: Joi.string().max(200).allow("", null),
-  location: Joi.string().allow("", null),
-  photoUrl: Joi.string().allow("", null),
+  name: Joi.string().min(2).max(80).optional().allow("", null),
+  animalCount: Joi.number().integer().min(1).required(),
+  surface: Joi.number().positive().required().messages({
+    "number.base": "La surface doit être un nombre",
+    "number.positive": "La surface doit être supérieure à 0",
+    "any.required": "La surface est requise",
+  }),
+  remarque: Joi.string().max(200).optional().allow("", null),
+  address: Joi.string().max(300).optional().allow("", null),
+  photoUrl: Joi.string().optional().allow("", null),
 });
 
 // ============================================================
-// HELPER : générer un code unique pour le poulailler
+// HELPER : générer un nom automatique si absent
 // ============================================================
-function generateUniqueCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+function generateAutoName() {
+  return (
+    "Poulailler-" + Math.random().toString(36).substring(2, 6).toUpperCase()
+  );
+}
+
+// ============================================================
+// HELPER : calculer la densité (volailles / m²)
+// ============================================================
+function calculerDensite(animalCount, surface) {
+  if (!animalCount || !surface || surface <= 0) return null;
+  return parseFloat((animalCount / surface).toFixed(2));
 }
 
 // ============================================================
@@ -68,8 +82,7 @@ function generateUniqueCode() {
 // ============================================================
 async function getDefaultThresholds() {
   try {
-    const config = await SystemConfig.getDefaultThresholds();
-    return config;
+    return await SystemConfig.getDefaultThresholds();
   } catch (err) {
     console.error("[getDefaultThresholds] Erreur:", err.message);
     return {
@@ -95,6 +108,13 @@ function sampleHistory(arr, n) {
   return Array.from({ length: n }, (_, i) => arr[i * step]);
 }
 
+// ============================================================
+// HELPER : générer un code unique pour le poulailler
+// ============================================================
+function generateUniqueCode() {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+}
+
 // @desc    Créer un nouveau poulailler
 // @route   POST /api/poulaillers
 // @access  Private (Eleveur)
@@ -110,8 +130,20 @@ exports.createPoulailler = async (req, res) => {
     const defaultThresholds = await getDefaultThresholds();
     const uniqueCode = generateUniqueCode();
 
+    // Nom auto si vide
+    const name = req.body.name?.trim() || generateAutoName();
+
+    // Densité calculée
+    const densite = calculerDensite(req.body.animalCount, req.body.surface);
+
     const poulailler = await Poulailler.create({
-      ...req.body,
+      name,
+      animalCount: req.body.animalCount,
+      surface: req.body.surface,
+      densite,
+      remarque: req.body.remarque || null,
+      address: req.body.address || null,
+      photoUrl: req.body.photoUrl || null,
       owner: req.user.id,
       status: "en_attente_module",
       thresholds: { ...defaultThresholds },
@@ -119,10 +151,12 @@ exports.createPoulailler = async (req, res) => {
     });
 
     console.log(
-      "[CREATE POULAILLER] Seuils par défaut appliqués:",
-      defaultThresholds,
+      "[CREATE POULAILLER] Créé:",
+      name,
+      "| Densité:",
+      densite,
+      "vol/m²",
     );
-    console.log("[CREATE POULAILLER] uniqueCode généré:", uniqueCode);
 
     res.status(201).json({ success: true, data: poulailler });
   } catch (err) {
@@ -199,18 +233,21 @@ exports.updatePoulailler = async (req, res) => {
     }
 
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
+    // Pas de validation complète pour simple archivage/restauration
     if (
-      Object.keys(req.body).length === 1 &&
-      typeof req.body.isArchived === "boolean"
+      !(
+        Object.keys(req.body).length === 1 &&
+        typeof req.body.isArchived === "boolean"
+      )
     ) {
-      // pas de validation complète pour restauration
-    } else {
       const { error } = poulaillerSchema.validate(req.body);
       if (error) {
         return res
@@ -219,13 +256,19 @@ exports.updatePoulailler = async (req, res) => {
       }
     }
 
+    // Recalcul densité si animalCount ou surface changent
+    const newCount = req.body.animalCount ?? poulailler.animalCount;
+    const newSurface = req.body.surface ?? poulailler.surface;
+    const densite = calculerDensite(newCount, newSurface);
+
     const fieldsToUpdate = {
-      name: req.body.name,
-      type: req.body.type,
+      name: req.body.name?.trim() || poulailler.name,
       animalCount: req.body.animalCount,
-      description: req.body.description,
-      location: req.body.location,
-      photoUrl: req.body.photoUrl,
+      surface: req.body.surface,
+      densite,
+      remarque: req.body.remarque ?? poulailler.remarque,
+      address: req.body.address ?? poulailler.address,
+      photoUrl: req.body.photoUrl ?? poulailler.photoUrl,
     };
 
     if (typeof req.body.isArchived === "boolean") {
@@ -236,6 +279,14 @@ exports.updatePoulailler = async (req, res) => {
       req.params.id,
       fieldsToUpdate,
       { returnDocument: "after", runValidators: true },
+    );
+
+    console.log(
+      "[UPDATE POULAILLER]",
+      poulailler.name,
+      "| Densité recalculée:",
+      densite,
+      "vol/m²",
     );
 
     res.status(200).json({ success: true, data: poulailler });
@@ -259,10 +310,12 @@ exports.deletePoulailler = async (req, res) => {
     }
 
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     await Poulailler.deleteOne({ _id: req.params.id });
@@ -288,10 +341,12 @@ exports.archivePoulailler = async (req, res) => {
     }
 
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          error: "Action non autorisée sur ce poulailler",
+        });
     }
 
     poulailler.isArchived = true;
@@ -337,11 +392,9 @@ exports.getCriticalPoulaillers = async (req, res) => {
       isArchived: false,
     }).sort({ updatedAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: poulaillers.length,
-      data: poulaillers,
-    });
+    res
+      .status(200)
+      .json({ success: true, count: poulaillers.length, data: poulaillers });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
@@ -392,7 +445,6 @@ exports.updateThresholds = async (req, res) => {
     poulailler.thresholds = { ...poulailler.thresholds, ...req.body };
     await poulailler.save();
 
-    // Synchroniser les nouveaux seuils avec l'ESP32 immédiatement
     await syncConfig(req.params.id, mqttService);
 
     res.status(200).json({ success: true, data: poulailler.thresholds });
@@ -402,7 +454,7 @@ exports.updateThresholds = async (req, res) => {
   }
 };
 
-// @desc    Réinitialiser les seuils par défaut (depuis SystemConfig)
+// @desc    Réinitialiser les seuils par défaut
 // @route   POST /api/poulaillers/:id/thresholds/reset
 // @access  Private
 exports.resetThresholds = async (req, res) => {
@@ -425,7 +477,6 @@ exports.resetThresholds = async (req, res) => {
 
     console.log("[RESET THRESHOLDS] Seuils réinitialisés:", defaultThresholds);
 
-    // Synchroniser les seuils réinitialisés avec l'ESP32
     await syncConfig(req.params.id, mqttService);
 
     res.status(200).json({ success: true, data: poulailler.thresholds });
@@ -435,7 +486,7 @@ exports.resetThresholds = async (req, res) => {
   }
 };
 
-// @desc    Obtenir les mesures actuelles (depuis MQTT ou dernière mesure)
+// @desc    Obtenir les mesures actuelles
 // @route   GET /api/poulaillers/:id/current-measures
 // @access  Private
 exports.getCurrentMeasures = async (req, res) => {
@@ -498,11 +549,9 @@ exports.getArchivedPoulaillers = async (req, res) => {
       isArchived: true,
     }).sort({ createdAt: -1 });
 
-    res.status(200).json({
-      success: true,
-      count: poulaillers.length,
-      data: poulaillers,
-    });
+    res
+      .status(200)
+      .json({ success: true, count: poulaillers.length, data: poulaillers });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
@@ -582,7 +631,7 @@ exports.getMonitoringData = async (req, res) => {
   }
 };
 
-// @desc    Contrôler un actionneur (porte / ventilation / lampe / pompe)
+// @desc    Contrôler un actionneur
 // @route   PATCH /api/poulaillers/:id/actuators
 // @access  Private
 exports.controlActuator = async (req, res) => {
@@ -606,7 +655,6 @@ exports.controlActuator = async (req, res) => {
     if (!validActuators.includes(actuator)) {
       return res.status(400).json({
         success: false,
-        // BUG CORRIGÉ #2 : message d'erreur mis à jour pour inclure tous les actionneurs valides
         error: `Actionneur invalide. Valeurs acceptées : ${validActuators.join(" | ")}`,
       });
     }
@@ -638,55 +686,34 @@ exports.controlActuator = async (req, res) => {
     }
     await poulailler.save();
 
-    // Publier MQTT vers ESP32
     const mqttClient = mqttService.getMqttClient();
     if (mqttClient && mqttClient.connected) {
-      // Utiliser uniqueCode si disponible, sinon l'ID MongoDB
       const poulaillerId = poulailler.uniqueCode || poulailler._id.toString();
-
-      // Topic par actionneur (cohérent avec ce que l'ESP32 écoute)
       const topicMap = {
         door: "door",
         ventilation: "fan",
         lamp: "lamp",
         pump: "pump",
       };
-
       const espTopic = `poulailler/${poulaillerId}/cmd/${topicMap[actuator]}`;
 
-      // Format du payload selon l'actionneur
-      let mqttPayload;
-      if (actuator === "door") {
-        // La porte utilise {"action": "open"/"stop"}
-        mqttPayload = {
-          action: state === "open" ? "open" : "stop",
-        };
-      } else {
-        // Ventilateur, lampe, pompe utilisent {"on": true/false, "mode": "auto"/"manual"}
-        mqttPayload = {
-          on: state === "on",
-          mode: mode || "manual",
-        };
-      }
+      const mqttPayload =
+        actuator === "door"
+          ? { action: state === "open" ? "open" : "stop" }
+          : { on: state === "on", mode: mode || "manual" };
 
-      console.log(
-        `[MQTT PAYLOAD] actuator=${actuator} state=${state} mode=${mode} payload=${JSON.stringify(mqttPayload)}`,
-      );
       mqttClient.publish(espTopic, JSON.stringify(mqttPayload), { qos: 1 });
       console.log(`[MQTT→ESP32] ${espTopic}: ${JSON.stringify(mqttPayload)}`);
     } else {
       console.warn("[MQTT] Client non connecté pour commande", actuator);
     }
 
-    // Enregistrement de la commande en base
-    // BUG CORRIGÉ #2 & #8 : typeMap inclut "pompe", actionMap en français pour la DB
     const typeMap = {
       door: "porte",
       ventilation: "ventilateur",
       lamp: "lampe",
-      pump: "pompe", // AJOUT
+      pump: "pompe",
     };
-
     const actionMapFr = {
       door: { open: "ouvrir", closed: "fermer" },
       ventilation: { on: "demarrer", off: "arreter" },
@@ -703,7 +730,6 @@ exports.controlActuator = async (req, res) => {
       status: "sent",
     });
 
-    // Sync config thresholds après toute commande actionneur
     await syncConfig(req.params.id, mqttService);
 
     res.status(200).json({
@@ -779,13 +805,9 @@ exports.getMeasureHistory = async (req, res) => {
       value: m[sensor],
     }));
 
-    res.status(200).json({
-      success: true,
-      sensor,
-      period,
-      count: data.length,
-      data,
-    });
+    res
+      .status(200)
+      .json({ success: true, sensor, period, count: data.length, data });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
