@@ -56,9 +56,4 @@ const dossierSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-// FIXED: Removed pre-save middleware - generate contractNumber in controller if needed
-dossierSchema.pre("save", function (next) {
-  next();
-});
-
 module.exports = mongoose.model("Dossier", dossierSchema);
