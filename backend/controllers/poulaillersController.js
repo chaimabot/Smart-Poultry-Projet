@@ -38,91 +38,189 @@ exports.createPoulailler = async (req, res) => {
   session.startTransaction();
 
   try {
-    console.log("=== CREATE START ===");
-    console.log("USER:", req.user);
+    console.log("=== CREATE POULAILLER + DOSSIER ===");
 
-    const userId = req.user?.id || req.user?._id;
+    // =====================================================
+    // 1️⃣ VALIDATION
+    // =====================================================
+    const { error, value } = poulaillerSchema.validate(req.body, {
+      stripUnknown: true,
+    });
 
-    if (!userId) {
-      return res.status(401).json({
+    if (error) {
+      await session.abortTransaction();
+      session.endSession();
+
+      return res.status(400).json({
         success: false,
-        message: "Utilisateur non authentifié",
+        message: error.details[0].message,
       });
     }
 
-    const {
-      name,
-      animalCount,
-      surface,
-      remarque,
-      address,
-      attachments = [],
-      totalAmount = 0,
-      advanceAmount = 0,
-    } = req.body;
-
-    // =========================================================
-    // 1️⃣ CREATE POULAILLER
-    // =========================================================
-    const [poulailler] = await Poulailler.create(
+    // =====================================================
+    // 2️⃣ CREATE POULAILLER
+    // =====================================================
+    const poulailler = await Poulailler.create(
       [
         {
-          name: name || generateAutoName(),
-          animalCount,
-          surface,
-          densite: calculerDensite(animalCount, surface),
-          owner: userId,
-          status: "en_attente_module",
+          name: value.name || generateAutoName(),
+          animalCount: value.animalCount,
+          surface: value.surface,
+          densite: calculerDensite(value.animalCount, value.surface),
+          owner: req.user.id,
           uniqueCode: generateUniqueCode(),
-          remarque: remarque || null,
-          address: address || null,
-          attachments: normalizeAttachments(attachments),
+          status: "en_attente_module",
+          attachments: normalizeAttachments(value.attachments),
+          remarque: value.remarque || null,
+          address: value.address || null,
         },
       ],
       { session },
     );
 
-    console.log("✅ Poulailler créé:", poulailler._id);
+    console.log("✅ Poulailler créé:", poulailler[0]._id);
 
-    // =========================================================
-    // 2️⃣ CREATE DOSSIER (OBLIGATOIRE)
-    // =========================================================
-    const [dossier] = await Dossier.create(
+    // =====================================================
+    // 3️⃣ CREATE DOSSIER (IMPORTANT)
+    // =====================================================
+    const dossier = await Dossier.create(
       [
         {
-          eleveur: userId,
-          poulailler: poulailler._id,
+          eleveur: req.user.id,
+          poulailler: poulailler[0]._id,
           status: "EN_ATTENTE",
           source: "mobile-app",
-          totalAmount,
-          advanceAmount,
-          remainedAmount: totalAmount - advanceAmount,
+          totalAmount: 0,
+          advanceAmount: 0,
+          remainedAmount: 0,
         },
       ],
       { session },
     );
 
-    console.log("✅ Dossier créé:", dossier._id);
+    console.log("✅ Dossier créé:", dossier[0]._id);
 
-    // =========================================================
-    // 3️⃣ COMMIT
-    // =========================================================
+    // =====================================================
+    // 4️⃣ COMMIT
+    // =====================================================
     await session.commitTransaction();
     session.endSession();
 
     return res.status(201).json({
       success: true,
-      message: "Poulailler et dossier créés avec succès",
+      message: "Poulailler + dossier créés avec succès",
       data: {
-        poulailler,
-        dossier,
+        poulailler: poulailler[0],
+        dossier: dossier[0],
       },
     });
   } catch (err) {
+    // =====================================================
+    // ❌ ROLLBACK SI ERREUR
+    // =====================================================
     await session.abortTransaction();
     session.endSession();
 
-    console.error("❌ ERREUR CREATE:", err);
+    console.error("❌ ERREUR GLOBAL:", err.message);
+    console.error(err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Erreur serveur",
+      error: err.message,
+    });
+  }
+};
+exports.createPoulailler = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    console.log("=== CREATE POULAILLER + DOSSIER ===");
+
+    // =====================================================
+    // 1️⃣ VALIDATION
+    // =====================================================
+    const { error, value } = poulaillerSchema.validate(req.body, {
+      stripUnknown: true,
+    });
+
+    if (error) {
+      await session.abortTransaction();
+      session.endSession();
+
+      return res.status(400).json({
+        success: false,
+        message: error.details[0].message,
+      });
+    }
+
+    // =====================================================
+    // 2️⃣ CREATE POULAILLER
+    // =====================================================
+    const poulailler = await Poulailler.create(
+      [
+        {
+          name: value.name || generateAutoName(),
+          animalCount: value.animalCount,
+          surface: value.surface,
+          densite: calculerDensite(value.animalCount, value.surface),
+          owner: req.user.id,
+          uniqueCode: generateUniqueCode(),
+          status: "en_attente_module",
+          attachments: normalizeAttachments(value.attachments),
+          remarque: value.remarque || null,
+          address: value.address || null,
+        },
+      ],
+      { session },
+    );
+
+    console.log("✅ Poulailler créé:", poulailler[0]._id);
+
+    // =====================================================
+    // 3️⃣ CREATE DOSSIER (IMPORTANT)
+    // =====================================================
+    const dossier = await Dossier.create(
+      [
+        {
+          eleveur: req.user.id,
+          poulailler: poulailler[0]._id,
+          status: "EN_ATTENTE",
+          source: "mobile-app",
+          totalAmount: 0,
+          advanceAmount: 0,
+          remainedAmount: 0,
+        },
+      ],
+      { session },
+    );
+
+    console.log("✅ Dossier créé:", dossier[0]._id);
+
+    // =====================================================
+    // 4️⃣ COMMIT
+    // =====================================================
+    await session.commitTransaction();
+    session.endSession();
+
+    return res.status(201).json({
+      success: true,
+      message: "Poulailler + dossier créés avec succès",
+      data: {
+        poulailler: poulailler[0],
+        dossier: dossier[0],
+      },
+    });
+  } catch (err) {
+    // =====================================================
+    // ❌ ROLLBACK SI ERREUR
+    // =====================================================
+    await session.abortTransaction();
+    session.endSession();
+
+    console.error("❌ ERREUR GLOBAL:", err.message);
+    console.error(err);
 
     return res.status(500).json({
       success: false,
