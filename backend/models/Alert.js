@@ -1,20 +1,5 @@
 const mongoose = require("mongoose");
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Modèle Alert — Smart Poultry
-//
-// Types d'alertes :
-//   • "sensor"  → déclenchée par un capteur (DHT22, MQ-135, HC-SR04, capteur poussière)
-//   • "door"    → déclenchée par un événement de porte (ouverture / fermeture)
-//   • "actuator"→ déclenchée par un actionneur (ventilateur, lampe)
-//   • "mqtt"    → déclenchée par un événement de connexion MQTT
-//
-// Sévérités :
-//   • "info"    → événement informatif (porte ouverte selon planning, reconnexion OK)
-//   • "warn"    → proche du seuil (80-100 % du seuil danger)
-//   • "danger"  → seuil critique dépassé / déconnexion MQTT
-// ─────────────────────────────────────────────────────────────────────────────
-
 const alertSchema = new mongoose.Schema(
   {
     poulailler: {
@@ -32,7 +17,6 @@ const alertSchema = new mongoose.Schema(
       default: "sensor",
     },
 
-    // Clé unique de l'événement (ex: "temperature", "door_open", "fan_on", "mqtt_disconnect")
     key: {
       type: String,
       required: true,
@@ -41,8 +25,9 @@ const alertSchema = new mongoose.Schema(
     // ── Champs spécifiques capteur (optionnels) ───────────────────────────────
     parameter: {
       type: String,
+      // FIX: null is not a valid enum value in Mongoose — use sparse or just omit it
       enum: ["temperature", "humidity", "co2", "nh3", "dust", "waterLevel"],
-      default: null,
+      default: undefined, // FIX: was `null`, which fails enum validation on non-sensor alerts
     },
     value: {
       type: Number,
@@ -54,8 +39,8 @@ const alertSchema = new mongoose.Schema(
     },
     direction: {
       type: String,
-      enum: ["above", "below", null],
-      default: null,
+      enum: ["above", "below"], // FIX: removed `null` from enum — null is not a valid enum member in Mongoose
+      default: undefined, // FIX: use undefined so the field is simply absent when not applicable
     },
 
     // ── Champs affichage ──────────────────────────────────────────────────────
@@ -79,6 +64,7 @@ const alertSchema = new mongoose.Schema(
     read: {
       type: Boolean,
       default: false,
+      index: true, // FIX: add index here since it's used heavily in queries
     },
     resolvedAt: {
       type: Date,
@@ -86,7 +72,7 @@ const alertSchema = new mongoose.Schema(
     },
   },
   {
-    timestamps: true, // createdAt, updatedAt
+    timestamps: true,
   },
 );
 
