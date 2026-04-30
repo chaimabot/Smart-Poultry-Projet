@@ -68,13 +68,14 @@ const userSchema = new mongoose.Schema(
 );
 
 // Chiffrer le mot de passe avant de sauvegarder
-userSchema.pre("save", async function () {
+userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) {
-    return;
+    return next();
   }
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
+  next(); // FIX: missing next() call was causing "next is not a function" error
 });
 
 // Méthode pour vérifier le mot de passe

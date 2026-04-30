@@ -274,10 +274,10 @@ export default function AddPoultryScreen({ navigation, route }) {
 
   const [name, setName] = useState(poultryToEdit?.name || "");
   const [animalCount, setAnimalCount] = useState(
-    poultryToEdit?.animalCount ? String(poultryToEdit.animalCount) : "",
+    poultryToEdit?.animalCount != null ? String(poultryToEdit.animalCount) : "",
   );
   const [surface, setSurface] = useState(
-    poultryToEdit?.surface ? String(poultryToEdit.surface) : "",
+    poultryToEdit?.surface != null ? String(poultryToEdit.surface) : "",
   );
   const [remarque, setRemarque] = useState(poultryToEdit?.remarque || "");
   const [address, setAddress] = useState(poultryToEdit?.address || "");

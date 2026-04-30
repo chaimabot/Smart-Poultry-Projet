@@ -74,7 +74,14 @@ const BADGE_CONFIG = {
     dot: "#EF4444",
   },
 };
-
+const POULTRY_IMAGES = [
+  "https://images.unsplash.com/photo-1548550023-2bdb3c5beed7?w=800", // poulets blancs
+  "https://images.unsplash.com/photo-1612170153139-6f881ff067e0?w=800",
+  "https://tse3.mm.bing.net/th/id/OIP.cAdRf0kqniGvEPQCHmAeYAHaHa?rs=1&pid=ImgDetMain&o=7&rm=3",
+  "https://www.bing.com/images/search?view=detailV2&ccid=%2fZkC8ORt&id=A292CB865E62F378DDE24CABCBCE394612C07BB6&thid=OIP._ZkC8ORtQ5bbZ8FTOqC50QHaHa&mediaurl=https%3a%2f%2fchoisir-son-poulailler.com%2fwp-content%2fuploads%2f2022%2f09%2fmeilleurs-poulaillers-poules-comparatif.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.fd9902f0e46d4396db67c1533aa0b9d1%3frik%3dtnvAEkY5zsurTA%26pid%3dImgRaw%26r%3d0&exph=1500&expw=1500&q=poulaillers&FORM=IRPRST&ck=E01CB97B34B6A9CCBA9131468F87DC06&selectedIndex=70&itb=0",
+  "https://www.bing.com/images/search?view=detailV2&ccid=26QhukH9&id=8180C2490B59075CE979C745B27CBED81752FA26&thid=OIP.26QhukH90syDKuGQqu7JFQHaDr&mediaurl=https%3a%2f%2fpoulailler-bio.fr%2fwp-content%2fuploads%2f2016%2f01%2fpoulailler-fait-avec-de-la-r%c3%a9cupr%c3%a9ration-de-touret-de-chantier.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.dba421ba41fdd2cc832ae190aaeec915%3frik%3dJvpSF9i%252bfLJFxw%26pid%3dImgRaw%26r%3d0&exph=893&expw=1800&q=poulaillers&FORM=IRPRST&ck=322ADBF2B7F8B6E8EADE7D800B0A9E37&selectedIndex=131&itb=0",
+  "https://www.bing.com/images/search?view=detailV2&ccid=mRl7GP7f&id=ACB6F8C0A85C256975090B1F02B31A91BC6CAE34&thid=OIP.mRl7GP7fVv2mer0KV5vh_wHaEi&mediaurl=https%3a%2f%2fi.pinimg.com%2foriginals%2f3d%2fe4%2fa6%2f3de4a69e7abd2e665f81197e0069183c.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.99197b18fedf56fda67abd0a579be1ff%3frik%3dNK5svJEaswIfCw%26pid%3dImgRaw%26r%3d0&exph=1110&expw=1813&q=poulaillers&FORM=IRPRST&ck=6240D5ECB17A264730F8039310AD3B2F&selectedIndex=171&itb=0",
+];
 const getBadge = (status, isCritical) => {
   if (isCritical) return BADGE_CONFIG.alerte;
   return BADGE_CONFIG[status] || BADGE_CONFIG.connecte;
@@ -150,21 +157,22 @@ export default function DashboardScreen({ navigation }) {
       if (data?.success) {
         const formatted = data.data
           .filter((p) => !p.isArchived)
-          .map((p) => ({
+          .map((p, index) => ({
             id: p._id,
             name: p.name,
             type: p.type,
             location: p.location || "Zone Élevage 1",
             count: p.animalCount || 0,
+            animalCount: p.animalCount || 0, // ← ajouter
+            surface: p.surface || "", // ← ajouter
+            remarque: p.remarque || "", // ← ajouter
+            address: p.address || "", // ← ajouter
+            attachments: p.attachments || [], // ← ajouter
             temp: p.lastMonitoring?.temperature?.toFixed(1) || "—",
             humid: p.lastMonitoring?.humidity?.toFixed(0) || "—",
             isCritical: p.isCritical || false,
-            // ✅ status récupéré depuis l'API pour le badge
             status: p.status || "en_attente_module",
-            image:
-              p.photoUrl ||
-              "https://images.unsplash.com/photo-1581092160607-798aa0b7d9c6?w=800",
-            lastUpdated: "2m",
+            image: p.photoUrl || POULTRY_IMAGES[index % POULTRY_IMAGES.length],
           }));
         setPoultryList(formatted);
       }
@@ -302,9 +310,12 @@ export default function DashboardScreen({ navigation }) {
         poultry: {
           id: p.id,
           name: p.name,
-          type: p.type,
+          animalCount: p.count, // ← renommé
+          surface: p.surface || "", // ← à ajouter dans formatted si dispo
           location: p.location,
-          count: p.count,
+          remarque: p.remarque || "",
+          address: p.address || "",
+          attachments: p.attachments || [],
           image: p.image,
         },
       });
