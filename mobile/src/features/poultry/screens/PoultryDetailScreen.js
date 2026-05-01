@@ -353,6 +353,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
       {showNotifPopup && (
         <NotificationPopup
           alerts={alerts}
+          poultryName={displayName}
           onClose={() => setShowNotifPopup(false)}
           onMarkAllRead={markAllRead}
           onViewAll={() => {

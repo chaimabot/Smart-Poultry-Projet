@@ -14,15 +14,19 @@ import {
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
-export const FALLBACK_THRESHOLDS = {
-  temperatureMin: 18,
-  temperatureMax: 28,
-  humidityMin: 40,
-  humidityMax: 70,
-  co2Max: 1500,
-  nh3Max: 25,
-  dustMax: 150,
-  waterLevelMin: 20,
+// Les clés attendues depuis la BD (SystemConfig.defaultThresholds)
+// Pas de valeurs hardcodées — null signifie "pas encore chargé depuis la BD"
+const EMPTY_THRESHOLDS = {
+  temperatureMin: null,
+  temperatureMax: null,
+  humidityMin: null,
+  humidityMax: null,
+  co2Max: null,
+  co2Warning: null,
+  co2Critical: null,
+  nh3Max: null,
+  dustMax: null,
+  waterLevelMin: null,
 };
 
 export const PARAM_ICONS = {
@@ -37,6 +41,22 @@ export const PARAM_ICONS = {
 // ── Validation ────────────────────────────────────────────────────────────────
 
 export function validateThresholds(vals) {
+  // Vérifier qu'aucune valeur n'est encore null (BD pas encore chargée)
+  const hasNull = Object.entries(vals).some(
+    ([k, v]) =>
+      [
+        "temperatureMin",
+        "temperatureMax",
+        "humidityMin",
+        "humidityMax",
+        "co2Max",
+        "nh3Max",
+        "dustMax",
+        "waterLevelMin",
+      ].includes(k) && v === null,
+  );
+  if (hasNull) return "Les seuils ne sont pas encore chargés";
+
   if (vals.temperatureMin >= vals.temperatureMax)
     return "Température min doit être < max";
   if (vals.humidityMin >= vals.humidityMax)
@@ -53,6 +73,31 @@ export function validateThresholds(vals) {
   return null;
 }
 
+// ── Normalisation réponse BD ──────────────────────────────────────────────────
+
+// Extrait uniquement les clés connues depuis SystemConfig.defaultThresholds
+function normalizeDBThresholds(data) {
+  if (!data) return null;
+
+  // La BD retourne soit data directement, soit data.defaultThresholds
+  const src = data.defaultThresholds ?? data;
+
+  const result = {};
+  const keys = Object.keys(EMPTY_THRESHOLDS);
+
+  for (const key of keys) {
+    // On n'accepte que les valeurs numériques — on rejette null/undefined/NaN
+    const val = src[key];
+    if (typeof val === "number" && !isNaN(val)) {
+      result[key] = val;
+    }
+    // Si la clé est absente de la BD, elle reste absente du résultat
+    // (le merge avec les seuils du poulailler gérera le cas)
+  }
+
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export default function useAlertSettings({ poultryId, activeTab, setToast }) {
@@ -60,11 +105,11 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
   const [saving, setSaving] = useState(false);
   const [stats, setStats] = useState(null);
   const [alerts, setAlerts] = useState([]);
-  const [thresholds, setThresholds] = useState(FALLBACK_THRESHOLDS);
-  const [defaultThresholds, setDefaultThresholds] =
-    useState(FALLBACK_THRESHOLDS);
+  const [thresholds, setThresholds] = useState(EMPTY_THRESHOLDS);
+  const [defaultThresholds, setDefaultThresholds] = useState(EMPTY_THRESHOLDS);
+  const [dbLoadError, setDbLoadError] = useState(false);
 
-  const previousThresholds = useRef(FALLBACK_THRESHOLDS);
+  const previousThresholds = useRef(EMPTY_THRESHOLDS);
 
   const hasChanges = useMemo(
     () =>
@@ -74,35 +119,60 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
 
   // ── Fetch ─────────────────────────────────────────────────────────────────
   const fetchData = useCallback(async () => {
+    if (!poultryId) return;
+
     try {
       setLoading(true);
+      setDbLoadError(false);
 
-      // 1. Seuils par défaut depuis SystemConfig
-      let fetchedDefaults = FALLBACK_THRESHOLDS;
+      // ── Étape 1 : seuils par défaut depuis BD (obligatoire) ───────────────
+      // On attend ce résultat avant tout — c'est la source de vérité
+      let dbDefaults = null;
+
       try {
         const defaultRes = await getDefaultThresholds();
+
         if (defaultRes.success && defaultRes.data) {
-          fetchedDefaults = { ...FALLBACK_THRESHOLDS, ...defaultRes.data };
-          setDefaultThresholds(fetchedDefaults);
+          dbDefaults = normalizeDBThresholds(defaultRes.data);
         }
       } catch (e) {
-        console.log("[AlertSettings] Erreur seuils par défaut:", e);
+        console.error("[AlertSettings] getDefaultThresholds error:", e.message);
       }
 
-      // 2. Seuils + alertes + stats en parallèle
+      if (!dbDefaults) {
+        // BD inaccessible ou retourne des données invalides
+        setDbLoadError(true);
+        setToast({
+          visible: true,
+          message: "Impossible de charger les seuils système depuis la BD",
+          type: "error",
+        });
+        // On ne peut pas afficher de valeurs sensées sans la BD → on arrête ici
+        setLoading(false);
+        return;
+      }
+
+      setDefaultThresholds(dbDefaults);
+      console.log("[AlertSettings] Seuils BD chargés ✓", dbDefaults);
+
+      // ── Étape 2 : seuils poulailler + alertes + stats en parallèle ────────
       const [threshRes, alertRes, statsRes] = await Promise.all([
         getThresholds(poultryId),
         getAlerts(poultryId),
         getAlertStats(poultryId),
       ]);
 
-      if (threshRes.success) {
-        const t = { ...fetchedDefaults, ...threshRes.data };
-        setThresholds(t);
-        previousThresholds.current = t;
+      // Merge : base = BD, override = seuils propres au poulailler
+      // Si le poulailler n'a pas de seuil personnalisé → on garde celui de la BD
+      if (threshRes.success && threshRes.data) {
+        const poultryThresholds = normalizeDBThresholds(threshRes.data) ?? {};
+        const merged = { ...dbDefaults, ...poultryThresholds };
+        setThresholds(merged);
+        previousThresholds.current = merged;
       } else {
-        setThresholds(fetchedDefaults);
-        previousThresholds.current = fetchedDefaults;
+        // Pas de seuils propres → on affiche uniquement ceux de la BD
+        setThresholds(dbDefaults);
+        previousThresholds.current = dbDefaults;
       }
 
       if (alertRes.success) {
@@ -110,11 +180,17 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
           Array.isArray(alertRes.data) ? alertRes.data.slice(0, 30) : [],
         );
       }
+
       if (statsRes.success) {
         setStats(statsRes.data);
       }
     } catch (e) {
-      console.log("[AlertSettings] fetchData error:", e);
+      console.error("[AlertSettings] fetchData error:", e);
+      setToast({
+        visible: true,
+        message: "Erreur de chargement des données",
+        type: "error",
+      });
     } finally {
       setLoading(false);
     }
@@ -124,19 +200,13 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
     fetchData();
   }, [fetchData]);
 
-  // ── FIX: Suppression du useEffect d'auto-mark-read ────────────────────────
-  // L'auto-mark-read causait une race condition : toutes les alertes étaient
-  // marquées "lues" en state AVANT que le serveur confirme, rendant
-  // "Supprimer lues" inefficace (le serveur ne les voyait pas encore comme lues).
-  // L'utilisateur utilise désormais le bouton "Tout lire" explicitement.
-
   // ── Threshold handlers ────────────────────────────────────────────────────
   const handleThresholdChange = (key, text) => {
     const numeric = text.replace(/[^0-9.-]/g, "");
     if (numeric === "" || !isNaN(parseFloat(numeric))) {
       setThresholds((prev) => ({
         ...prev,
-        [key]: numeric === "" ? 0 : parseFloat(numeric) || 0,
+        [key]: numeric === "" ? null : parseFloat(numeric),
       }));
     }
   };
@@ -157,6 +227,12 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
           message: "Seuils enregistrés ✓",
           type: "success",
         });
+      } else {
+        setToast({
+          visible: true,
+          message: res.message || "Erreur lors de l'enregistrement",
+          type: "error",
+        });
       }
     } catch (e) {
       setToast({
@@ -170,9 +246,18 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
   };
 
   const handleReset = () => {
+    if (dbLoadError || !defaultThresholds) {
+      setToast({
+        visible: true,
+        message: "Seuils système non disponibles",
+        type: "error",
+      });
+      return;
+    }
+
     Alert.alert(
       "Réinitialiser",
-      "Voulez-vous réinitialiser les seuils aux valeurs par défaut ?",
+      "Réinitialiser aux valeurs par défaut de la configuration système (BD) ?",
       [
         { text: "Annuler", style: "cancel" },
         {
@@ -191,33 +276,42 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
     try {
       await markAlertAsRead(alertId);
       setAlerts((prev) =>
-        prev.map((a) =>
-          a._id === alertId ? { ...a, read: true, isRead: true } : a,
-        ),
+        prev.map((a) => (a._id === alertId ? { ...a, read: true } : a)),
       );
       setStats((prev) =>
         prev ? { ...prev, unread: Math.max(0, prev.unread - 1) } : prev,
       );
     } catch (e) {
-      console.log(e);
+      console.log("[AlertSettings] markAsRead error:", e);
     }
   };
 
   const handleMarkAllAsRead = async () => {
+    // Optimistic update immédiat
+    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+    setStats((prev) => (prev ? { ...prev, unread: 0 } : prev));
+
     try {
-      setAlerts((prev) =>
-        prev.map((a) => ({ ...a, read: true, isRead: true })),
-      );
-      setStats((prev) => (prev ? { ...prev, unread: 0 } : prev));
+      await markAllAlertsAsRead(poultryId);
     } catch (e) {
       console.log("[AlertSettings] markAllAsRead error:", e);
+      // Rollback si backend échoue
+      const alertRes = await getAlerts(poultryId);
+      if (alertRes.success) {
+        setAlerts(
+          Array.isArray(alertRes.data) ? alertRes.data.slice(0, 30) : [],
+        );
+      }
+      setToast({
+        visible: true,
+        message: "Erreur lors du marquage",
+        type: "error",
+      });
     }
   };
 
   const handleDeleteRead = () => {
-    // 🔴 Sécurité : vérifier ID
     if (!poultryId) {
-      console.log("ERROR: poultryId is undefined");
       setToast({
         visible: true,
         message: "Erreur: poulailler non défini",
@@ -233,29 +327,22 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
         style: "destructive",
         onPress: async () => {
           try {
-            console.log("Deleting alerts for:", poultryId);
-
-            // 🔥 Appel API
             const res = await deleteReadAlerts(poultryId);
+            const deleted = res?.data?.deleted ?? res?.deleted ?? 0;
 
-            console.log("DELETE RESULT:", res);
+            const [alertRes, statsRes] = await Promise.all([
+              getAlerts(poultryId),
+              getAlertStats(poultryId),
+            ]);
 
-            // 🔴 Recharge depuis backend (source de vérité)
-            const alertRes = await getAlerts(poultryId);
             if (alertRes.success) {
               setAlerts(
                 Array.isArray(alertRes.data) ? alertRes.data.slice(0, 30) : [],
               );
             }
-
-            // 🔴 Refresh stats
-            const statsRes = await getAlertStats(poultryId);
             if (statsRes.success) {
               setStats(statsRes.data);
             }
-
-            // 🔥 Feedback réel
-            const deleted = res?.deleted || 0;
 
             setToast({
               visible: true,
@@ -263,11 +350,10 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
                 deleted > 0
                   ? `${deleted} alerte(s) supprimée(s)`
                   : "Aucune alerte lue à supprimer",
-              type: deleted > 0 ? "success" : "error",
+              type: deleted > 0 ? "success" : "info",
             });
           } catch (e) {
-            console.log("DELETE ERROR:", e);
-
+            console.log("[AlertSettings] deleteRead error:", e);
             setToast({
               visible: true,
               message: "Erreur lors de la suppression",
@@ -285,6 +371,8 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
     stats,
     alerts,
     thresholds,
+    defaultThresholds,
+    dbLoadError,
     hasChanges,
     fetchData,
     handleThresholdChange,

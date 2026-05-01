@@ -10,8 +10,6 @@ import {
 } from "react-native";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function relativeTime(ts) {
   if (!ts) return "À l'instant";
   const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
@@ -53,16 +51,16 @@ function severityStyle(severity) {
   };
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
-
 /**
- * @param {object[]} alerts
+ * @param {object[]} alerts        — alertes filtrées par poulailler (depuis usePoultryState)
+ * @param {string}   poultryName   — nom du poulailler pour le header
  * @param {()=>void} onClose
  * @param {()=>void} onMarkAllRead
  * @param {()=>void} onViewAll
  */
 export default function NotificationPopup({
   alerts,
+  poultryName, // FIX: ajouté pour afficher le contexte dans le header
   onClose,
   onMarkAllRead,
   onViewAll,
@@ -116,12 +114,26 @@ export default function NotificationPopup({
               borderBottomColor: "#F1F5F9",
             }}
           >
-            <View>
+            <View style={{ flex: 1, marginRight: 8 }}>
               <Text
                 style={{ fontSize: 15, fontWeight: "800", color: "#1E293B" }}
               >
                 Notifications
               </Text>
+              {/* FIX: affiche le nom du poulailler sous le titre */}
+              {poultryName ? (
+                <Text
+                  style={{
+                    fontSize: 11,
+                    color: "#22C55E",
+                    marginTop: 1,
+                    fontWeight: "600",
+                  }}
+                  numberOfLines={1}
+                >
+                  {poultryName}
+                </Text>
+              ) : null}
               <Text
                 style={{
                   fontSize: 11,
@@ -203,7 +215,7 @@ export default function NotificationPopup({
                 <Text
                   style={{ fontSize: 13, color: "#94A3B8", fontWeight: "500" }}
                 >
-                  Aucune notification
+                  Aucune notification pour ce poulailler
                 </Text>
               </View>
             ) : (
@@ -302,7 +314,7 @@ export default function NotificationPopup({
                           fontWeight: "500",
                         }}
                       >
-                        {relativeTime(alert.timestamp)}
+                        {relativeTime(alert.createdAt)}
                       </Text>
                     </View>
                   </View>

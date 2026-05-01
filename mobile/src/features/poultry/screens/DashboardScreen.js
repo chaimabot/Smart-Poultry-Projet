@@ -39,8 +39,35 @@ import { getUserData } from "../../../services/auth";
 
 const { width } = Dimensions.get("window");
 
-// ── Badge config selon le status du poulailler ────────────────────────────────
-// status Mongoose : "en_attente_module" | "connecte" | "hors_ligne" | "maintenance" | "archive"
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function getAirQuality(co2, nh3, dust) {
+  if (co2 === null && nh3 === null && dust === null)
+    return { label: "—", color: "#94A3B8" };
+  if (
+    (co2 !== null && co2 > 1500) ||
+    (nh3 !== null && nh3 > 25) ||
+    (dust !== null && dust > 150)
+  )
+    return { label: "Mauvaise", color: "#EF4444" };
+  if (
+    (co2 !== null && co2 > 1000) ||
+    (nh3 !== null && nh3 > 15) ||
+    (dust !== null && dust > 100)
+  )
+    return { label: "Moyenne", color: "#F97316" };
+  return { label: "Excellente", color: "#22C55E" };
+}
+
+function getTimeAgo(timestamp) {
+  if (!timestamp) return "—";
+  const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}min`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}j`;
+}
+
+// ── Badge config ───────────────────────────────────────────────────────────────
 const BADGE_CONFIG = {
   en_attente_module: {
     label: "En attente",
@@ -66,7 +93,6 @@ const BADGE_CONFIG = {
     textColor: "#F97316",
     dot: "#F97316",
   },
-  // fallback si isCritical
   alerte: {
     label: "Alerte",
     bg: "#EF4444",
@@ -74,22 +100,20 @@ const BADGE_CONFIG = {
     dot: "#EF4444",
   },
 };
+
 const POULTRY_IMAGES = [
-  "https://images.unsplash.com/photo-1548550023-2bdb3c5beed7?w=800", // poulets blancs
+  "https://images.unsplash.com/photo-1548550023-2bdb3c5beed7?w=800",
   "https://images.unsplash.com/photo-1612170153139-6f881ff067e0?w=800",
-  "https://tse3.mm.bing.net/th/id/OIP.cAdRf0kqniGvEPQCHmAeYAHaHa?rs=1&pid=ImgDetMain&o=7&rm=3",
-  "https://www.bing.com/images/search?view=detailV2&ccid=%2fZkC8ORt&id=A292CB865E62F378DDE24CABCBCE394612C07BB6&thid=OIP._ZkC8ORtQ5bbZ8FTOqC50QHaHa&mediaurl=https%3a%2f%2fchoisir-son-poulailler.com%2fwp-content%2fuploads%2f2022%2f09%2fmeilleurs-poulaillers-poules-comparatif.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.fd9902f0e46d4396db67c1533aa0b9d1%3frik%3dtnvAEkY5zsurTA%26pid%3dImgRaw%26r%3d0&exph=1500&expw=1500&q=poulaillers&FORM=IRPRST&ck=E01CB97B34B6A9CCBA9131468F87DC06&selectedIndex=70&itb=0",
-  "https://www.bing.com/images/search?view=detailV2&ccid=26QhukH9&id=8180C2490B59075CE979C745B27CBED81752FA26&thid=OIP.26QhukH90syDKuGQqu7JFQHaDr&mediaurl=https%3a%2f%2fpoulailler-bio.fr%2fwp-content%2fuploads%2f2016%2f01%2fpoulailler-fait-avec-de-la-r%c3%a9cupr%c3%a9ration-de-touret-de-chantier.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.dba421ba41fdd2cc832ae190aaeec915%3frik%3dJvpSF9i%252bfLJFxw%26pid%3dImgRaw%26r%3d0&exph=893&expw=1800&q=poulaillers&FORM=IRPRST&ck=322ADBF2B7F8B6E8EADE7D800B0A9E37&selectedIndex=131&itb=0",
-  "https://www.bing.com/images/search?view=detailV2&ccid=mRl7GP7f&id=ACB6F8C0A85C256975090B1F02B31A91BC6CAE34&thid=OIP.mRl7GP7fVv2mer0KV5vh_wHaEi&mediaurl=https%3a%2f%2fi.pinimg.com%2foriginals%2f3d%2fe4%2fa6%2f3de4a69e7abd2e665f81197e0069183c.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.99197b18fedf56fda67abd0a579be1ff%3frik%3dNK5svJEaswIfCw%26pid%3dImgRaw%26r%3d0&exph=1110&expw=1813&q=poulaillers&FORM=IRPRST&ck=6240D5ECB17A264730F8039310AD3B2F&selectedIndex=171&itb=0",
+  "https://www.bing.com/images/search?view=detailV2&ccid=XvTy9KVr&id=0895B13590B6BF65696203B61D4B189D84F215B5&thid=OIP.XvTy9KVrkJfeFq9pwzn50QHaDt&mediaurl=https%3a%2f%2fstatic.fermedebeaumont.com%2fimages%2fpoulaillers%2fpresentation%2fpoulailler-mobile-a-roulettes-poulailler-bois-missouri.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.5ef4f2f4a56b9097de16af69c339f9d1%3frik%3dtRXyhJ0YSx22Aw%26pid%3dImgRaw%26r%3d0&exph=500&expw=1000&q=poualaillers&FORM=IRPRST&ck=BD07B5B588045FF82CED199DA5796C1C&selectedIndex=2&itb=0",
+  "https://www.bing.com/images/search?view=detailV2&ccid=YFRaudcj&id=0D7720CA3845F680B270721109E1864845C3E973&thid=OIP.YFRaudcjhCOLJDxubCg0rQHaD4&mediaurl=https%3a%2f%2fi.f1g.fr%2fmedia%2fcms%2f1200x630_crop%2f2023%2f01%2f25%2f6e81ba7e998255bb239cde035071c48a806d0156d70e41ffcd1e7721e1253741.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.60545ab9d72384238b243c6e6c2834ad%3frik%3dc%252bnDRUiG4QkRcg%26pid%3dImgRaw%26r%3d0&exph=630&expw=1200&q=poualaillers&FORM=IRPRST&ck=51F11E1EFAE0456D27E07615D1C62959&selectedIndex=70&itb=0",
+  "https://www.bing.com/images/search?view=detailV2&ccid=fxRgFZji&id=62FC78EDBCE241CE2F7C3D54E9C732AC21F8B599&thid=OIP.fxRgFZjiqiNDKFbRO69W6gHaE8&mediaurl=https%3a%2f%2fwww.planete.org%2fwp-content%2fuploads%2f2021%2f02%2fshutterstock_1704789250-1.jpg&cdnurl=https%3a%2f%2fth.bing.com%2fth%2fid%2fR.7f14601598e2aa23432856d13baf56ea%3frik%3dmbX4Iawyx%252blUPQ%26pid%3dImgRaw%26r%3d0&exph=1000&expw=1500&q=poualaillers&FORM=IRPRST&ck=E97FA3581DD233D48C3B022D004C46BE&selectedIndex=112&itb=0",
 ];
+
 const getBadge = (status, isCritical) => {
   if (isCritical) return BADGE_CONFIG.alerte;
   return BADGE_CONFIG[status] || BADGE_CONFIG.connecte;
 };
 
-/**
- * Retourne un message lisible depuis une alerte.
- */
 const resolveAlertMessage = (alert) => {
   if (alert.message && !alert.message.includes("undefined")) {
     return alert.message;
@@ -113,6 +137,7 @@ const resolveAlertMessage = (alert) => {
   return "Alerte système";
 };
 
+// ── Composant principal ────────────────────────────────────────────────────────
 export default function DashboardScreen({ navigation }) {
   const { darkMode, colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -129,7 +154,6 @@ export default function DashboardScreen({ navigation }) {
     message: "",
     type: "success",
   });
-
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [allAlerts, setAllAlerts] = useState([]);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
@@ -137,7 +161,7 @@ export default function DashboardScreen({ navigation }) {
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
-  // ── Fetch poultries ─────────────────────────────────────────────────────────
+  // ── Fetch poultries ──────────────────────────────────────────────────────────
   const fetchPoultries = async () => {
     try {
       setLoading(true);
@@ -163,13 +187,17 @@ export default function DashboardScreen({ navigation }) {
             type: p.type,
             location: p.location || "Zone Élevage 1",
             count: p.animalCount || 0,
-            animalCount: p.animalCount || 0, // ← ajouter
-            surface: p.surface || "", // ← ajouter
-            remarque: p.remarque || "", // ← ajouter
-            address: p.address || "", // ← ajouter
-            attachments: p.attachments || [], // ← ajouter
+            animalCount: p.animalCount || 0,
+            surface: p.surface || "",
+            remarque: p.remarque || "",
+            address: p.address || "",
+            attachments: p.attachments || [],
             temp: p.lastMonitoring?.temperature?.toFixed(1) || "—",
             humid: p.lastMonitoring?.humidity?.toFixed(0) || "—",
+            co2: p.lastMonitoring?.co2 ?? null,
+            nh3: p.lastMonitoring?.nh3 ?? null,
+            dust: p.lastMonitoring?.dust ?? null,
+            lastMonitoringTimestamp: p.lastMonitoring?.timestamp || null,
             isCritical: p.isCritical || false,
             status: p.status || "en_attente_module",
             image: p.photoUrl || POULTRY_IMAGES[index % POULTRY_IMAGES.length],
@@ -184,82 +212,59 @@ export default function DashboardScreen({ navigation }) {
     }
   };
 
-  // ── Fetch all alerts (modal notifications) ──────────────────────────────────
-  const fetchAllAlerts = async () => {
-    if (poultryList.length === 0) return;
-    try {
-      setLoadingAlerts(true);
-      const alertsPromises = poultryList.map(async (p) => {
-        try {
-          const res = await getAlerts(p.id);
-          if (res?.success && Array.isArray(res.data)) {
-            return res.data.map((alert) => ({
-              ...alert,
-              message: resolveAlertMessage(alert),
-              poultryName: p.name,
-              poultryId: p.id,
-            }));
-          }
-          return [];
-        } catch {
-          return [];
-        }
-      });
-
-      const allResults = await Promise.all(alertsPromises);
-      const alerts = allResults
-        .flat()
-        .filter((a) => a.isRead !== true && a.read !== true)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .slice(0, 20);
-
-      setAllAlerts(alerts);
-    } catch (e) {
-      console.error("fetchAllAlerts:", e);
-    } finally {
-      setLoadingAlerts(false);
-    }
-  };
-
-  // ── Load notification summary per poulailler ─────────────────────────────────
+  // ── Notifications ────────────────────────────────────────────────────────────
   const loadPoultryNotifications = async () => {
     if (poultryList.length === 0) return;
     try {
+      const results = await Promise.all(
+        poultryList.map((p) =>
+          getAlerts(p.id).catch(() => ({ success: false, data: [] })),
+        ),
+      );
+
       const notifData = {};
-      for (const poultry of poultryList) {
-        try {
-          const res = await getAlerts(poultry.id);
-          const alerts =
-            res?.success && Array.isArray(res.data) ? res.data : [];
+      const flatAlerts = [];
 
-          const unread = alerts.filter(
-            (a) => a.read !== true && a.isRead !== true,
-          );
-          const dangers = alerts
-            .filter((a) => a.severity === "danger")
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-          const warns = alerts
-            .filter((a) => a.severity === "warn")
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      poultryList.forEach((poultry, i) => {
+        const alerts =
+          results[i]?.success && Array.isArray(results[i].data)
+            ? results[i].data
+            : [];
 
-          notifData[poultry.id] = {
-            unreadCount: unread.length,
-            dangerCount: unread.filter((a) => a.severity === "danger").length,
-            warnCount: unread.filter((a) => a.severity === "warn").length,
-            lastDanger: dangers[0] || null,
-            lastWarn: warns[0] || null,
-          };
-        } catch {
-          notifData[poultry.id] = {
-            unreadCount: 0,
-            dangerCount: 0,
-            warnCount: 0,
-            lastDanger: null,
-            lastWarn: null,
-          };
-        }
-      }
+        const unread = alerts.filter(
+          (a) => a.read !== true && a.isRead !== true,
+        );
+        const dangers = alerts
+          .filter((a) => a.severity === "danger")
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        const warns = alerts
+          .filter((a) => a.severity === "warn")
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        notifData[poultry.id] = {
+          unreadCount: unread.length,
+          dangerCount: unread.filter((a) => a.severity === "danger").length,
+          warnCount: unread.filter((a) => a.severity === "warn").length,
+          lastDanger: dangers[0] || null,
+          lastWarn: warns[0] || null,
+        };
+
+        unread.forEach((alert) => {
+          flatAlerts.push({
+            ...alert,
+            message: resolveAlertMessage(alert),
+            poultryName: poultry.name,
+            poultryId: poultry.id,
+          });
+        });
+      });
+
       setPoultryNotifications(notifData);
+      setAllAlerts(
+        flatAlerts
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+          .slice(0, 20),
+      );
     } catch (error) {
       console.error("loadPoultryNotifications:", error);
     }
@@ -273,14 +278,20 @@ export default function DashboardScreen({ navigation }) {
 
   useEffect(() => {
     if (poultryList.length > 0) {
-      fetchAllAlerts();
-      loadPoultryNotifications();
+      const timer = setTimeout(() => {
+        loadPoultryNotifications();
+      }, 500);
+      return () => clearTimeout(timer);
     }
-  }, [poultryList]);
+  }, [poultryList.length]);
 
   useEffect(() => {
-    if (notificationsVisible && poultryList.length > 0) {
-      fetchAllAlerts();
+    if (
+      notificationsVisible &&
+      poultryList.length > 0 &&
+      allAlerts.length === 0
+    ) {
+      loadPoultryNotifications();
     }
   }, [notificationsVisible]);
 
@@ -289,7 +300,7 @@ export default function DashboardScreen({ navigation }) {
     fetchPoultries();
   }, []);
 
-  // ── Menu actions ────────────────────────────────────────────────────────────
+  // ── Menu actions ─────────────────────────────────────────────────────────────
   const handleMenuPress = (poultryId) => {
     Alert.alert("Actions", "Sélectionnez une action", [
       { text: "Annuler", style: "cancel" },
@@ -310,13 +321,12 @@ export default function DashboardScreen({ navigation }) {
         poultry: {
           id: p.id,
           name: p.name,
-          animalCount: p.count, // ← renommé
-          surface: p.surface || "", // ← à ajouter dans formatted si dispo
+          animalCount: p.animalCount,
+          surface: p.surface,
           location: p.location,
-          remarque: p.remarque || "",
-          address: p.address || "",
-          attachments: p.attachments || [],
-          image: p.image,
+          remarque: p.remarque,
+          address: p.address,
+          attachments: p.attachments,
         },
       });
   };
@@ -390,7 +400,7 @@ export default function DashboardScreen({ navigation }) {
     }
   };
 
-  // ── Filters ─────────────────────────────────────────────────────────────────
+  // ── Filters ──────────────────────────────────────────────────────────────────
   const getFilteredPoultry = () => {
     let filtered = poultryList;
     if (activeFilter === "alerts")
@@ -411,11 +421,12 @@ export default function DashboardScreen({ navigation }) {
   const filteredPoultry = getFilteredPoultry();
   const unreadCount = allAlerts.filter((a) => !a.isRead && !a.read).length;
 
+  // ── Rendu ─────────────────────────────────────────────────────────────────────
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
       <SafeAreaView style={styles.safeArea}>
-        {/* ── Header ──────────────────────────────────────────────────────── */}
+        {/* Header */}
         <View style={styles.topHeader}>
           <Text style={styles.topHeaderTitle}>Mes Poulaillers</Text>
           <View style={styles.headerIcons}>
@@ -551,7 +562,7 @@ export default function DashboardScreen({ navigation }) {
               label="TOTAL"
               value={stats.total.toString().padStart(2, "0")}
               icon="grid-outline"
-              trend="+1"
+              trend={`${stats.total} poulailler${stats.total > 1 ? "s" : ""}`}
               color="#F0FDF4"
               iconColor="#22C55E"
             />
@@ -559,7 +570,7 @@ export default function DashboardScreen({ navigation }) {
               label="ACTIFS"
               value={stats.active.toString().padStart(2, "0")}
               icon="pulse-outline"
-              trend="+2"
+              trend={`${stats.total - stats.active} inactif${stats.total - stats.active > 1 ? "s" : ""}`}
               color="#F0F9FF"
               iconColor="#0EA5E9"
             />
@@ -567,7 +578,7 @@ export default function DashboardScreen({ navigation }) {
               label="ALERTES"
               value={stats.alerts.toString().padStart(2, "0")}
               icon="notifications-outline"
-              trend="-2"
+              trend={stats.alerts > 0 ? "critique" : "normal"}
               color="#FEF2F2"
               iconColor="#EF4444"
             />
@@ -614,8 +625,8 @@ export default function DashboardScreen({ navigation }) {
             </View>
           ) : (
             filteredPoultry.map((item) => {
-              // ✅ Badge dynamique selon status + isCritical
               const badge = getBadge(item.status, item.isCritical);
+              const airQuality = getAirQuality(item.co2, item.nh3, item.dust);
 
               return (
                 <TouchableOpacity
@@ -638,15 +649,12 @@ export default function DashboardScreen({ navigation }) {
                       source={{ uri: item.image }}
                       style={styles.cardImage}
                     />
-
-                    {/* ✅ Badge unifié — couleurs dynamiques */}
                     <View
                       style={[
                         styles.statusBadge,
                         { backgroundColor: badge.bg },
                       ]}
                     >
-                      {/* Petit point coloré à gauche */}
                       <View
                         style={[
                           styles.statusDot,
@@ -721,7 +729,7 @@ export default function DashboardScreen({ navigation }) {
                       </TouchableOpacity>
                     </View>
 
-                    {/* ✅ Message "en attente module" si pas d'ESP32 associé */}
+                    {/* En attente module */}
                     {item.status === "en_attente_module" && (
                       <View style={styles.pendingModuleBox}>
                         <MaterialIcons
@@ -736,7 +744,7 @@ export default function DashboardScreen({ navigation }) {
                       </View>
                     )}
 
-                    {/* Notification summary block */}
+                    {/* Notification summary */}
                     {item.status !== "en_attente_module" &&
                       (() => {
                         const notif = poultryNotifications[item.id];
@@ -891,7 +899,7 @@ export default function DashboardScreen({ navigation }) {
                       </View>
                     </View>
 
-                    {/* Footer */}
+                    {/* Footer — qualité air dynamique + timestamp réel */}
                     <View
                       style={[
                         styles.cardFooter,
@@ -904,19 +912,15 @@ export default function DashboardScreen({ navigation }) {
                         <MaterialCommunityIcons
                           name="air-filter"
                           size={14}
-                          color={darkMode ? colors.slate400 : "#64748B"}
+                          color={airQuality.color}
                         />
                         <Text
                           style={[
                             styles.footerText,
-                            {
-                              color: darkMode
-                                ? colors.slate400
-                                : colors.slate600,
-                            },
+                            { color: airQuality.color },
                           ]}
                         >
-                          Qualité Air: Excellente
+                          Air : {airQuality.label}
                         </Text>
                       </View>
                       <Text
@@ -925,7 +929,9 @@ export default function DashboardScreen({ navigation }) {
                           { color: colors.slate500 },
                         ]}
                       >
-                        Mis à jour il y a {item.lastUpdated}
+                        {item.lastMonitoringTimestamp
+                          ? `Mis à jour il y a ${getTimeAgo(item.lastMonitoringTimestamp)}`
+                          : "Aucune mesure"}
                       </Text>
                     </View>
                   </View>
@@ -950,7 +956,7 @@ export default function DashboardScreen({ navigation }) {
         <DashboardBottomNav navigation={navigation} alertCount={stats.alerts} />
       </SafeAreaView>
 
-      {/* ── MODAL NOTIFICATIONS ─────────────────────────────────────────────── */}
+      {/* Modal Notifications */}
       <Modal visible={notificationsVisible} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View
@@ -1144,7 +1150,7 @@ export default function DashboardScreen({ navigation }) {
   );
 }
 
-// ── StatCard ──────────────────────────────────────────────────────────────────
+// ── StatCard ───────────────────────────────────────────────────────────────────
 const StatCard = ({ label, value, icon, trend, color, iconColor }) => (
   <View style={styles.statCard}>
     <View style={[styles.statIconContainer, { backgroundColor: color }]}>
@@ -1153,19 +1159,12 @@ const StatCard = ({ label, value, icon, trend, color, iconColor }) => (
     <Text style={styles.statLabel}>{label}</Text>
     <View style={styles.statValueRow}>
       <Text style={styles.statValue}>{value}</Text>
-      <Text
-        style={[
-          styles.statTrend,
-          { color: trend.startsWith("-") ? "#EF4444" : "#22C55E" },
-        ]}
-      >
-        {trend}
-      </Text>
     </View>
+    <Text style={[styles.statTrend, { color: "#94A3B8" }]}>{trend}</Text>
   </View>
 );
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+// ── Styles ─────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAF9" },
   safeArea: { flex: 1 },
@@ -1198,7 +1197,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   redDotText: { color: "#fff", fontSize: 10, fontWeight: "800" },
-  profileBtn: { width: 36, height: 36, borderRadius: 18, position: "relative" },
+  profileBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    position: "relative",
+  },
   avatar: { width: "100%", height: "100%", borderRadius: 18 },
   onlineStatus: {
     position: "absolute",
@@ -1313,7 +1317,6 @@ const styles = StyleSheet.create({
   },
   cardImageContainer: { width: "100%", height: 160 },
   cardImage: { width: "100%", height: "100%", resizeMode: "cover" },
-  // ✅ Badge unifié (remplace connectedBadge + alertBadge)
   statusBadge: {
     position: "absolute",
     top: 12,
@@ -1325,11 +1328,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 12,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
   badgeText: { fontSize: 10, fontWeight: "800" },
   cardContent: { padding: 20 },
   cardHeaderRow: {
@@ -1349,7 +1348,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  // ✅ Bannière "en attente module"
   pendingModuleBox: {
     flexDirection: "row",
     alignItems: "center",
@@ -1388,7 +1386,7 @@ const styles = StyleSheet.create({
     paddingTop: 15,
   },
   footerInfo: { flexDirection: "row", alignItems: "center", gap: 6 },
-  footerText: { fontSize: 11, color: "#64748B", fontWeight: "500" },
+  footerText: { fontSize: 11, fontWeight: "500" },
   footerUpdateText: { fontSize: 11, color: "#94A3B8", fontWeight: "500" },
   fab: {
     position: "absolute",

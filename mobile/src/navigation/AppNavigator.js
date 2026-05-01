@@ -11,6 +11,7 @@ import PoultryDetailScreen from "../features/poultry/screens/PoultryDetailScreen
 import AlertSettingsScreen from "../features/poultry/screens/AlertSettingsScreen";
 import ArchivedPoultriesScreen from "../features/poultry/screens/Archivedpoultriesscreen";
 import HistoryScreen from "../features/poultry/screens/HistoryScreen";
+import Notification from "../features/poultry/screens/Notification";
 
 const Stack = createNativeStackNavigator();
 
@@ -36,6 +37,7 @@ export default function AppNavigator() {
           component={ArchivedPoultriesScreen}
         />
         <Stack.Screen name="History" component={HistoryScreen} />
+        <Stack.Screen name="Notification" component={Notification} />
       </Stack.Navigator>
     </NavigationContainer>
   );
