@@ -56,8 +56,9 @@ const corsOptions = {
       "http://localhost:8081", // React Native debugger
       "http://127.0.0.1:19000",
       "http://192.168.1.100:19000",
-      "http://localhost:5500", // Local network
-      process.env.MOBILE_APP_URL, // Production mobile
+      "http://localhost:5500",
+      process.env.MOBILE_APP_URL,
+      "https://platfomsmartpoultry.netlify.app",
     ].filter(Boolean);
 
     if (allowedOrigins.includes(origin)) {
@@ -76,17 +77,13 @@ app.use(cors(corsOptions));
 
 // Sécurité : Rate Limiting
 const limiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 100, // Limite chaque IP à 100 requêtes par fenêtre
+  windowMs: 10 * 60 * 10, // 10 minutes
+  max: 10000, // Limite chaque IP à 100 requêtes par fenêtre
   message:
     "Trop de requêtes créées à partir de cette IP, veuillez réessayer après 10 minutes",
 });
 app.use(limiter);
 
-// ✅ NEW: Per-user rate limiting (after protect middleware on protected routes)
-// This is applied on specific routes in their respective route files
-
-// Middleware Body Parser
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
@@ -198,7 +195,9 @@ const io = new SocketIOServer(server, {
       "http://localhost:8081",
       "http://127.0.0.1:19000",
       "http://192.168.1.100:19000",
+
       process.env.MOBILE_APP_URL,
+      "https://platfomsmartpoultry.netlify.app",
     ].filter(Boolean),
     credentials: true,
   },
