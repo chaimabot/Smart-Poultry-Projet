@@ -11,7 +11,6 @@ const crypto = require("crypto");
 
 const poulaillerSchema = Joi.object({
   nom: Joi.string().trim().required(),
-
   nb_volailles: Joi.number().min(1).required(),
   surface: Joi.number().min(1).required(),
   densite: Joi.number().min(0).optional(),
@@ -25,9 +24,7 @@ const registerSchema = Joi.object({
   email: Joi.string().email().lowercase().required(),
   phone: Joi.string().required(),
   adresse: Joi.string().required(),
-  // Accepte 1 à 20 poulaillers par éleveur
   poulaillers: Joi.array().items(poulaillerSchema).min(1).max(20).required(),
-  // Champs legacy optionnels envoyés par le frontend (ignorés côté logique)
   nb_volailles: Joi.number().optional(),
   surface: Joi.number().optional(),
 });
@@ -76,7 +73,6 @@ exports.register = async (req, res) => {
   const { firstName, lastName, email, phone, adresse, poulaillers } = value;
 
   try {
-    // Vérification unicité email
     const userExists = await User.findOne({ email });
     if (userExists) {
       return res.status(400).json({
@@ -87,7 +83,9 @@ exports.register = async (req, res) => {
 
     const motDePasseTemporaire = genererMotDePasseTemporaire();
 
-    // Créer l'utilisateur avec statut "pending"
+    // ✅ FIX 1: Suppression de status:"pending" — champ absent du userSchema
+    // Le compte reste inactif via isActive:true (valeur par défaut),
+    // la logique "pending" est gérée côté dossier (status:"EN_ATTENTE")
     const user = await User.create({
       firstName,
       lastName,
@@ -95,10 +93,12 @@ exports.register = async (req, res) => {
       password: motDePasseTemporaire,
       phone,
       role: "eleveur",
-      status: "pending",
+      isActive: false, // inactif jusqu'à validation admin
     });
 
-    // Créer TOUS les poulaillers en parallèle (1 à N)
+    // ✅ FIX 2: Utilisation des champs corrects du poulaillerSchema
+    // Suppression de "location" et "description" (inexistants)
+    // Ajout de "surface", "densite", "address", "remarque"
     const poulaillersDocs = await Promise.all(
       poulaillers.map((p) => {
         const densiteCalc = parseFloat((p.nb_volailles / p.surface).toFixed(2));
@@ -106,35 +106,32 @@ exports.register = async (req, res) => {
           owner: user._id,
           name: p.nom,
           animalCount: p.nb_volailles,
-          location: p.adresse || adresse,
-          description: `Surface: ${p.surface}m² | Densité: ${densiteCalc} sujets/m²${
-            p.remarques ? " | " + p.remarques : ""
-          }`,
+          surface: p.surface,
+          densite: densiteCalc,
+          address: p.adresse || adresse,
+          remarque: p.remarques || null,
         });
       }),
     );
 
-    // Calculs globaux sur l'ensemble des poulaillers
     const totalVolailles = poulaillers.reduce(
       (sum, p) => sum + p.nb_volailles,
       0,
     );
     const totalSurface = poulaillers.reduce((sum, p) => sum + p.surface, 0);
 
-    // Générer un numéro de contrat automatique
     const year = new Date().getFullYear();
     const randomHex = crypto.randomBytes(2).toString("hex").toUpperCase();
     const autoContractNumber = `SP-${year}-${randomHex}`;
 
-    // Créer le dossier lié au 1er poulailler (principal)
-    // Les autres poulaillers sont tous liés à l'éleveur via owner: user._id
+    // ✅ FIX 3: Suppression de motDePasseTemporaire — champ absent du dossierSchema
+    // Le mot de passe temporaire est retourné dans la réponse pour usage admin
     const dossier = await Dossier.create({
       eleveur: user._id,
       poulailler: poulaillersDocs[0]._id,
       contractNumber: autoContractNumber,
       totalAmount: 0,
       status: "EN_ATTENTE",
-      motDePasseTemporaire: motDePasseTemporaire,
     });
 
     return res.status(201).json({
@@ -148,12 +145,15 @@ exports.register = async (req, res) => {
           nom: doc.name,
           nb_volailles: poulaillers[i].nb_volailles,
           surface: poulaillers[i].surface,
+          densite: doc.densite,
         })),
         totalVolailles,
         totalSurface,
         nbPoulaillers: poulaillersDocs.length,
         dossierId: dossier._id,
         contractNumber: autoContractNumber,
+        // Exposé ici pour que l'admin puisse le noter/envoyer manuellement
+        motDePasseTemporaire,
       },
     });
   } catch (err) {
@@ -190,7 +190,9 @@ exports.login = async (req, res) => {
         .json({ success: false, error: "Identifiants invalides" });
     }
 
-    if (user.status === "pending") {
+    // ✅ FIX 4: Remplacement de status:"pending" par isActive:false
+    // car userSchema n'a pas de champ "status", il a "isActive" (Boolean)
+    if (!user.isActive) {
       return res.status(403).json({
         success: false,
         error:
@@ -239,28 +241,32 @@ exports.validerDossier = async (req, res) => {
     }
 
     const user = dossier.eleveur;
-    const motDePasse = dossier.motDePasseTemporaire;
 
+    // ✅ FIX 5: motDePasseTemporaire n'existe plus dans le dossier
+    // Il doit être passé dans le body par l'admin (récupéré depuis la réponse register)
+    // OU regénéré ici et sauvegardé sur le user
+    const motDePasse = req.body.motDePasseTemporaire;
     if (!motDePasse) {
       return res.status(400).json({
         success: false,
-        message: "Mot de passe temporaire introuvable.",
+        message:
+          "motDePasseTemporaire requis dans le body pour valider le dossier.",
       });
     }
 
-    // Récupérer TOUS les poulaillers de cet éleveur (pas seulement le principal)
     const tousPoulaillers = await Poulailler.find({ owner: user._id });
 
-    // 1. Activer le compte
-    user.status = "active";
+    // ✅ FIX 6: Activation via isActive:true (pas status:"active")
+    user.isActive = true;
     await user.save();
 
-    // 2. Mettre à jour le dossier
     dossier.status = "AVANCE_PAYEE";
-    dossier.motDePasseTemporaire = undefined;
+    dossier.dateValidation = new Date();
+    dossier.validatedBy = req.user?._id || null;
     await dossier.save();
 
-    // 3. Envoi Email (optionnel — config SMTP requise)
+    // ✅ FIX 7: Colonne email — utilise "address" au lieu de "description"
+    // car poulaillerSchema n'a pas de champ "description"
     try {
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
@@ -270,7 +276,6 @@ exports.validerDossier = async (req, res) => {
         auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
       });
 
-      // Tableau HTML listant tous les poulaillers de l'éleveur
       const lignesPoulaillers = tousPoulaillers
         .map(
           (p, i) => `
@@ -279,8 +284,11 @@ exports.validerDossier = async (req, res) => {
             <td style="padding:8px 12px;text-align:center">${
               p.animalCount?.toLocaleString("fr-FR") ?? "—"
             }</td>
-            <td style="padding:8px 12px;text-align:center;font-size:11px;color:#717971">${
-              p.description ?? "—"
+            <td style="padding:8px 12px;text-align:center">${
+              p.surface != null ? `${p.surface} m²` : "—"
+            }</td>
+            <td style="padding:8px 12px;text-align:center">${
+              p.densite != null ? `${p.densite} sujets/m²` : "—"
             }</td>
           </tr>`,
         )
@@ -295,15 +303,20 @@ exports.validerDossier = async (req, res) => {
             <h2 style="color:#00361a">Bonjour ${user.firstName},</h2>
             <p>Votre compte SmartPoultry est maintenant <strong>actif</strong>.</p>
             <p><strong>Email :</strong> ${user.email}<br/>
-               <strong>Mot de passe temporaire :</strong> <code style="background:#f0fff4;padding:2px 6px;border-radius:4px">${motDePasse}</code></p>
+               <strong>Mot de passe temporaire :</strong>
+               <code style="background:#f0fff4;padding:2px 6px;border-radius:4px">${motDePasse}</code>
+            </p>
             <p>Pensez à changer ce mot de passe à votre première connexion.</p>
-            <h3 style="color:#00361a;margin-top:24px">Vos poulaillers connectés (${tousPoulaillers.length})</h3>
+            <h3 style="color:#00361a;margin-top:24px">
+              Vos poulaillers connectés (${tousPoulaillers.length})
+            </h3>
             <table style="width:100%;border-collapse:collapse;font-size:13px">
               <thead>
                 <tr style="background:#00361a;color:white">
                   <th style="padding:8px 12px;text-align:left">Bâtiment</th>
                   <th style="padding:8px 12px">Volailles</th>
-                  <th style="padding:8px 12px">Détails</th>
+                  <th style="padding:8px 12px">Surface</th>
+                  <th style="padding:8px 12px">Densité</th>
                 </tr>
               </thead>
               <tbody>${lignesPoulaillers}</tbody>
@@ -369,7 +382,6 @@ exports.ajouterPoulailler = async (req, res) => {
   }
 
   try {
-    // Vérifier que l'éleveur n'a pas déjà atteint la limite de 20 poulaillers
     const compteActuel = await Poulailler.countDocuments({
       owner: req.user.id,
     });
@@ -385,14 +397,15 @@ exports.ajouterPoulailler = async (req, res) => {
       (value.nb_volailles / value.surface).toFixed(2),
     );
 
+    // ✅ FIX 8: Même correction que register — champs corrects du poulaillerSchema
     const poulailler = await Poulailler.create({
       owner: req.user.id,
       name: value.nom,
       animalCount: value.nb_volailles,
-      location: value.adresse || "",
-      description: `Surface: ${value.surface}m² | Densité: ${densiteCalc} sujets/m²${
-        value.remarques ? " | " + value.remarques : ""
-      }`,
+      surface: value.surface,
+      densite: densiteCalc,
+      address: value.adresse || null,
+      remarque: value.remarques || null,
     });
 
     res.status(201).json({

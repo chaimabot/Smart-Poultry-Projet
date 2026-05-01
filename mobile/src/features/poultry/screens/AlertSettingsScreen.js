@@ -24,17 +24,11 @@ import useAlertSettings, { PARAM_ICONS } from "../../../hooks/useAlertSettings";
 
 // ── Severity helpers ──────────────────────────────────────────────────────────
 
+// FIX 1: removed stray `value: stats.danger ?? 0` — stats is not in scope here
+// FIX 2: removed `item.type === "CRITIQUE"` — not a valid schema enum value
 function getSeverityMeta(item) {
-  if (
-    item.severity === "danger" ||
-    item.severity === "critical" ||
-    item.type === "CRITIQUE"
-  )
-    return {
-      icon: "error-outline",
-      label: item.type === "CRITIQUE" ? "CRITIQUE" : "DANGER",
-      color: "#ef4444",
-    };
+  if (item.severity === "danger")
+    return { icon: "error-outline", label: "DANGER", color: "#ef4444" };
   if (item.severity === "warn")
     return { icon: "warning-amber", label: "AVERTISSEMENT", color: "#f97316" };
   return { icon: "check-circle-outline", label: "INFO", color: "#22C55E" };
@@ -97,8 +91,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
-  // FIX: unreadCount basé uniquement sur les alertes non lues en state
-  const unreadCount = alerts.filter((a) => !(a.isRead || a.read)).length;
+  // FIX 3: was `!(a.read || a.read)` — tautology; schema only has `read`
+  const unreadCount = alerts.filter((a) => !a.read).length;
 
   // ── Input helper ──────────────────────────────────────────────────────────
   const renderInput = (label, value, key, unit) => (
@@ -294,7 +288,17 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                   marginBottom: 24,
                 },
               ]}
-            ></View>
+            >
+              <Text style={[styles.cardTitle, { color: textCol }]}>
+                Notifications push
+              </Text>
+              <Switch
+                value={notificationsEnabled}
+                onValueChange={setNotificationsEnabled}
+                trackColor={{ false: borderCol, true: "#22C55E" }}
+                thumbColor="#fff"
+              />
+            </View>
 
             {/* Température */}
             {renderSectionLabel("thermostat", "Température")}
@@ -390,10 +394,11 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                     color: "#ef4444",
                   },
                   {
+                    // FIX 4: was `stats.danger || 0` — || treats 0 as falsy; use ?? instead
                     label: "Danger",
-                    value: stats.danger || 0,
+                    value: stats.danger ?? 0,
                     icon: "error-outline",
-                    color: "#f97316",
+                    color: "#ef4444",
                   },
                 ].map((s) => (
                   <View
@@ -480,7 +485,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               </View>
             ) : (
               alerts.map((item) => {
-                const isRead = item.isRead || item.read;
+                // FIX 5: was `item.isRead || item.read` — isRead doesn't exist on schema
+                const isRead = item.read;
                 const meta = getSeverityMeta(item);
                 const param = PARAM_ICONS[item.parameter] || {
                   icon: "sensors",

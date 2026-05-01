@@ -1,38 +1,49 @@
 import React from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Platform,
+} from "react-native";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 export default function DashboardBottomNav({ navigation, alertCount = 0 }) {
   const insets = useSafeAreaInsets();
-  
+
   return (
-    <View style={[
-      styles.navContainer,
-      { paddingBottom: insets.bottom > 0 ? insets.bottom : 10 }
-    ]}>
+    <View
+      style={[
+        styles.navContainer,
+        { paddingBottom: insets.bottom > 0 ? insets.bottom : 10 },
+      ]}
+    >
       <View style={styles.navItems}>
-        <TouchableOpacity 
-          style={styles.navItem} 
-          onPress={() => navigation && navigation.navigate('Dashboard')}
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => navigation && navigation.navigate("Dashboard")}
         >
           <Ionicons name="grid" size={24} color="#22C55E" />
           <Text style={[styles.navText, { color: "#22C55E" }]}>Accueil</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem}>
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => navigation && navigation.navigate("Notification")}
+        >
           <Ionicons name="pulse-outline" size={24} color="#94A3B8" />
-          <Text style={styles.navText}>Monitor</Text>
+          <Text style={styles.navText}>Notification</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.navItem}>
           <Ionicons name="settings-outline" size={24} color="#94A3B8" />
-          <Text style={styles.navText}>Commandes</Text>
+          <Text style={styles.navText}>Parametres</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity 
-          style={styles.navItem} 
-          onPress={() => navigation && navigation.navigate('Profile')}
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => navigation && navigation.navigate("Profile")}
         >
           <Ionicons name="person-outline" size={24} color="#94A3B8" />
           <Text style={styles.navText}>Profil</Text>
@@ -49,7 +60,7 @@ const styles = StyleSheet.create({
     minHeight: 70,
     borderTopWidth: 1,
     borderTopColor: "#F1F5F9",
-    position: 'absolute',
+    position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
@@ -74,5 +85,5 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#94A3B8",
     marginTop: 4,
-  }
+  },
 });

@@ -254,10 +254,10 @@ export const getDefaultThresholds = async () => {
     const response = await api.get("/system-config/default-thresholds");
     return response.data;
   } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
+    console.error("[poultry] getDefaultThresholds error:", error.message);
+    return { success: false, data: null };
   }
 };
-
 // Récupère le device (module ESP32) associé à un poulailler
 // Retourne { success: true, data: { macAddress: "142B2FC7D704", ... } }
 export const getDeviceByPoulailler = async (poulaillerId) => {
