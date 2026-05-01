@@ -59,6 +59,7 @@ const corsOptions = {
       "http://localhost:5500",
       process.env.MOBILE_APP_URL,
       "https://platfomsmartpoultry.netlify.app",
+      "https://platform-jksv2jf2r-chaimabots-projects.vercel.app",
     ].filter(Boolean);
 
     if (allowedOrigins.includes(origin)) {
