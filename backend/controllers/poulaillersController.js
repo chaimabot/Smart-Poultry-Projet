@@ -1,971 +1,355 @@
-const Poulailler = require("../models/Poulailler");
-const Dossier = require("../models/Dossier"); // FIX #1 : import manquant — Dossier.create() était appelé
-// sans que le modèle soit jamais requis → ReferenceError au runtime
-const Measure = require("../models/Measure");
-const Command = require("../models/Command");
-const SystemConfig = require("../models/SystemConfig");
-const Joi = require("joi");
-const mqttService = require("../services/mqttService");
-const { createActuatorAlert } = require("../services/alertService");
+import React, { useState } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+} from "react-native";
+import { MaterialIcons } from "@expo/vector-icons";
 
-// ============================================================
-// SYNC CONFIG → ESP32
-// ============================================================
-async function syncConfig(poulaillerId, mqttSvc) {
-  try {
-    const poulailler = await Poulailler.findById(poulaillerId);
-    if (!poulailler) return;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-    const mqttClient = mqttSvc.getMqttClient();
-    if (!mqttClient || !mqttClient.connected) {
-      console.warn("[SYNC CONFIG] MQTT non connecté");
-      return;
-    }
-
-    const id = poulailler.uniqueCode || poulailler._id.toString();
-    const topic = `poulailler/${id}/config`;
-
-    // FIX #2 : opérateur || avec valeur 0 — si un seuil est volontairement 0,
-    //          `|| 20` l'écrase par le fallback. Utilisation de ?? (nullish coalescing)
-    //          pour ne tomber sur le fallback que si la valeur est null/undefined.
-    const config = {
-      tempMin: poulailler.thresholds.temperatureMin ?? 20,
-      tempMax: poulailler.thresholds.temperatureMax ?? 30,
-      waterMin: poulailler.thresholds.waterLevelMin ?? 25,
-      waterHysteresis: 10,
-      lampMode: poulailler.actuatorStates?.lamp?.mode ?? "auto",
-      pumpMode: poulailler.actuatorStates?.pump?.mode ?? "auto",
-      fanMode: poulailler.actuatorStates?.ventilation?.mode ?? "auto",
-    };
-
-    mqttClient.publish(topic, JSON.stringify(config), {
-      qos: 1,
-      retain: false,
-    });
-    console.log(`[SYNC CONFIG] Envoyé sur ${topic}:`, config);
-  } catch (err) {
-    console.error("[SYNC CONFIG] Erreur:", err.message);
-  }
+function isSensor(alert) {
+  return [
+    "temperature",
+    "humidity",
+    "co2",
+    "nh3",
+    "dust",
+    "water_level",
+  ].includes(alert.type);
 }
 
-// ============================================================
-// VALIDATION JOI
-// Options communes :
-//   stripUnknown : ignore les champs inconnus au lieu de les rejeter
-//                  (évite les 400 sur des champs mobiles supplémentaires)
-//   abortEarly   : remonte toutes les erreurs en une seule réponse
-//   convert      : caste "12" → 12, "true" → true automatiquement
-//                  (fréquent depuis FormData React Native / multipart)
-// ============================================================
-const JOI_OPTS = { stripUnknown: true, abortEarly: false, convert: true };
-
-const poulaillerSchema = Joi.object({
-  name: Joi.string().min(3).max(80).required(),
-  animalCount: Joi.number().integer().min(1).required(),
-  surface: Joi.number().positive().required(),
-  remarque: Joi.string().max(200).allow("", null).default(null),
-  address: Joi.string().max(300).allow("", null).default(null),
-  attachments: Joi.array()
-    .items(
-      Joi.object({
-        name: Joi.string().required(),
-        type: Joi.string().required(),
-        size: Joi.number().allow(null).default(null),
-        uri: Joi.string().allow(null, "").default(null),
-        base64: Joi.string().allow(null, "").default(null),
-      }).unknown(true), // tolère d'éventuels champs supplémentaires
-    )
-    .default([]),
-  totalAmount: Joi.number().min(0).default(0),
-  advanceAmount: Joi.number().min(0).default(0),
-});
-
-// Schéma allégé pour la mise à jour (champs éditables seulement)
-const updatePoulaillerSchema = Joi.object({
-  name: Joi.string().min(3).max(80),
-  animalCount: Joi.number().integer().min(1),
-  surface: Joi.number().positive(),
-  remarque: Joi.string().max(200).allow("", null),
-  address: Joi.string().max(300).allow("", null),
-  attachments: Joi.array().items(Joi.object()),
-  isArchived: Joi.boolean(),
-});
-
-// ============================================================
-// HELPERS
-// ============================================================
-function generateUniqueCode() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+function detectActuatorKind(alert) {
+  const msg = (alert.message || "").toLowerCase();
+  const type = (alert.type || "").toLowerCase();
+  if (type === "fan" || msg.includes("ventilateur")) return "fan";
+  if (type === "lamp" || msg.includes("lampe")) return "lamp";
+  if (type === "door" || msg.includes("porte")) return "door";
+  if (type === "pump" || msg.includes("pompe")) return "pump";
+  return "other";
 }
 
-async function getDefaultThresholds() {
-  try {
-    return await SystemConfig.getDefaultThresholds();
-  } catch (err) {
-    console.error("[getDefaultThresholds] Erreur:", err.message);
-    return {
-      temperatureMin: 18,
-      temperatureMax: 28,
-      humidityMin: 40,
-      humidityMax: 70,
-      co2Max: 1500,
-      nh3Max: 25,
-      dustMax: 150,
-      waterLevelMin: 20,
-    };
-  }
-}
-
-function sampleHistory(arr, n) {
-  if (!arr || arr.length === 0) return [];
-  if (arr.length <= n) return arr;
-  const step = Math.floor(arr.length / n);
-  return Array.from({ length: n }, (_, i) => arr[i * step]);
-}
-function getActuatorAlertReason(poulailler, actuator, state, triggeredBy) {
-  if (triggeredBy !== "auto") return null;
-
-  const m = poulailler.lastMonitoring || {};
-  const t = poulailler.thresholds || {};
-
-  if (actuator === "ventilation" && state === "on") {
-    if (
-      m.temperature != null &&
-      t.temperatureMax != null &&
-      m.temperature > t.temperatureMax
-    ) {
-      return "température trop élevée";
-    }
-    if (
-      m.humidity != null &&
-      t.humidityMax != null &&
-      m.humidity > t.humidityMax
-    ) {
-      return "humidité trop élevée";
-    }
-    if (m.co2 != null && t.co2Max != null && m.co2 > t.co2Max) {
-      return "qualité de l'air dégradée";
-    }
-    if (m.nh3 != null && t.nh3Max != null && m.nh3 > t.nh3Max) {
-      return "gaz toxique détecté";
-    }
-    if (m.dust != null && t.dustMax != null && m.dust > t.dustMax) {
-      return "poussière trop élevée";
-    }
-    return "conditions du poulailler anormales";
-  }
-
-  if (actuator === "lamp" && state === "on") {
-    if (
-      m.temperature != null &&
-      t.temperatureMin != null &&
-      m.temperature < t.temperatureMin
-    ) {
-      return "température trop basse";
-    }
-    return "besoin de chauffage";
-  }
-
-  if (actuator === "pump" && state === "on") {
-    if (
-      m.waterLevel != null &&
-      t.waterLevelMin != null &&
-      m.waterLevel < t.waterLevelMin
-    ) {
-      return "niveau d'eau bas";
-    }
-    return "remplissage nécessaire";
-  }
-
-  return null;
-}
-// ============================================================
-// @desc    Créer un nouveau poulailler
-// @route   POST /api/poulaillers
-// @access  Private (Eleveur)
-// ============================================================
-exports.createPoulailler = async (req, res) => {
-  // FIX DOSSIER #1 : stripUnknown:true — sans cette option, tout champ inattendu
-  //   dans req.body (ex: un champ envoyé par le mobile non déclaré dans le schéma Joi)
-  //   provoquait une erreur de validation Joi et bloquait la fonction avant même
-  //   d'atteindre Poulailler.create() ou Dossier.create().
-  const { error, value } = poulaillerSchema.validate(req.body, JOI_OPTS);
-  if (error) {
-    return res.status(400).json({
-      success: false,
-      error: error.details.map((d) => d.message).join(", "),
-    });
-  }
-
-  // FIX DOSSIER #2 : création atomique avec rollback.
-  //   Dans la version précédente, si Dossier.create() échouait après que
-  //   Poulailler.create() avait réussi, le poulailler était créé en base
-  //   sans aucun dossier associé, et l'erreur était avalée par le catch générique
-  //   sans aucune trace exploitable. Désormais :
-  //   - le poulailler créé est supprimé (rollback) si le dossier échoue
-  //   - les deux erreurs (Poulailler + Dossier) sont loguées séparément
-  let poulailler = null;
-
-  try {
-    const defaultThresholds = await getDefaultThresholds();
-    const uniqueCode = generateUniqueCode();
-
-    poulailler = await Poulailler.create({
-      name: value.name.trim(),
-      animalCount: value.animalCount,
-      surface: value.surface,
-      remarque: value.remarque ?? null,
-      address: value.address ?? null,
-      attachments: value.attachments ?? [],
-      owner: req.user.id,
-      status: "en_attente_module",
-      uniqueCode,
-      thresholds: { ...defaultThresholds },
-    });
-
-    console.log(`[CREATE] Poulailler créé : ${poulailler._id} (${uniqueCode})`);
-  } catch (err) {
-    console.error("[CREATE] Échec Poulailler.create() :", err.message);
-    return res
-      .status(500)
-      .json({ success: false, error: "Impossible de créer le poulailler." });
-  }
-
-  let dossier = null;
-
-  try {
-    // Generate a unique contract number based on timestamp + random
-    const contractNumber = `CTR-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-
-    dossier = await Dossier.create({
-      eleveur: req.user.id,
-      poulailler: poulailler._id,
-      status: "EN_ATTENTE",
-      contractNumber, // FIX: Generate unique contractNumber to avoid duplicate key error on null values
-      totalAmount: value.totalAmount ?? 0,
-      advanceAmount: value.advanceAmount ?? 0,
-    });
-
-    console.log(
-      `[CREATE] Dossier créé : ${dossier._id} pour poulailler ${poulailler._id}`,
-    );
-  } catch (err) {
-    // Rollback : suppression du poulailler déjà inséré pour éviter un état incohérent
-    console.error(
-      "[CREATE] Échec Dossier.create() — rollback poulailler :",
-      err.message,
-    );
-    await Poulailler.deleteOne({ _id: poulailler._id }).catch((e) =>
-      console.error("[CREATE] Rollback échoué :", e.message),
-    );
-    return res.status(500).json({
-      success: false,
-      error: "Impossible de créer le dossier. L'opération a été annulée.",
-    });
-  }
-
-  return res.status(201).json({
-    success: true,
-    message: "Demande envoyée à l'administrateur",
-    data: { poulailler, dossier },
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return d.toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
+}
+
+// ─── Textes simplifiés ────────────────────────────────────────────────────────
+const SENSOR_LABELS = {
+  temperature: "Température",
+  humidity: "Humidité",
+  co2: "CO₂",
+  nh3: "NH₃",
+  dust: "Poussière",
+  water_level: "Niveau d'eau",
 };
 
-// ============================================================
-// @desc    Obtenir tous les poulaillers de l'utilisateur connecté
-// @route   GET /api/poulaillers
-// @access  Private
-// ============================================================
-exports.getPoulaillers = async (req, res) => {
-  try {
-    const { search } = req.query;
-    const query = { owner: req.user.id, isArchived: false };
+const ACTUATOR_LABELS = {
+  fan: "Ventilateur",
+  lamp: "Lampe",
+  door: "Porte",
+  pump: "Pompe",
+};
 
-    if (search) {
-      query.name = { $regex: search, $options: "i" };
-    }
-
-    const poulaillers = await Poulailler.find(query).sort({ createdAt: -1 });
-
-    res
-      .status(200)
-      .json({ success: true, count: poulaillers.length, data: poulaillers });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+// Génère un message clair et concis
+function getEventMessage(alert) {
+  if (isSensor(alert)) {
+    const label = SENSOR_LABELS[alert.type] || alert.type;
+    const severity = alert.severity === "danger" ? "CRITIQUE" : "ATTENTION";
+    const value = alert.value ? ` (${alert.value}${getUnit(alert.type)})` : "";
+    return `Alerte : ${label} trop ${alert.direction === "above" ? "élevée" : "basse"}${value}`;
   }
-};
 
-// ============================================================
-// @desc    Obtenir un poulailler par ID
-// @route   GET /api/poulaillers/:id
-// @access  Private
-// ============================================================
-exports.getPoulailler = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
+  const kind = detectActuatorKind(alert);
+  const label = ACTUATOR_LABELS[kind] || "Équipement";
+  const action = alert.state === "on" ? "démarré" : "arrêté";
+  const mode = alert.auto ? "automatiquement" : "manuellement";
+  const reason = getReason(alert);
 
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Accès non autorisé à ce poulailler" });
-    }
-
-    res.status(200).json({ success: true, data: poulailler });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+  if (kind === "door") {
+    const doorAction = alert.state === "open" ? "ouverte" : "fermée";
+    return `Action : Porte ${doorAction} ${mode}${reason ? ` (${reason})` : ""}`;
   }
-};
 
-// ============================================================
-// @desc    Mettre à jour un poulailler
-// @route   PUT /api/poulaillers/:id
-// @access  Private
-// FIX #9 : le bloc de validation était cassé — la condition
-//          `Object.keys(req.body).length === 1 && isArchived` court-circuitait
-//          la validation pour n'importe quelle restauration, même avec des
-//          champs invalides supplémentaires. Remplacé par un schéma Joi unifié
-//          (updatePoulaillerSchema) qui accepte tous les champs optionnellement,
-//          y compris isArchived.
-// ============================================================
-exports.updatePoulailler = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
+  return `Action : ${label} ${action} ${mode}${reason ? ` (${reason})` : ""}`;
+}
 
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
-    }
+function getReason(alert) {
+  if (!alert.message) return "";
 
-    const { error, value } = updatePoulaillerSchema.validate(
-      req.body,
-      JOI_OPTS,
-    );
-    if (error) {
-      return res
-        .status(400)
-        .json({ success: false, error: error.details[0].message });
-    }
+  const msg = alert.message.toLowerCase();
+  if (msg.includes("humidité")) return "humidité anormale";
+  if (msg.includes("température")) return "température anormale";
+  if (msg.includes("co₂") || msg.includes("co2"))
+    return "qualité de l'air dégradée";
+  if (msg.includes("nh₃") || msg.includes("nh3")) return "gaz toxique détecté";
+  if (msg.includes("poussière")) return "poussière excessive";
+  if (msg.includes("niveau d'eau")) return "niveau d'eau bas";
+  return "";
+}
 
-    // FIX #10 : findByIdAndUpdate avec des champs undefined les envoie quand même
-    //           dans le $set, effaçant les valeurs existantes. On ne construit
-    //           l'objet qu'avec les clés effectivement présentes dans la requête.
-    const fieldsToUpdate = {};
-    const allowed = [
-      "name",
-      "animalCount",
-      "surface",
-      "remarque",
-      "address",
-      "attachments",
-      "isArchived",
-    ];
-    for (const key of allowed) {
-      if (value[key] !== undefined) fieldsToUpdate[key] = value[key];
-    }
+function getUnit(type) {
+  const units = {
+    temperature: "°C",
+    humidity: "%",
+    co2: "ppm",
+    nh3: "ppm",
+    dust: "µg/m³",
+    water_level: "%",
+  };
+  return units[type] || "";
+}
 
-    const updated = await Poulailler.findByIdAndUpdate(
-      req.params.id,
-      fieldsToUpdate,
-      { new: true, runValidators: true },
-      // FIX #11 : returnDocument: "after" est l'option Mongo Driver, pas Mongoose.
-      //           L'option Mongoose correcte est { new: true }.
-    );
-
-    res.status(200).json({ success: true, data: updated });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Supprimer un poulailler
-// @route   DELETE /api/poulaillers/:id
-// @access  Private
-// ============================================================
-exports.deletePoulailler = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
-    }
-
-    await Poulailler.deleteOne({ _id: req.params.id });
-
-    res.status(200).json({ success: true, data: {} });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Archiver un poulailler
-// @route   POST /api/poulaillers/:id/archive
-// @access  Private
-// ============================================================
-exports.archivePoulailler = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        error: "Action non autorisée sur ce poulailler",
-      });
-    }
-
-    poulailler.isArchived = true;
-    await poulailler.save();
-
-    res.status(200).json({ success: true, data: poulailler });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Résumé statistique dashboard
-// @route   GET /api/poulaillers/summary
-// @access  Private
-// ============================================================
-exports.getPoulaillersSummary = async (req, res) => {
-  try {
-    const [total, critical, active] = await Promise.all([
-      // FIX #12 : trois countDocuments séquentiels → un Promise.all parallèle.
-      //           Pas un bug fonctionnel mais une regression de performance notable.
-      Poulailler.countDocuments({ owner: req.user.id }),
-      Poulailler.countDocuments({ owner: req.user.id, isCritical: true }),
-      Poulailler.countDocuments({
-        owner: req.user.id,
-        status: { $in: ["connecte", "maintenance"] },
-      }),
-    ]);
-
-    res.status(200).json({ success: true, data: { total, critical, active } });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Poulaillers critiques
-// @route   GET /api/poulaillers/critical
-// @access  Private
-// ============================================================
-exports.getCriticalPoulaillers = async (req, res) => {
-  try {
-    const poulaillers = await Poulailler.find({
-      owner: req.user.id,
-      isCritical: true,
-      isArchived: false,
-    }).sort({ updatedAt: -1 });
-
-    res
-      .status(200)
-      .json({ success: true, count: poulaillers.length, data: poulaillers });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Obtenir les seuils
-// @route   GET /api/poulaillers/:id/thresholds
-// @access  Private
-// ============================================================
-exports.getThresholds = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
-
-    res.status(200).json({ success: true, data: poulailler.thresholds });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Mettre à jour les seuils
-// @route   PUT /api/poulaillers/:id/thresholds
-// @access  Private
-// ============================================================
-exports.updateThresholds = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
-
-    poulailler.thresholds = {
-      ...poulailler.thresholds.toObject(),
-      ...req.body,
+// ─── Config visuelle ────────────────────────────────────────────────────────
+function getCardStyle(alert) {
+  if (isSensor(alert)) {
+    return {
+      icon: "warning",
+      color: alert.severity === "danger" ? "#DC2626" : "#D97706",
+      bgColor: alert.severity === "danger" ? "#FEE2E2" : "#FEF3C7",
+      borderColor: alert.severity === "danger" ? "#FCA5A5" : "#FDE68A",
     };
-    // FIX #13 : poulailler.thresholds est un sous-document Mongoose, pas un
-    //           plain object. Le spread `{ ...poulailler.thresholds }` copie les
-    //           propriétés du prototype Mongoose (getters/setters) ce qui peut
-    //           perdre des valeurs. `.toObject()` produit un plain object fiable.
-    await poulailler.save();
-
-    await syncConfig(req.params.id, mqttService);
-
-    res.status(200).json({ success: true, data: poulailler.thresholds });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
   }
-};
+  return {
+    icon: "settings",
+    color: "#059669",
+    bgColor: "#D1FAE5",
+    borderColor: "#6EE7B7",
+  };
+}
 
-// ============================================================
-// @desc    Réinitialiser les seuils par défaut
-// @route   POST /api/poulaillers/:id/thresholds/reset
-// @access  Private
-// ============================================================
-exports.resetThresholds = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
+// ─── Carte événement simplifiée ───────────────────────────────────────────────
+function EventCard({ alert }) {
+  const style = getCardStyle(alert);
+  const unread = !alert.read;
 
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
+  return (
+    <View
+      style={{
+        backgroundColor: "#fff",
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: style.borderColor,
+        padding: 14,
+        marginBottom: 10,
+        flexDirection: "row",
+        gap: 12,
+      }}
+    >
+      {/* Icône */}
+      <View
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          backgroundColor: style.bgColor,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <MaterialIcons name={style.icon} size={18} color={style.color} />
+      </View>
 
-    const defaultThresholds = await getDefaultThresholds();
-    poulailler.thresholds = { ...defaultThresholds };
-    await poulailler.save();
+      {/* Contenu */}
+      <View style={{ flex: 1 }}>
+        <Text
+          style={{
+            fontSize: 13,
+            fontWeight: "600",
+            color: "#1E293B",
+            lineHeight: 18,
+          }}
+        >
+          {getEventMessage(alert)}
+        </Text>
 
-    console.log("[RESET THRESHOLDS] Seuils réinitialisés:", defaultThresholds);
+        {/* Heure */}
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            marginTop: 6,
+          }}
+        >
+          <Text style={{ fontSize: 11, color: "#64748B" }}>
+            {formatTime(alert.timestamp)}
+          </Text>
+          {unread && (
+            <View
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: style.color,
+              }}
+            />
+          )}
+        </View>
+      </View>
+    </View>
+  );
+}
 
-    await syncConfig(req.params.id, mqttService);
+// ─── Filtres ────────────────────────────────────────────────────────────────
+const FILTERS = [
+  { key: "all", label: "Tout", icon: "list" },
+  { key: "sensor", label: "Alertes", icon: "warning" },
+  { key: "fan", label: "Ventilateur", icon: "air" },
+  { key: "lamp", label: "Lampe", icon: "lightbulb" },
+  { key: "door", label: "Porte", icon: "door-sliding" },
+  { key: "pump", label: "Pompe", icon: "water" },
+];
 
-    res.status(200).json({ success: true, data: poulailler.thresholds });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
+function matchesFilter(alert, key) {
+  if (key === "all") return true;
+  if (key === "sensor") return isSensor(alert);
+  return detectActuatorKind(alert) === key;
+}
 
-// ============================================================
-// @desc    Mesures actuelles (cache lastMonitoring)
-// @route   GET /api/poulaillers/:id/current-measures
-// @access  Private
-// ============================================================
-exports.getCurrentMeasures = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
+// ─── Composant principal ────────────────────────────────────────────────────
+export default function HistoryTab({
+  alerts = [],
+  onRefresh,
+  refreshing,
+  navigation,
+  poultryId,
+  poultryName,
+  onMarkAllRead,
+}) {
+  const [filter, setFilter] = useState("all");
+  const unreadCount = alerts.filter((a) => !a.read).length;
 
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Accès non autorisé" });
-    }
+  const filtered = [...alerts]
+    .filter((a) => matchesFilter(a, filter))
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-    if (poulailler.lastMonitoring?.timestamp) {
-      const data = {
-        temperature: {
-          current: poulailler.lastMonitoring.temperature,
-          trend: "stable",
-        },
-        humidity: {
-          current: poulailler.lastMonitoring.humidity,
-          trend: "stable",
-        },
-        co2: { current: poulailler.lastMonitoring.co2 },
-        nh3: { current: poulailler.lastMonitoring.nh3 },
-        dust: { current: poulailler.lastMonitoring.dust },
-        waterLevel: { current: poulailler.lastMonitoring.waterLevel },
-        timestamp: poulailler.lastMonitoring.timestamp,
-        actuatorStates: poulailler.actuatorStates,
-        status: "connected",
-      };
-      return res.status(200).json({ success: true, data });
-    }
+  return (
+    <ScrollView
+      contentContainerStyle={{ padding: 16, paddingBottom: 20 }}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+          tintColor="#22C55E"
+        />
+      }
+    >
+      {/* En-tête */}
+      <View style={{ marginBottom: 16 }}>
+        <Text style={{ fontSize: 18, fontWeight: "700", color: "#1E293B" }}>
+          Historique
+        </Text>
+        {unreadCount > 0 && (
+          <TouchableOpacity
+            onPress={onMarkAllRead}
+            style={{
+              marginTop: 12,
+              backgroundColor: "#F0FDF4",
+              padding: 10,
+              borderRadius: 8,
+              alignItems: "center",
+            }}
+          >
+            <Text style={{ color: "#15803D", fontWeight: "600" }}>
+              Marquer tout comme lu ({unreadCount})
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
-    res.status(200).json({
-      success: true,
-      data: null,
-      message:
-        "Aucune mesure disponible. Le module ESP32 n'est pas encore connecté.",
-      status: "not_connected",
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
+      {/* Filtres */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={{ marginBottom: 16 }}
+        contentContainerStyle={{ gap: 8 }}
+      >
+        {FILTERS.map((f) => {
+          const active = filter === f.key;
+          const count =
+            f.key === "all"
+              ? alerts.length
+              : alerts.filter((a) => matchesFilter(a, f.key)).length;
 
-// ============================================================
-// @desc    Poulaillers archivés
-// @route   GET /api/poulaillers/archives
-// @access  Private
-// ============================================================
-exports.getArchivedPoulaillers = async (req, res) => {
-  try {
-    const poulaillers = await Poulailler.find({
-      owner: req.user.id,
-      isArchived: true,
-    }).sort({ createdAt: -1 });
+          if (f.key !== "all" && count === 0) return null;
 
-    res
-      .status(200)
-      .json({ success: true, count: poulaillers.length, data: poulaillers });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
+          return (
+            <TouchableOpacity
+              key={f.key}
+              onPress={() => setFilter(f.key)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 6,
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 20,
+                backgroundColor: active ? "#1E293B" : "#F3F4F6",
+              }}
+            >
+              <MaterialIcons
+                name={f.icon}
+                size={16}
+                color={active ? "#fff" : "#4B5563"}
+              />
+              <Text
+                style={{
+                  color: active ? "#fff" : "#4B5563",
+                  fontSize: 13,
+                  fontWeight: "600",
+                }}
+              >
+                {f.label} {count > 0 && `(${count})`}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
 
-// ============================================================
-// @desc    Monitoring complet (historique 24h)
-// @route   GET /api/poulaillers/:id/monitoring
-// @access  Private
-// FIX #14 : fallback avec Math.random() — si aucune mesure n'existe,
-//           le contrôleur renvoyait des données aléatoires inventées
-//           comme si c'était de vraies mesures. Le client ne peut pas
-//           distinguer un vrai 0 d'un fallback. Remplacé par une réponse
-//           explicite indiquant l'absence de données.
-// ============================================================
-exports.getMonitoringData = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
+      {/* Liste des événements */}
+      {filtered.length === 0 ? (
+        <View style={{ alignItems: "center", padding: 40 }}>
+          <MaterialIcons name="history" size={48} color="#CBD5E1" />
+          <Text style={{ marginTop: 12, color: "#6B7280", fontSize: 14 }}>
+            Aucun événement trouvé
+          </Text>
+        </View>
+      ) : (
+        filtered.map((alert) => (
+          <EventCard key={alert._id || alert.timestamp} alert={alert} />
+        ))
+      )}
 
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Accès non autorisé" });
-    }
-
-    const [lastMeasure, historyRaw] = await Promise.all([
-      Measure.findOne({ poulailler: req.params.id }).sort({ timestamp: -1 }),
-      Measure.find({
-        poulailler: req.params.id,
-        timestamp: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-      })
-        .sort({ timestamp: 1 })
-        .select("temperature humidity co2 nh3 dust waterLevel timestamp"),
-    ]);
-
-    if (!lastMeasure) {
-      return res.status(200).json({
-        success: true,
-        data: null,
-        message: "Aucune mesure disponible pour ce poulailler.",
-        status: "no_data",
-      });
-    }
-
-    const history = sampleHistory(historyRaw, 6);
-
-    res.status(200).json({
-      success: true,
-      data: {
-        temperature: { current: lastMeasure.temperature, trend: "stable" },
-        humidity: { current: lastMeasure.humidity, trend: "stable" },
-        co2: { current: lastMeasure.co2 },
-        nh3: { current: lastMeasure.nh3 },
-        dust: { current: lastMeasure.dust },
-        waterLevel: { current: lastMeasure.waterLevel },
-        timestamp: lastMeasure.timestamp,
-        actuatorStates: {
-          door: poulailler.actuatorStates?.door?.status ?? "closed",
-          ventilation: poulailler.actuatorStates?.ventilation?.status ?? "off",
-          lamp: poulailler.actuatorStates?.lamp?.status ?? "off",
-          pump: poulailler.actuatorStates?.pump?.status ?? "off",
-        },
-        history: history.map((m) => m.temperature ?? 0),
-        historyFull: history,
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Contrôler un actionneur
-// @route   PATCH /api/poulaillers/:id/actuators
-// @access  Private
-// ============================================================
-exports.controlActuator = async (req, res) => {
-  try {
-    const { actuator, state, mode } = req.body;
-
-    if (!actuator || !state) {
-      return res
-        .status(400)
-        .json({ success: false, error: "actuator et state sont requis" });
-    }
-
-    const validActuators = ["door", "ventilation", "lamp", "pump"];
-    const validStates = {
-      door: ["open", "closed"],
-      ventilation: ["on", "off"],
-      lamp: ["on", "off"],
-      pump: ["on", "off"],
-    };
-
-    if (!validActuators.includes(actuator)) {
-      return res.status(400).json({
-        success: false,
-        error: `Actionneur invalide. Valeurs acceptées : ${validActuators.join(" | ")}`,
-      });
-    }
-    if (!validStates[actuator].includes(state)) {
-      return res.status(400).json({
-        success: false,
-        error: `État invalide pour ${actuator} : ${validStates[actuator].join(" | ")}`,
-      });
-    }
-
-    const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Accès non autorisé" });
-    }
-
-    poulailler.actuatorStates[actuator].status = state;
-    if (mode && ["auto", "manual"].includes(mode)) {
-      poulailler.actuatorStates[actuator].mode = mode;
-    }
-    await poulailler.save();
-
-    // Publication MQTT
-    const mqttClient = mqttService.getMqttClient();
-    if (mqttClient && mqttClient.connected) {
-      const poulaillerId = poulailler.uniqueCode || poulailler._id.toString();
-      const topicMap = {
-        door: "door",
-        ventilation: "fan",
-        lamp: "lamp",
-        pump: "pump",
-      };
-      const espTopic = `poulailler/${poulaillerId}/cmd/${topicMap[actuator]}`;
-
-      const mqttPayload =
-        actuator === "door"
-          ? { action: state === "open" ? "open" : "stop" }
-          : { on: state === "on", mode: mode ?? "manual" };
-
-      mqttClient.publish(espTopic, JSON.stringify(mqttPayload), { qos: 1 });
-      console.log(`[MQTT→ESP32] ${espTopic}: ${JSON.stringify(mqttPayload)}`);
-    } else {
-      console.warn("[MQTT] Client non connecté pour commande", actuator);
-    }
-
-    // Enregistrement commande en base
-    const typeMap = {
-      door: "porte",
-      ventilation: "ventilateur",
-      lamp: "lampe",
-      pump: "pompe",
-    };
-    const actionMapFr = {
-      door: { open: "ouvrir", closed: "fermer" },
-      ventilation: { on: "démarrer", off: "arrêter" },
-      lamp: { on: "allumer", off: "éteindre" },
-      pump: { on: "démarrer", off: "arrêter" },
-    };
-
-    await Command.create({
-      poulailler: poulailler._id,
-      typeActionneur: typeMap[actuator],
-      action: actionMapFr[actuator][state],
-      issuedBy: req.user.id,
-      source: "mobile-app",
-      status: "sent",
-    });
-
-    // ✅ ENREGISTRER DANS L'HISTORIQUE des alertes/actions
-    try {
-      const alertActuatorMap = {
-        ventilation: "fan",
-        lamp: "lamp",
-        door: "door",
-        pump: "pump",
-      };
-      const alertActuator = alertActuatorMap[actuator] || actuator;
-      const triggeredBy = mode === "auto" ? "auto" : "manual";
-      const reason = getActuatorAlertReason(
-        poulailler,
-        actuator,
-        state,
-        triggeredBy,
-      );
-
-      await createActuatorAlert(
-        poulailler._id,
-        alertActuator,
-        state,
-        triggeredBy,
-        reason,
-      );
-    } catch (alertErr) {
-      console.error(
-        "[controlActuator] Erreur création historique :",
-        alertErr.message,
-      );
-    }
-
-    await syncConfig(req.params.id, mqttService);
-
-    res.status(200).json({
-      success: true,
-      data: {
-        actuator,
-        state,
-        mode: poulailler.actuatorStates[actuator].mode,
-        updatedAt: new Date(),
-      },
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// ============================================================
-// @desc    Historique des mesures par capteur et période
-// @route   GET /api/poulaillers/:id/history?sensor=temperature&period=24h
-// @access  Private
-// ============================================================
-exports.getMeasureHistory = async (req, res) => {
-  try {
-    const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
-      return res
-        .status(403)
-        .json({ success: false, error: "Accès non autorisé" });
-    }
-
-    const sensor = req.query.sensor || "temperature";
-    const period = req.query.period || "24h";
-
-    const validSensors = [
-      "temperature",
-      "humidity",
-      "co2",
-      "nh3",
-      "dust",
-      "waterLevel",
-    ];
-    if (!validSensors.includes(sensor)) {
-      return res.status(400).json({
-        success: false,
-        error: `Capteur invalide. Valeurs acceptées : ${validSensors.join(", ")}`,
-      });
-    }
-
-    // FIX #17 : période invalide → silencieusement remplacée par "24h" sans avertir
-    //           le client. Maintenant on retourne une erreur explicite.
-    const periodMap = {
-      "24h": 24 * 60 * 60 * 1000,
-      "7d": 7 * 24 * 60 * 60 * 1000,
-      "30d": 30 * 24 * 60 * 60 * 1000,
-    };
-    if (!periodMap[period]) {
-      return res.status(400).json({
-        success: false,
-        error: `Période invalide. Valeurs acceptées : ${Object.keys(periodMap).join(", ")}`,
-      });
-    }
-
-    const since = new Date(Date.now() - periodMap[period]);
-
-    const measures = await Measure.find({
-      poulailler: req.params.id,
-      timestamp: { $gte: since },
-      [sensor]: { $exists: true, $ne: null },
-    })
-      .sort({ timestamp: 1 })
-      .select(`timestamp ${sensor}`);
-
-    const data = measures.map((m) => ({
-      timestamp: m.timestamp,
-      value: m[sensor],
-    }));
-
-    res
-      .status(200)
-      .json({ success: true, sensor, period, count: data.length, data });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
-  }
-};
-
-// Export syncConfig pour usage dans mqttService
-exports.syncConfig = syncConfig;
+      {/* Bouton Paramètres */}
+      {alerts.length > 0 && (
+        <TouchableOpacity
+          onPress={() =>
+            navigation.navigate("AlertSettingsScreen", {
+              poultryId,
+              poultryName,
+            })
+          }
+          style={{
+            marginTop: 20,
+            padding: 14,
+            backgroundColor: "#F3F4F6",
+            borderRadius: 12,
+            alignItems: "center",
+          }}
+        >
+          <Text style={{ color: "#374151", fontWeight: "600" }}>
+            Modifier les seuils d'alerte
+          </Text>
+        </TouchableOpacity>
+      )}
+    </ScrollView>
+  );
+}
