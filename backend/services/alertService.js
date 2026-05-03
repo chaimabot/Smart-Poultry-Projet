@@ -10,14 +10,50 @@
 
 const Alert = require("../models/Alert");
 
+// ─── Icônes techniques (noms de bibliothèque icon — ex: Lucide / Material) ──
+// Format : string utilisé côté frontend pour résoudre l'icône
+const ICONS = {
+  // Sévérité
+  danger: "alert-circle", // rouge
+  warn: "alert-triangle", // orange
+  info: "info", // bleu
+
+  // Capteurs
+  temperature: "thermometer",
+  humidity: "droplets",
+  co2: "wind",
+  nh3: "flask-conical",
+  dust: "cloud-fog",
+  waterLevel: "cup-soda",
+
+  // Porte
+  door_open: "door-open",
+  door_close: "door-closed",
+  door_warn: "alert-triangle",
+
+  // Actionneurs
+  fan_on: "fan",
+  fan_off: "fan-off",
+  lamp_on: "lightbulb",
+  lamp_off: "lightbulb-off",
+
+  // MQTT / Réseau
+  mqtt_ok: "wifi",
+  mqtt_lost: "wifi-off",
+
+  // Générique
+  check: "circle-check",
+  unknown: "circle-help",
+};
+
 // ─── Labels et unités par paramètre capteur ───────────────────────────────
 const PARAM_LABELS = {
-  temperature: "Température",
-  humidity: "Humidité",
-  co2: "CO₂",
-  nh3: "NH₃",
-  dust: "Poussière",
-  waterLevel: "Niveau d'eau",
+  temperature: "Température du poulailler",
+  humidity: "Humidité dans le poulailler",
+  co2: "Qualité de l'air (CO₂)",
+  nh3: "Odeur d'ammoniaque (NH₃)",
+  dust: "Poussière dans l'air",
+  waterLevel: "Niveau d'eau dans l'abreuvoir",
 };
 
 const PARAM_UNITS = {
@@ -29,9 +65,63 @@ const PARAM_UNITS = {
   waterLevel: "%",
 };
 
+// ─── Messages simples par paramètre et situation ──────────────────────────
+const SENSOR_MESSAGES = {
+  temperature: {
+    danger_above: (val, threshold) =>
+      `Il fait trop chaud dans le poulailler ! ${val}°C (maximum toléré : ${threshold}°C). Vérifiez la ventilation immédiatement.`,
+    warn_above: (val, threshold) =>
+      `La température commence à monter : ${val}°C. Surveillez le poulailler (seuil d'alerte : ${threshold}°C).`,
+    danger_below: (val, threshold) =>
+      `Il fait trop froid dans le poulailler ! ${val}°C (minimum toléré : ${threshold}°C). Vérifiez le chauffage immédiatement.`,
+    warn_below: (val, threshold) =>
+      `La température baisse : ${val}°C. Surveillez le chauffage (seuil d'alerte : ${threshold}°C).`,
+  },
+  humidity: {
+    danger_above: (val, threshold) =>
+      `L'air est trop humide dans le poulailler : ${val}% (maximum toléré : ${threshold}%). Risque de maladies pour les volailles.`,
+    warn_above: (val, threshold) =>
+      `L'humidité monte : ${val}%. Pensez à aérer le poulailler (seuil d'alerte : ${threshold}%).`,
+    danger_below: (val, threshold) =>
+      `L'air est trop sec dans le poulailler : ${val}% (minimum toléré : ${threshold}%). Les volailles peuvent souffrir.`,
+    warn_below: (val, threshold) =>
+      `L'humidité baisse : ${val}%. Surveillez le confort des volailles (seuil d'alerte : ${threshold}%).`,
+  },
+  co2: {
+    danger_above: (val, threshold) =>
+      `L'air du poulailler est dangereux — trop de CO₂ : ${val} ppm (limite : ${threshold} ppm). Ouvrez les fenêtres ou activez la ventilation tout de suite !`,
+    warn_above: (val, threshold) =>
+      `L'air commence à se saturer en CO₂ : ${val} ppm. Pensez à aérer le poulailler (seuil d'alerte : ${threshold} ppm).`,
+  },
+  nh3: {
+    danger_above: (val, threshold) =>
+      `Forte odeur d'ammoniaque dans le poulailler : ${val} ppm (limite : ${threshold} ppm). C'est dangereux pour les volailles et pour vous. Aérez immédiatement !`,
+    warn_above: (val, threshold) =>
+      `L'ammoniaque commence à sentir fort : ${val} ppm. Pensez à nettoyer la litière et à aérer (seuil d'alerte : ${threshold} ppm).`,
+  },
+  dust: {
+    danger_above: (val, threshold) =>
+      `Trop de poussière dans le poulailler : ${val} µg/m³ (limite : ${threshold} µg/m³). Risque pour les voies respiratoires des volailles.`,
+    warn_above: (val, threshold) =>
+      `La poussière augmente dans le poulailler : ${val} µg/m³. Surveillez la litière et la ventilation (seuil : ${threshold} µg/m³).`,
+  },
+  waterLevel: {
+    danger_below: (val, threshold) =>
+      `L'abreuvoir est presque vide : ${val}% seulement (minimum : ${threshold}%). Remplissez-le tout de suite, les volailles ont soif !`,
+    warn_below: (val, threshold) =>
+      `Le niveau d'eau baisse dans l'abreuvoir : ${val}%. Pensez à le remplir bientôt (seuil d'alerte : ${threshold}%).`,
+  },
+};
+
+// ─── Résolution de l'icône capteur ────────────────────────────────────────
+const resolveSensorIcon = (parameter, severity) => {
+  // Icône du paramètre si disponible, sinon icône de sévérité
+  return ICONS[parameter] ?? ICONS[severity] ?? ICONS.unknown;
+};
+
 // ─── Cache anti-doublon (TTL configurable par type d'alerte) ──────────────
 const alertCache = new Map();
-const DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 minutes pour capteurs
+const DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 const getCacheKey = (poultryId, type, key, severity) =>
   `${poultryId}:${type}:${key}:${severity}`;
@@ -83,16 +173,28 @@ const createSensorAlert = async (
       return existingAlertId;
     }
 
-    const label = PARAM_LABELS[parameter] || parameter;
-    const unit = PARAM_UNITS[parameter] || "";
-    const icon = severity === "danger" ? "🔴" : "⚠️";
     const direction = value > threshold ? "above" : "below";
-    const dirLabel =
-      direction === "above" ? "dépasse le seuil" : "est en dessous du seuil";
-
     const valStr = typeof value === "number" ? value.toFixed(1) : "?";
     const thresStr = typeof threshold === "number" ? threshold.toFixed(1) : "?";
-    const message = `${label} ${dirLabel} : ${valStr}${unit} (seuil : ${thresStr}${unit})`;
+
+    // ── Message lisible éleveur ─────────────────────────────────────────
+    const msgKey = `${severity}_${direction}`;
+    const paramMsgs = SENSOR_MESSAGES[parameter];
+    let message;
+
+    if (paramMsgs && paramMsgs[msgKey]) {
+      message = paramMsgs[msgKey](valStr, thresStr);
+    } else {
+      // Fallback générique
+      const label = PARAM_LABELS[parameter] || parameter;
+      const unit = PARAM_UNITS[parameter] || "";
+      const dirLabel =
+        direction === "above" ? "trop élevé(e)" : "trop bas / basse";
+      message = `${label} ${dirLabel} : ${valStr}${unit} (seuil : ${thresStr}${unit}). Vérifiez le poulailler.`;
+    }
+
+    // ── Icône de développement ──────────────────────────────────────────
+    const icon = resolveSensorIcon(parameter, severity);
 
     const alert = await Alert.create({
       poulailler: poultryId,
@@ -109,7 +211,7 @@ const createSensorAlert = async (
     });
 
     cacheAlert(poultryId, "sensor", parameter, severity, alert._id);
-    console.log(`[AlertService] ✅ Capteur — ${message}`);
+    console.log(`[AlertService] Capteur — ${message}`);
     return alert._id;
   } catch (err) {
     console.error("[AlertService] createSensorAlert :", err.message);
@@ -125,6 +227,7 @@ const checkSensorThresholds = async (
   const createdAlerts = [];
   const t = thresholds || {};
 
+  // ── Température ────────────────────────────────────────────────────────
   if (measurementData.temperature != null) {
     const val = measurementData.temperature;
     const max = t.temperatureMax ?? 35;
@@ -171,6 +274,7 @@ const checkSensorThresholds = async (
     }
   }
 
+  // ── Humidité ───────────────────────────────────────────────────────────
   if (measurementData.humidity != null) {
     const val = measurementData.humidity;
     const max = t.humidityMax ?? 80;
@@ -217,6 +321,7 @@ const checkSensorThresholds = async (
     }
   }
 
+  // ── CO₂ ───────────────────────────────────────────────────────────────
   if (measurementData.co2 != null) {
     const val = measurementData.co2;
     const max = t.co2Max ?? 2000;
@@ -237,6 +342,7 @@ const checkSensorThresholds = async (
     }
   }
 
+  // ── NH₃ ───────────────────────────────────────────────────────────────
   if (measurementData.nh3 != null) {
     const val = measurementData.nh3;
     const max = t.nh3Max ?? 35;
@@ -257,6 +363,7 @@ const checkSensorThresholds = async (
     }
   }
 
+  // ── Poussière ─────────────────────────────────────────────────────────
   if (measurementData.dust != null) {
     const val = measurementData.dust;
     const max = t.dustMax ?? 250;
@@ -277,6 +384,7 @@ const checkSensorThresholds = async (
     }
   }
 
+  // ── Niveau d'eau ──────────────────────────────────────────────────────
   if (measurementData.waterLevel != null) {
     const val = measurementData.waterLevel;
     const min = t.waterLevelMin ?? 20;
@@ -321,26 +429,32 @@ const createDoorAlert = async (poultryId, eventKey, triggeredBy = "manual") => {
     };
 
     const messageMap = {
-      manual_open: "Porte ouverte manuellement",
-      manual_close: "Porte fermée manuellement",
-      scheduled_open: "Porte ouverte automatiquement (horaire)",
-      scheduled_close: "Porte fermée automatiquement (horaire)",
-      timeout: "La porte n'a pas répondu à la commande (timeout)",
-      forced_open: "Porte restée ouverte hors horaire — vérification requise",
+      manual_open: "La porte du poulailler a été ouverte à la main.",
+      manual_close: "La porte du poulailler a été fermée à la main.",
+      scheduled_open:
+        "La porte du poulailler s'est ouverte automatiquement à l'heure prévue.",
+      scheduled_close:
+        "La porte du poulailler s'est fermée automatiquement à l'heure prévue.",
+      timeout:
+        "La porte du poulailler n'a pas répondu à la commande. Vérifiez si elle est bloquée ou si le moteur fonctionne bien.",
+      forced_open:
+        "La porte du poulailler est restée ouverte en dehors des heures prévues. Vérifiez que tout va bien.",
     };
 
     const iconMap = {
-      manual_open: "✅",
-      manual_close: "✅",
-      scheduled_open: "✅",
-      scheduled_close: "✅",
-      timeout: "⚠️",
-      forced_open: "⚠️",
+      manual_open: ICONS.door_open,
+      manual_close: ICONS.door_close,
+      scheduled_open: ICONS.door_open,
+      scheduled_close: ICONS.door_close,
+      timeout: ICONS.door_warn,
+      forced_open: ICONS.door_warn,
     };
 
     const severity = severityMap[eventKey] || "info";
-    const message = messageMap[eventKey] || `Événement porte : ${eventKey}`;
-    const icon = iconMap[eventKey] || "✅";
+    const message =
+      messageMap[eventKey] ||
+      `Événement porte inconnu : ${eventKey}. Vérifiez le poulailler.`;
+    const icon = iconMap[eventKey] || ICONS.unknown;
     const ttl = severity === "info" ? 5 * 60 * 1000 : DEFAULT_TTL_MS;
 
     const { shouldCreate, existingAlertId } = shouldCreateAlert(
@@ -366,7 +480,7 @@ const createDoorAlert = async (poultryId, eventKey, triggeredBy = "manual") => {
     });
 
     cacheAlert(poultryId, "door", eventKey, severity, alert._id, ttl);
-    console.log(`[AlertService] 🚪 Porte — ${message}`);
+    console.log(`[AlertService] Porte — ${message}`);
     return alert._id;
   } catch (err) {
     console.error("[AlertService] createDoorAlert :", err.message);
@@ -387,21 +501,48 @@ const createActuatorAlert = async (
   try {
     const key = `${actuator}_${state}`;
 
-    const labels = { fan: "Ventilateur", lamp: "Lampe chauffante" };
-    const stateLabels = { on: "activé", off: "désactivé" };
-    const triggerLabels = {
-      auto: "automatiquement",
-      manual: "manuellement",
-      scheduled: "selon horaire",
+    // ── Messages lisibles éleveur ───────────────────────────────────────
+    const ACTUATOR_MESSAGES = {
+      fan: {
+        on: {
+          auto: "Le ventilateur s'est allumé automatiquement car il fait trop chaud ou l'air est mauvais dans le poulailler.",
+          manual: "Le ventilateur a été allumé manuellement.",
+          scheduled: "Le ventilateur s'est allumé selon l'horaire programmé.",
+        },
+        off: {
+          auto: "Le ventilateur s'est éteint automatiquement — la température et l'air sont revenus à la normale.",
+          manual: "Le ventilateur a été éteint manuellement.",
+          scheduled: "Le ventilateur s'est éteint selon l'horaire programmé.",
+        },
+      },
+      lamp: {
+        on: {
+          auto: "La lampe chauffante s'est allumée automatiquement car il fait trop froid dans le poulailler.",
+          manual: "La lampe chauffante a été allumée manuellement.",
+          scheduled:
+            "La lampe chauffante s'est allumée selon l'horaire programmé.",
+        },
+        off: {
+          auto: "La lampe chauffante s'est éteinte automatiquement — la température est revenue à la normale.",
+          manual: "La lampe chauffante a été éteinte manuellement.",
+          scheduled:
+            "La lampe chauffante s'est éteinte selon l'horaire programmé.",
+        },
+      },
     };
 
-    const label = labels[actuator] || actuator;
-    const stateLabel = stateLabels[state] || state;
-    const triggerLabel = triggerLabels[triggeredBy] || triggeredBy;
+    // ── Icônes actionneurs ──────────────────────────────────────────────
+    const ACTUATOR_ICONS = {
+      fan: { on: ICONS.fan_on, off: ICONS.fan_off },
+      lamp: { on: ICONS.lamp_on, off: ICONS.lamp_off },
+    };
 
+    const message =
+      ACTUATOR_MESSAGES[actuator]?.[state]?.[triggeredBy] ??
+      `Équipement "${actuator}" ${state === "on" ? "activé" : "désactivé"} (${triggeredBy}).`;
+
+    const icon = ACTUATOR_ICONS[actuator]?.[state] ?? ICONS.unknown;
     const severity = triggeredBy === "auto" && state === "on" ? "warn" : "info";
-    const icon = severity === "warn" ? "⚠️" : "✅";
-    const message = `${label} ${stateLabel} ${triggerLabel}`;
 
     const alert = await Alert.create({
       poulailler: poultryId,
@@ -413,7 +554,7 @@ const createActuatorAlert = async (
       read: false,
     });
 
-    console.log(`[AlertService] ⚙️ Actionneur — ${message}`);
+    console.log(`[AlertService] Actionneur — ${message}`);
     return alert._id;
   } catch (err) {
     console.error("[AlertService] createActuatorAlert :", err.message);
@@ -423,30 +564,22 @@ const createActuatorAlert = async (
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. ALERTES MQTT
-// ✅ CORRIGÉ — UNE SEULE alerte pour "disconnect"
-// NE JAMAIS créer d'alerte pour "connect" ou "reconnect"
 // ─────────────────────────────────────────────────────────────────────────────
 const createMqttAlert = async (poultryId, eventType) => {
   try {
-    // ✅ CORRIGÉ — NE PAS créer d'alerte pour connect/reconnect
+    // NE PAS créer d'alerte pour connect / reconnect
     if (eventType === "connect" || eventType === "reconnect") {
-      console.log(
-        `[AlertService] 🔌 MQTT — ${eventType} (pas d'alerte — bruit utilisateur)`,
-      );
+      console.log(`[AlertService] MQTT — ${eventType} (pas d'alerte)`);
       return null;
     }
 
     const key = `mqtt_${eventType}`;
+    const severity = "danger";
 
     const messageMap = {
-      disconnect: "Connexion MQTT perdue — module hors ligne",
+      disconnect:
+        "Le boîtier du poulailler ne répond plus. Vérifiez qu'il est bien branché et que votre connexion internet fonctionne.",
     };
-
-    const iconMap = {
-      disconnect: "🔴",
-    };
-
-    const severity = "danger";
 
     const { shouldCreate, existingAlertId } = shouldCreateAlert(
       poultryId,
@@ -465,13 +598,15 @@ const createMqttAlert = async (poultryId, eventType) => {
       type: "mqtt",
       key,
       severity,
-      icon: iconMap[eventType] || "🔴",
-      message: messageMap[eventType] || `Événement MQTT : ${eventType}`,
+      icon: ICONS.mqtt_lost,
+      message:
+        messageMap[eventType] ??
+        `Problème de connexion avec le boîtier du poulailler (${eventType}).`,
       read: false,
     });
 
     cacheAlert(poultryId, "mqtt", key, severity, alert._id, DEFAULT_TTL_MS);
-    console.log(`[AlertService] 🔴 MQTT Disconnect créée`);
+    console.log(`[AlertService] MQTT Disconnect — alerte créée`);
     return alert._id;
   } catch (err) {
     console.error("[AlertService] createMqttAlert :", err.message);
@@ -496,13 +631,12 @@ const resolveAlerts = async (poultryId, parameter) => {
     );
 
     for (const sev of ["warn", "danger"]) {
-      const cacheKey = getCacheKey(poultryId, "sensor", parameter, sev);
-      alertCache.delete(cacheKey);
+      alertCache.delete(getCacheKey(poultryId, "sensor", parameter, sev));
     }
 
     if (result.modifiedCount > 0) {
       console.log(
-        `[AlertService] ✅ ${result.modifiedCount} alerte(s) résolue(s) — ${parameter}`,
+        `[AlertService] ${result.modifiedCount} alerte(s) résolue(s) — ${parameter}`,
       );
     }
   } catch (err) {
