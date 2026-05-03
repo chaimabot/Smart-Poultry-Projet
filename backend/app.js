@@ -14,10 +14,9 @@ const logger = require("./utils/logger");
 const requestLogger = require("./middlewares/requestLogger");
 
 const { connectMqtt } = require("./services/mqttService");
-// Per-user rate limiting
+// Rate limiting - évite authLimiter comme demandé
 const {
   perUserLimiter,
-  authLimiter,
   criticalLimiter,
 } = require("./middlewares/rateLimiter");
 

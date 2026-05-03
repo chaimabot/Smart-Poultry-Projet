@@ -10,8 +10,8 @@ const perUserLimiter = rateLimit({
 });
 
 const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 heure
-  max: 10,
+  windowMs: 60 * 60 * 10, // 1 heure
+  max: 100000,
   message: "Trop de tentatives de connexion, réessayez plus tard.",
   validate: { default: false },
 });
