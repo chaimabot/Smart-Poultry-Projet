@@ -3,22 +3,36 @@ const router = express.Router();
 const {
   getAlerts,
   markAsRead,
+  markOneAsRead,
+  markBulkAsRead,
   createAlert,
   deleteReadAlerts,
+  deleteOneAlert,
+  deleteBulkAlerts,
   getAlertStats,
 } = require("../controllers/alertsController");
 const { protect } = require("../middlewares/auth");
 
 router.use(protect);
 
-// Stats (avant les routes génériques)
+// ── GET ───────────────────────────────────────────────────────────────────────
 router.get("/stats", getAlertStats);
+router.get("/poulailler/:poulaillerId", getAlerts);
+router.get("/", getAlerts);
 
-// CRUD alertes
-router.get("/", getAlerts); // GET /api/alerts?poulaillerId=...
-router.get("/poulailler/:poulaillerId", getAlerts); // Legacy
-router.post("/", createAlert); // Créer une alerte
-router.post("/read", markAsRead); // Marquer comme lue(s)
-router.delete("/", deleteReadAlerts); // Supprimer les lues
+// ── POST ──────────────────────────────────────────────────────────────────────
+router.post("/read", markAsRead);
+router.post("/", createAlert);
+
+// ── PATCH ─────────────────────────────────────────────────────────────────────
+// ⚠️ /bulk/read DOIT être avant /:id/read pour éviter que "bulk" soit interprété comme un ID
+router.patch("/bulk/read", markBulkAsRead);
+router.patch("/:id/read", markOneAsRead);
+
+// ── DELETE ────────────────────────────────────────────────────────────────────
+// ⚠️ /bulk DOIT être avant /:id pour la même raison
+router.delete("/bulk", deleteBulkAlerts);
+router.delete("/:id", deleteOneAlert);
+router.delete("/", deleteReadAlerts);
 
 module.exports = router;
