@@ -6,17 +6,20 @@
  *   • Porte (ouverture / fermeture manuelle ou planifiée)
  *   • Actionneurs (ventilateur, lampe)
  *   • MQTT (connexion / déconnexion)
+ *
+ * ✅ Comparaison intelligente : ignore les décimales pour éviter les doublons
+ *    Ex: 54.2 puis 54.5 = pas de nouvelle alerte (même entier 54)
+ *    Ex: 54.9 puis 55.1 = nouvelle alerte (entier différent 54 vs 55)
  */
 
 const Alert = require("../models/Alert");
 
 // ─── Icônes techniques (noms de bibliothèque icon — ex: Lucide / Material) ──
-// Format : string utilisé côté frontend pour résoudre l'icône
 const ICONS = {
   // Sévérité
-  danger: "alert-circle", // rouge
-  warn: "alert-triangle", // orange
-  info: "info", // bleu
+  danger: "alert-circle",
+  warn: "alert-triangle",
+  info: "info",
 
   // Capteurs
   temperature: "thermometer",
@@ -115,7 +118,6 @@ const SENSOR_MESSAGES = {
 
 // ─── Résolution de l'icône capteur ────────────────────────────────────────
 const resolveSensorIcon = (parameter, severity) => {
-  // Icône du paramètre si disponible, sinon icône de sévérité
   return ICONS[parameter] ?? ICONS[severity] ?? ICONS.unknown;
 };
 
@@ -133,20 +135,64 @@ const purgeExpiredCache = () => {
   }
 };
 
-const shouldCreateAlert = (poultryId, type, key, severity) => {
+/**
+ * ✅ MODIFIÉ : Vérifie si on doit créer une alerte
+ * Pour les capteurs : compare les valeurs entières (ignore les décimales)
+ * - 54.2 puis 54.5 = même entier (54) = pas de nouvelle alerte
+ * - 54.9 puis 55.1 = entier différent (54 vs 55) = nouvelle alerte
+ */
+const shouldCreateAlert = (poultryId, type, key, severity, newValue = null) => {
   purgeExpiredCache();
   const cacheKey = getCacheKey(poultryId, type, key, severity);
   const cached = alertCache.get(cacheKey);
-  if (cached) return { shouldCreate: false, existingAlertId: cached.alertId };
+
+  if (cached) {
+    // ✅ Logique spécifique pour les capteurs avec comparaison de valeur entière
+    if (type === "sensor" && newValue != null && cached.lastValue != null) {
+      // Math.trunc enlève la virgule (54.2 devient 54, 54.9 devient 54)
+      const oldInt = Math.trunc(cached.lastValue);
+      const newInt = Math.trunc(newValue);
+
+      if (newInt === oldInt) {
+        // L'entier n'a pas changé (ex: 54.2 -> 54.5). On ne crée PAS d'autre alerte.
+        console.log(
+          `[AlertService] Valeur stable (${oldInt}) — pas de nouvelle alerte pour ${key}`,
+        );
+        return { shouldCreate: false, existingAlertId: cached.alertId };
+      } else {
+        // L'entier a changé (ex: 54.5 -> 55.0). On DOIT créer une nouvelle alerte.
+        console.log(
+          `[AlertService] Valeur changée (${oldInt} -> ${newInt}) — nouvelle alerte pour ${key}`,
+        );
+        return { shouldCreate: true };
+      }
+    }
+
+    // Comportement standard pour la porte, MQTT, etc. (basé sur le temps)
+    return { shouldCreate: false, existingAlertId: cached.alertId };
+  }
+
   return { shouldCreate: true };
 };
 
-const cacheAlert = (poultryId, type, key, severity, alertId, ttl) => {
+/**
+ * ✅ MODIFIÉ : Stocke l'alerte dans le cache avec sa valeur
+ */
+const cacheAlert = (
+  poultryId,
+  type,
+  key,
+  severity,
+  alertId,
+  ttl,
+  value = null,
+) => {
   const cacheKey = getCacheKey(poultryId, type, key, severity);
   alertCache.set(cacheKey, {
     alertId,
     timestamp: Date.now(),
     ttl: ttl ?? DEFAULT_TTL_MS,
+    lastValue: value, // ✅ On stocke la valeur qui a déclenché l'alerte
   });
 };
 
@@ -161,15 +207,19 @@ const createSensorAlert = async (
   severity,
 ) => {
   try {
+    // ✅ MODIFIÉ : On passe 'value' à shouldCreateAlert pour la comparaison
     const { shouldCreate, existingAlertId } = shouldCreateAlert(
       poultryId,
       "sensor",
       parameter,
       severity,
+      value,
     );
 
     if (!shouldCreate) {
-      console.log(`[AlertService] Doublon bloqué — ${parameter} (${severity})`);
+      console.log(
+        `[AlertService] Doublon bloqué (valeur stable) — ${parameter} (${severity})`,
+      );
       return existingAlertId;
     }
 
@@ -210,7 +260,17 @@ const createSensorAlert = async (
       read: false,
     });
 
-    cacheAlert(poultryId, "sensor", parameter, severity, alert._id);
+    // ✅ MODIFIÉ : On passe 'value' pour la stocker dans le cache
+    cacheAlert(
+      poultryId,
+      "sensor",
+      parameter,
+      severity,
+      alert._id,
+      DEFAULT_TTL_MS,
+      value,
+    );
+
     console.log(`[AlertService] Capteur — ${message}`);
     return alert._id;
   } catch (err) {
@@ -630,6 +690,7 @@ const resolveAlerts = async (poultryId, parameter) => {
       { resolvedAt: new Date(), read: true },
     );
 
+    // ✅ Nettoyer le cache pour ce paramètre
     for (const sev of ["warn", "danger"]) {
       alertCache.delete(getCacheKey(poultryId, "sensor", parameter, sev));
     }
