@@ -14,7 +14,7 @@
 
 const Alert = require("../models/Alert");
 
-// ─── Icônes techniques (noms de bibliothèque icon — ex: Lucide / Material) ──
+// ─── Icônes techniques ────────────────────────────────────────────────────────
 const ICONS = {
   // Sévérité
   danger: "alert-circle",
@@ -49,7 +49,7 @@ const ICONS = {
   unknown: "circle-help",
 };
 
-// ─── Labels et unités par paramètre capteur ───────────────────────────────
+// ─── Labels et unités ────────────────────────────────────────────────────────
 const PARAM_LABELS = {
   temperature: "Température du poulailler",
   humidity: "Humidité dans le poulailler",
@@ -68,7 +68,7 @@ const PARAM_UNITS = {
   waterLevel: "%",
 };
 
-// ─── Messages simples par paramètre et situation ──────────────────────────
+// ─── Messages simples pour capteurs ─────────────────────────────────────────
 const SENSOR_MESSAGES = {
   temperature: {
     danger_above: (val, threshold) =>
@@ -116,12 +116,12 @@ const SENSOR_MESSAGES = {
   },
 };
 
-// ─── Résolution de l'icône capteur ────────────────────────────────────────
+// ─── Résolution de l'icône capteur ─────────────────────────────────────────
 const resolveSensorIcon = (parameter, severity) => {
   return ICONS[parameter] ?? ICONS[severity] ?? ICONS.unknown;
 };
 
-// ─── Cache anti-doublon (TTL configurable par type d'alerte) ──────────────
+// ─── Cache anti-doublon ───────────────────────────────────────────────────
 const alertCache = new Map();
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -138,8 +138,6 @@ const purgeExpiredCache = () => {
 /**
  * ✅ MODIFIÉ : Vérifie si on doit créer une alerte
  * Pour les capteurs : compare les valeurs entières (ignore les décimales)
- * - 54.2 puis 54.5 = même entier (54) = pas de nouvelle alerte
- * - 54.9 puis 55.1 = entier différent (54 vs 55) = nouvelle alerte
  */
 const shouldCreateAlert = (poultryId, type, key, severity, newValue = null) => {
   purgeExpiredCache();
@@ -147,28 +145,23 @@ const shouldCreateAlert = (poultryId, type, key, severity, newValue = null) => {
   const cached = alertCache.get(cacheKey);
 
   if (cached) {
-    // ✅ Logique spécifique pour les capteurs avec comparaison de valeur entière
     if (type === "sensor" && newValue != null && cached.lastValue != null) {
-      // Math.trunc enlève la virgule (54.2 devient 54, 54.9 devient 54)
       const oldInt = Math.trunc(cached.lastValue);
       const newInt = Math.trunc(newValue);
 
       if (newInt === oldInt) {
-        // L'entier n'a pas changé (ex: 54.2 -> 54.5). On ne crée PAS d'autre alerte.
         console.log(
           `[AlertService] Valeur stable (${oldInt}) — pas de nouvelle alerte pour ${key}`,
         );
         return { shouldCreate: false, existingAlertId: cached.alertId };
       } else {
-        // L'entier a changé (ex: 54.5 -> 55.0). On DOIT créer une nouvelle alerte.
         console.log(
-          `[AlertService] Valeur changée (${oldInt} -> ${newInt}) — nouvelle alerte pour ${key}`,
+          `[AlertService] Valeur changée (${oldInt} → ${newInt}) — nouvelle alerte pour ${key}`,
         );
         return { shouldCreate: true };
       }
     }
 
-    // Comportement standard pour la porte, MQTT, etc. (basé sur le temps)
     return { shouldCreate: false, existingAlertId: cached.alertId };
   }
 
@@ -192,7 +185,7 @@ const cacheAlert = (
     alertId,
     timestamp: Date.now(),
     ttl: ttl ?? DEFAULT_TTL_MS,
-    lastValue: value, // ✅ On stocke la valeur qui a déclenché l'alerte
+    lastValue: value,
   });
 };
 
@@ -207,7 +200,6 @@ const createSensorAlert = async (
   severity,
 ) => {
   try {
-    // ✅ MODIFIÉ : On passe 'value' à shouldCreateAlert pour la comparaison
     const { shouldCreate, existingAlertId } = shouldCreateAlert(
       poultryId,
       "sensor",
@@ -227,7 +219,6 @@ const createSensorAlert = async (
     const valStr = typeof value === "number" ? value.toFixed(1) : "?";
     const thresStr = typeof threshold === "number" ? threshold.toFixed(1) : "?";
 
-    // ── Message lisible éleveur ─────────────────────────────────────────
     const msgKey = `${severity}_${direction}`;
     const paramMsgs = SENSOR_MESSAGES[parameter];
     let message;
@@ -235,7 +226,6 @@ const createSensorAlert = async (
     if (paramMsgs && paramMsgs[msgKey]) {
       message = paramMsgs[msgKey](valStr, thresStr);
     } else {
-      // Fallback générique
       const label = PARAM_LABELS[parameter] || parameter;
       const unit = PARAM_UNITS[parameter] || "";
       const dirLabel =
@@ -243,7 +233,6 @@ const createSensorAlert = async (
       message = `${label} ${dirLabel} : ${valStr}${unit} (seuil : ${thresStr}${unit}). Vérifiez le poulailler.`;
     }
 
-    // ── Icône de développement ──────────────────────────────────────────
     const icon = resolveSensorIcon(parameter, severity);
 
     const alert = await Alert.create({
@@ -260,7 +249,6 @@ const createSensorAlert = async (
       read: false,
     });
 
-    // ✅ MODIFIÉ : On passe 'value' pour la stocker dans le cache
     cacheAlert(
       poultryId,
       "sensor",
@@ -287,7 +275,6 @@ const checkSensorThresholds = async (
   const createdAlerts = [];
   const t = thresholds || {};
 
-  // ── Température ────────────────────────────────────────────────────────
   if (measurementData.temperature != null) {
     const val = measurementData.temperature;
     const max = t.temperatureMax ?? 35;
@@ -334,7 +321,6 @@ const checkSensorThresholds = async (
     }
   }
 
-  // ── Humidité ───────────────────────────────────────────────────────────
   if (measurementData.humidity != null) {
     const val = measurementData.humidity;
     const max = t.humidityMax ?? 80;
@@ -381,7 +367,6 @@ const checkSensorThresholds = async (
     }
   }
 
-  // ── CO₂ ───────────────────────────────────────────────────────────────
   if (measurementData.co2 != null) {
     const val = measurementData.co2;
     const max = t.co2Max ?? 2000;
@@ -402,7 +387,6 @@ const checkSensorThresholds = async (
     }
   }
 
-  // ── NH₃ ───────────────────────────────────────────────────────────────
   if (measurementData.nh3 != null) {
     const val = measurementData.nh3;
     const max = t.nh3Max ?? 35;
@@ -423,7 +407,6 @@ const checkSensorThresholds = async (
     }
   }
 
-  // ── Poussière ─────────────────────────────────────────────────────────
   if (measurementData.dust != null) {
     const val = measurementData.dust;
     const max = t.dustMax ?? 250;
@@ -444,7 +427,6 @@ const checkSensorThresholds = async (
     }
   }
 
-  // ── Niveau d'eau ──────────────────────────────────────────────────────
   if (measurementData.waterLevel != null) {
     const val = measurementData.waterLevel;
     const min = t.waterLevelMin ?? 20;
@@ -550,59 +532,100 @@ const createDoorAlert = async (poultryId, eventKey, triggeredBy = "manual") => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. ALERTES ACTIONNEURS
-// ✅ PAS de cache anti-doublon — chaque changement d'état est unique
+// ✅ MODIFIÉ : Accepte un paramètre `reason` pour enregistrer pourquoi l'action a eu lieu
 // ─────────────────────────────────────────────────────────────────────────────
 const createActuatorAlert = async (
   poultryId,
   actuator,
   state,
   triggeredBy = "auto",
+  reason = null,
 ) => {
   try {
-    const key = `${actuator}_${state}`;
+    const normalizedActuator = actuator === "ventilation" ? "fan" : actuator;
+    const normalizedState =
+      state === true ? "on" : state === false ? "off" : state;
 
-    // ── Messages lisibles éleveur ───────────────────────────────────────
+    const key = `${normalizedActuator}_${normalizedState}`;
+
+    const reasonText = reason ? ` car ${reason}` : "";
+
     const ACTUATOR_MESSAGES = {
       fan: {
         on: {
-          auto: "Le ventilateur s'est allumé automatiquement car il fait trop chaud ou l'air est mauvais dans le poulailler.",
-          manual: "Le ventilateur a été allumé manuellement.",
-          scheduled: "Le ventilateur s'est allumé selon l'horaire programmé.",
+          auto: `Action : Ventilateur démarré automatiquement${reasonText}.`,
+          manual: "Action : Ventilateur démarré manuellement.",
+          scheduled: "Action : Ventilateur démarré selon l'horaire programmé.",
         },
         off: {
-          auto: "Le ventilateur s'est éteint automatiquement — la température et l'air sont revenus à la normale.",
-          manual: "Le ventilateur a été éteint manuellement.",
-          scheduled: "Le ventilateur s'est éteint selon l'horaire programmé.",
+          auto: "Action : Ventilateur arrêté automatiquement car les conditions sont revenues à la normale.",
+          manual: "Action : Ventilateur arrêté manuellement.",
+          scheduled: "Action : Ventilateur arrêté selon l'horaire programmé.",
         },
       },
+
       lamp: {
         on: {
-          auto: "La lampe chauffante s'est allumée automatiquement car il fait trop froid dans le poulailler.",
-          manual: "La lampe chauffante a été allumée manuellement.",
+          auto: `Action : Lampe chauffante allumée automatiquement${reasonText}.`,
+          manual: "Action : Lampe chauffante allumée manuellement.",
           scheduled:
-            "La lampe chauffante s'est allumée selon l'horaire programmé.",
+            "Action : Lampe chauffante allumée selon l'horaire programmé.",
         },
         off: {
-          auto: "La lampe chauffante s'est éteinte automatiquement — la température est revenue à la normale.",
-          manual: "La lampe chauffante a été éteinte manuellement.",
+          auto: "Action : Lampe chauffante éteinte automatiquement car la température est revenue à la normale.",
+          manual: "Action : Lampe chauffante éteinte manuellement.",
           scheduled:
-            "La lampe chauffante s'est éteinte selon l'horaire programmé.",
+            "Action : Lampe chauffante éteinte selon l'horaire programmé.",
+        },
+      },
+
+      door: {
+        open: {
+          auto: "Action : Porte ouverte automatiquement.",
+          manual: "Action : Porte ouverte manuellement.",
+          scheduled: "Action : Porte ouverte selon l'horaire programmé.",
+        },
+        closed: {
+          auto: "Action : Porte fermée automatiquement.",
+          manual: "Action : Porte fermée manuellement.",
+          scheduled: "Action : Porte fermée selon l'horaire programmé.",
+        },
+      },
+
+      pump: {
+        on: {
+          auto: `Action : Pompe démarrée automatiquement${reasonText}.`,
+          manual: "Action : Pompe démarrée manuellement.",
+          scheduled: "Action : Pompe démarrée selon l'horaire programmé.",
+        },
+        off: {
+          auto: "Action : Pompe arrêtée automatiquement.",
+          manual: "Action : Pompe arrêtée manuellement.",
+          scheduled: "Action : Pompe arrêtée selon l'horaire programmé.",
         },
       },
     };
 
-    // ── Icônes actionneurs ──────────────────────────────────────────────
     const ACTUATOR_ICONS = {
       fan: { on: ICONS.fan_on, off: ICONS.fan_off },
       lamp: { on: ICONS.lamp_on, off: ICONS.lamp_off },
+      door: { open: ICONS.door_open, closed: ICONS.door_close },
+      pump: { on: "water", off: "water-off" },
     };
 
-    const message =
-      ACTUATOR_MESSAGES[actuator]?.[state]?.[triggeredBy] ??
-      `Équipement "${actuator}" ${state === "on" ? "activé" : "désactivé"} (${triggeredBy}).`;
+    const fallbackAction =
+      normalizedState === "on" || normalizedState === "open"
+        ? "activé"
+        : "désactivé";
 
-    const icon = ACTUATOR_ICONS[actuator]?.[state] ?? ICONS.unknown;
-    const severity = triggeredBy === "auto" && state === "on" ? "warn" : "info";
+    const message =
+      ACTUATOR_MESSAGES[normalizedActuator]?.[normalizedState]?.[triggeredBy] ??
+      `Action : ${normalizedActuator} ${fallbackAction} ${triggeredBy === "auto" ? "automatiquement" : "manuellement"}.`;
+
+    const icon =
+      ACTUATOR_ICONS[normalizedActuator]?.[normalizedState] ?? ICONS.unknown;
+
+    const severity = "info";
 
     const alert = await Alert.create({
       poulailler: poultryId,
@@ -627,7 +650,6 @@ const createActuatorAlert = async (
 // ─────────────────────────────────────────────────────────────────────────────
 const createMqttAlert = async (poultryId, eventType) => {
   try {
-    // NE PAS créer d'alerte pour connect / reconnect
     if (eventType === "connect" || eventType === "reconnect") {
       console.log(`[AlertService] MQTT — ${eventType} (pas d'alerte)`);
       return null;

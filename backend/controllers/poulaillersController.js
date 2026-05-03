@@ -6,6 +6,7 @@ const Command = require("../models/Command");
 const SystemConfig = require("../models/SystemConfig");
 const Joi = require("joi");
 const mqttService = require("../services/mqttService");
+const { createActuatorAlert } = require("../services/alertService");
 
 // ============================================================
 // SYNC CONFIG → ESP32
@@ -121,7 +122,63 @@ function sampleHistory(arr, n) {
   const step = Math.floor(arr.length / n);
   return Array.from({ length: n }, (_, i) => arr[i * step]);
 }
+function getActuatorAlertReason(poulailler, actuator, state, triggeredBy) {
+  if (triggeredBy !== "auto") return null;
 
+  const m = poulailler.lastMonitoring || {};
+  const t = poulailler.thresholds || {};
+
+  if (actuator === "ventilation" && state === "on") {
+    if (
+      m.temperature != null &&
+      t.temperatureMax != null &&
+      m.temperature > t.temperatureMax
+    ) {
+      return "température trop élevée";
+    }
+    if (
+      m.humidity != null &&
+      t.humidityMax != null &&
+      m.humidity > t.humidityMax
+    ) {
+      return "humidité trop élevée";
+    }
+    if (m.co2 != null && t.co2Max != null && m.co2 > t.co2Max) {
+      return "qualité de l'air dégradée";
+    }
+    if (m.nh3 != null && t.nh3Max != null && m.nh3 > t.nh3Max) {
+      return "gaz toxique détecté";
+    }
+    if (m.dust != null && t.dustMax != null && m.dust > t.dustMax) {
+      return "poussière trop élevée";
+    }
+    return "conditions du poulailler anormales";
+  }
+
+  if (actuator === "lamp" && state === "on") {
+    if (
+      m.temperature != null &&
+      t.temperatureMin != null &&
+      m.temperature < t.temperatureMin
+    ) {
+      return "température trop basse";
+    }
+    return "besoin de chauffage";
+  }
+
+  if (actuator === "pump" && state === "on") {
+    if (
+      m.waterLevel != null &&
+      t.waterLevelMin != null &&
+      m.waterLevel < t.waterLevelMin
+    ) {
+      return "niveau d'eau bas";
+    }
+    return "remplissage nécessaire";
+  }
+
+  return null;
+}
 // ============================================================
 // @desc    Créer un nouveau poulailler
 // @route   POST /api/poulaillers
@@ -756,9 +813,6 @@ exports.controlActuator = async (req, res) => {
         actuator === "door"
           ? { action: state === "open" ? "open" : "stop" }
           : { on: state === "on", mode: mode ?? "manual" };
-      // FIX #15 : `mode || "manual"` remplacé par `mode ?? "manual"` — si mode
-      //           est une chaîne vide "", || bascule sur "manual" ce qui est
-      //           trompeur. ?? ne bascule que sur null/undefined.
 
       mqttClient.publish(espTopic, JSON.stringify(mqttPayload), { qos: 1 });
       console.log(`[MQTT→ESP32] ${espTopic}: ${JSON.stringify(mqttPayload)}`);
@@ -775,20 +829,50 @@ exports.controlActuator = async (req, res) => {
     };
     const actionMapFr = {
       door: { open: "ouvrir", closed: "fermer" },
-      ventilation: { on: "demarrer", off: "arreter" },
-      lamp: { on: "allumer", off: "eteindre" },
-      pump: { on: "demarrer", off: "arreter" },
+      ventilation: { on: "démarrer", off: "arrêter" },
+      lamp: { on: "allumer", off: "éteindre" },
+      pump: { on: "démarrer", off: "arrêter" },
     };
 
     await Command.create({
       poulailler: poulailler._id,
       typeActionneur: typeMap[actuator],
       action: actionMapFr[actuator][state],
-      issuedBy: req.user.id, // FIX #16 : "user" (string littérale) remplacé par
-      // req.user.id pour traçabilité réelle de l'auteur.
+      issuedBy: req.user.id,
       source: "mobile-app",
       status: "sent",
     });
+
+    // ✅ ENREGISTRER DANS L'HISTORIQUE des alertes/actions
+    try {
+      const alertActuatorMap = {
+        ventilation: "fan",
+        lamp: "lamp",
+        door: "door",
+        pump: "pump",
+      };
+      const alertActuator = alertActuatorMap[actuator] || actuator;
+      const triggeredBy = mode === "auto" ? "auto" : "manual";
+      const reason = getActuatorAlertReason(
+        poulailler,
+        actuator,
+        state,
+        triggeredBy,
+      );
+
+      await createActuatorAlert(
+        poulailler._id,
+        alertActuator,
+        state,
+        triggeredBy,
+        reason,
+      );
+    } catch (alertErr) {
+      console.error(
+        "[controlActuator] Erreur création historique :",
+        alertErr.message,
+      );
+    }
 
     await syncConfig(req.params.id, mqttService);
 
