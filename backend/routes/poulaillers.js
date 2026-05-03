@@ -16,8 +16,9 @@ const {
   getArchivedPoulaillers,
   getMonitoringData,
   controlActuator,
+
   getMeasureHistory,
-} = require("../controllers/poulaillerController");
+} = require("../controllers/poulaillersController");
 const {
   getDoorSchedule,
   updateDoorSchedule,
@@ -25,11 +26,18 @@ const {
 } = require("../controllers/doorController");
 const { protect } = require("../middlewares/auth");
 
+// Toutes les routes sont protégées
 router.use(protect);
 
 router.post("/", createPoulailler);
+
+// Liste des poulaillers non archivés
 router.get("/", getPoulaillers);
+
+// Liste des poulaillers archivés
 router.get("/archives", getArchivedPoulaillers);
+
+// Routes Spéciales (Avant :id)
 router.get("/summary", getPoulaillersSummary);
 router.get("/critical", getCriticalPoulaillers);
 
@@ -38,17 +46,17 @@ router.put("/:id", updatePoulailler);
 router.delete("/:id", deletePoulailler);
 router.post("/:id/archive", archivePoulailler);
 
+// Seuils & Monitoring
 router.get("/:id/thresholds", getThresholds);
 router.put("/:id/thresholds", updateThresholds);
 router.post("/:id/thresholds/reset", resetThresholds);
 router.get("/:id/current-measures", getCurrentMeasures);
 
-router.get("/:id/monitoring", getMonitoringData);
-
-// ✅ ROUTE UNIQUE pour les actionneurs
+// ✅ Nouvelles routes
+router.get("/:id/monitoring", getMonitoringData); // Monitoring complet + historique 24h
+router.patch("/:id/actuators", controlActuator); // Contrôle porte / ventilation
+router.get("/:id/history", getMeasureHistory); // Historique par capteur et période
 router.patch("/:id/actuators", controlActuator);
-
-router.get("/:id/history", getMeasureHistory);
 
 // [DOOR] Door scheduling routes
 router.get("/:id/door/schedule", getDoorSchedule);
