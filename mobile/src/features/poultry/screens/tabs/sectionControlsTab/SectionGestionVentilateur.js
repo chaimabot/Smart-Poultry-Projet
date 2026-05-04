@@ -4,11 +4,12 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 
 export default function SectionGestionVentilateur({
-  fanOn, // boolean : état actuel du fan
-  fanAuto, // boolean : mode auto actif
-  onToggleAuto, // () => void : depuis usePoultryState.toggleFanAuto
-  onFanOn, // () => void : allumer manuellement
-  onFanOff, // () => void : éteindre manuellement
+  fanOn,
+  fanAuto,
+  fanAutoReason, // ✅ Nouvelle prop
+  onToggleAuto,
+  onFanOn,
+  onFanOff,
 }) {
   const handleManualOn = () => {
     if (fanAuto) {
@@ -65,7 +66,15 @@ export default function SectionGestionVentilateur({
         </TouchableOpacity>
       </View>
 
-      {/* Boutons manuels : affichés seulement en mode MANU */}
+      {/* ✅ Afficher la raison en mode AUTO */}
+      {fanAuto && fanAutoReason && (
+        <View style={styles.reasonBox}>
+          <MaterialIcons name="lightbulb-outline" size={14} color="#F59E0B" />
+          <Text style={styles.reasonText}>{fanAutoReason}</Text>
+        </View>
+      )}
+
+      {/* Boutons manuels */}
       {!fanAuto && (
         <View style={{ flexDirection: "row", gap: 8 }}>
           <TouchableOpacity
@@ -142,6 +151,26 @@ const styles = StyleSheet.create({
   segmentActive: { backgroundColor: "#22C55E" },
   segmentText: { fontSize: 10, fontWeight: "700", color: "#94A3B8" },
   textWhite: { color: "#fff" },
+
+  // ✅ Style pour la raison AUTO
+  reasonBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#FEF3C7",
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+    borderLeftWidth: 3,
+    borderLeftColor: "#F59E0B",
+  },
+  reasonText: {
+    fontSize: 11,
+    color: "#92400E",
+    fontWeight: "600",
+    flex: 1,
+  },
+
   btn: {
     flex: 1,
     padding: 11,
