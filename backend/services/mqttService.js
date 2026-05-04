@@ -257,13 +257,12 @@ const handleMqttMessage = async (topic, message) => {
       // Mettre à jour les états actionneurs depuis l'ESP32
       // L'ESP32 publie : fanOn, lampOn, pumpOn, doorOpen, doorState, fanAuto, lampAuto, pumpAuto, doorAuto
 
-      if (data.fanOn !== undefined) {
+
         poulailler.actuatorStates.ventilation.status = data.fanOn
           ? "on"
           : "off";
       }
-      if (data.fanAuto !== undefined) {
-        poulailler.actuatorStates.ventilation.mode = data.fanAuto
+
           ? "auto"
           : "manual";
       }
