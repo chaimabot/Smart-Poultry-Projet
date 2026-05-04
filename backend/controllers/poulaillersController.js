@@ -940,5 +940,39 @@ exports.getMeasureHistory = async (req, res) => {
   }
 };
 
+
+
+// @desc    Obtenir l'historique des commandes d'un poulailler
+// @route   GET /api/poulaillers/:id/commands
+// @access  Private
+// ============================================================
+exports.getPoulaillerCommands = async (req, res) => {
+  try {
+    const poulailler = await Poulailler.findById(req.params.id);
+
+    if (!poulailler) {
+      return res.status(404).json({ success: false, error: "Poulailler non trouvé" });
+    }
+    if (poulailler.owner.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, error: "Accès non autorisé" });
+    }
+
+    const commands = await Command.find({ poulailler: req.params.id })
+      .populate("issuedBy", "firstName lastName")
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.status(200).json({ 
+      success: true, 
+      count: commands.length, 
+      data: commands 
+    });
+  } catch (err) {
+    console.error("[COMMANDS] Erreur:", err);
+    res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
+};
+
+
 // Export syncConfig pour usage dans mqttService
 exports.syncConfig = syncConfig;

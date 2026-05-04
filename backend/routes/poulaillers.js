@@ -56,6 +56,7 @@ router.get("/:id/current-measures", getCurrentMeasures);
 router.get("/:id/monitoring", getMonitoringData); // Monitoring complet + historique 24h
 router.patch("/:id/actuators", controlActuator); // Contrôle porte / ventilation
 router.get("/:id/history", getMeasureHistory); // Historique par capteur et période
+router.get("/:id/commands", getPoulaillerCommands); // Historique des commandes
 router.patch("/:id/actuators", controlActuator);
 
 // [DOOR] Door scheduling routes
