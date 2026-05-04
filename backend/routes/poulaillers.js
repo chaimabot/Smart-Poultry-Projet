@@ -18,6 +18,7 @@ const {
   controlActuator,
 
   getMeasureHistory,
+  getPoulaillerCommands,
 } = require("../controllers/poulaillersController");
 const {
   getDoorSchedule,

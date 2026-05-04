@@ -104,11 +104,8 @@ try {
 } catch (e) {
   console.error("[ROUTES] auth fail:", e.message);
 }
-try {
-  poulaillerRoutes = require("./routes/poulaillers");
-} catch (e) {
-  console.error("[ROUTES] poulaillers fail:", e.message);
-}
+poulaillerRoutes = require("./routes/poulaillers");
+console.log("[ROUTES] ✓ poulaillers chargé");
 try {
   alertRoutes = require("./routes/alerts");
 } catch (e) {
