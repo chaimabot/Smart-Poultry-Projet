@@ -255,29 +255,24 @@ const handleMqttMessage = async (topic, message) => {
       console.log(`[MQTT] Payload status:`, data);
 
       // Mettre à jour les états actionneurs depuis l'ESP32
-      // L'ESP32 publie : fanOn, lampOn, pumpOn, doorOpen, doorState, fanAuto, lampAuto, pumpAuto, doorAuto
+      // ⚠️ On met à jour SEULEMENT le status (on/off), PAS le mode (auto/manual)
+      // Le mode est la source de vérité de la BD — l'ESP32 ne doit pas l'écraser
 
-
+      if (data.fanOn !== undefined) {
         poulailler.actuatorStates.ventilation.status = data.fanOn
           ? "on"
           : "off";
       }
-
-          ? "auto"
-          : "manual";
-      }
       if (data.lampOn !== undefined) {
         poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
-      }
-      if (data.lampAuto !== undefined) {
-        poulailler.actuatorStates.lamp.mode = data.lampAuto ? "auto" : "manual";
       }
       if (data.pumpOn !== undefined) {
         poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
       }
-      if (data.pumpAuto !== undefined) {
-        poulailler.actuatorStates.pump.mode = data.pumpAuto ? "auto" : "manual";
-      }
+
+      // ✅ Envoyer la config (modes) à l'ESP32 à chaque status reçu
+      // Comme ça si l'ESP32 redémarre, il récupère les bons modes depuis la BD
+      publishConfig(macAddress, poulailler);
 
       // Traitement spécial pour la porte (état riche)
       if (data.doorState !== undefined) {
@@ -335,6 +330,29 @@ const handleMqttMessage = async (topic, message) => {
 // ============================================================================
 // ACTIONS SORTANTES
 // ============================================================================
+
+// ✅ Envoie la config complète (modes + seuils) à l'ESP32
+// Appelé à chaque réception de status pour resynchroniser l'ESP32
+const publishConfig = (macAddress, poulailler) => {
+  if (!client || !client.connected) return;
+
+  const config = {
+    tempMin: poulailler.thresholds.temperatureMin,
+    tempMax: poulailler.thresholds.temperatureMax,
+    waterMin: poulailler.thresholds.waterLevelMin,
+    co2Max: poulailler.thresholds.co2Max,
+    // ✅ Les modes viennent de la BD — l'ESP32 va les appliquer
+    fanMode: poulailler.actuatorStates.ventilation.mode,
+    lampMode: poulailler.actuatorStates.lamp.mode,
+    pumpMode: poulailler.actuatorStates.pump.mode,
+  };
+
+  const topic = `poulailler/${macAddress}/config`;
+  client.publish(topic, JSON.stringify(config), { qos: 1 });
+  console.log(
+    `[MQTT] Config envoyée à ${macAddress} — fan:${config.fanMode} lamp:${config.lampMode} pump:${config.pumpMode}`,
+  );
+};
 
 // Publie une commande générique (usage interne)
 const publishCommand = (macAddressOrId, command, value) => {
@@ -442,6 +460,7 @@ const stopDoorClockSync = () => {
 module.exports = {
   connectMqtt,
   publishCommand,
+  publishConfig,
   disconnectMqtt,
   getMqttClient: () => client,
   startDoorMonitoring,
