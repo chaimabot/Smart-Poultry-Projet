@@ -1,20 +1,41 @@
-const Poulailler = require("../models/Poulailler");
+// controllers/ventilateurController.js
+const ventilateurService = require("../services/ventilateurService");
 
-const updateVentilateur = async (poulaillerId, mode, action) => {
-  const poulailler = await Poulailler.findById(poulaillerId);
-  if (!poulailler) throw new Error("Poulailler non trouvé");
+const handleUpdateVentilateur = async (req, res) => {
+  try {
+    const { id } = req.params;
+    let { mode, action } = req.body;
 
-  // ✅ Sauvegarde UNIQUEMENT en DB pour la persistance
-  poulailler.actuatorStates.ventilation.mode = mode;
-  poulailler.actuatorStates.ventilation.status = action;
+    // SUPPORT DES DEUX FORMATS (compatibilité maximale)
+    if (req.body["actuatorStates.ventilation.mode"]) {
+      mode = req.body["actuatorStates.ventilation.mode"];
+    }
+    if (req.body["actuatorStates.ventilation.status"]) {
+      action = req.body["actuatorStates.ventilation.status"] === "on";
+    }
 
-  await poulailler.save();
+    // Si seul le mode est envoyé (cas de l'app mobile)
+    if (mode === undefined && req.body.mode !== undefined) {
+      mode = req.body.mode;
+    }
+    if (action === undefined && req.body.action !== undefined) {
+      action = req.body.action;
+    }
 
-  // ⚠️ J'ai SUPPRIMÉ le code MQTT ici.
-  // L'app mobile envoie déjà les commandes MQTT en temps réel.
-  // Ne pas renvoyer de MQTT depuis le backend pour éviter les doublons !
+    const updatedPoulailler = await ventilateurService.updateVentilateur(
+      id,
+      mode || "manual",
+      action !== undefined ? action : null,
+    );
 
-  return poulailler;
+    res.status(200).json({
+      success: true,
+      data: updatedPoulailler.actuatorStates.ventilation,
+    });
+  } catch (error) {
+    console.error("Erreur handleUpdateVentilateur :", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
 };
 
-module.exports = { updateVentilateur };
+module.exports = { handleUpdateVentilateur };
