@@ -22,8 +22,8 @@ export const secureSet = async (key, value) => {
     } else if (SecureStore) {
       await AsyncStorage.setItem(key, value);
     } else {
-      console.warn(
-        ` Storing ${key} in AsyncStorage (not encrypted). Install expo-secure-store.`,
+console.warn(
+        ` Storing ${key} in AsyncStorage (not encrypted).`,
       );
       await AsyncStorage.setItem(key, value);
     }

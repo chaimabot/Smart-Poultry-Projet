@@ -14,8 +14,6 @@ import {
 
 // ── Constantes ────────────────────────────────────────────────────────────────
 
-// Les clés attendues depuis la BD (SystemConfig.defaultThresholds)
-// Pas de valeurs hardcodées — null signifie "pas encore chargé depuis la BD"
 const EMPTY_THRESHOLDS = {
   temperatureMin: null,
   temperatureMax: null,
@@ -41,8 +39,8 @@ export const PARAM_ICONS = {
 // ── Validation ────────────────────────────────────────────────────────────────
 
 export function validateThresholds(vals) {
-  // Vérifier qu'aucune valeur n'est encore null (BD pas encore chargée)
-  const hasNull = Object.entries(vals).some(
+  // ✅ FIX 1 : Message d'erreur clair si un champ est vide (null)
+  const hasEmptyField = Object.entries(vals).some(
     ([k, v]) =>
       [
         "temperatureMin",
@@ -55,8 +53,10 @@ export function validateThresholds(vals) {
         "waterLevelMin",
       ].includes(k) && v === null,
   );
-  if (hasNull) return "Les seuils ne sont pas encore chargés";
 
+  if (hasEmptyField) return "Veuillez remplir tous les champs de seuils";
+
+  // ✅ Vérifications logiques
   if (vals.temperatureMin >= vals.temperatureMax)
     return "Température min doit être < max";
   if (vals.humidityMin >= vals.humidityMax)
@@ -70,29 +70,24 @@ export function validateThresholds(vals) {
   if (vals.nh3Max < 0 || vals.nh3Max > 100) return "NH₃ entre 0 et 100 ppm";
   if (vals.waterLevelMin < 0 || vals.waterLevelMin > 100)
     return "Niveau d'eau entre 0 et 100%";
+
   return null;
 }
 
 // ── Normalisation réponse BD ──────────────────────────────────────────────────
 
-// Extrait uniquement les clés connues depuis SystemConfig.defaultThresholds
 function normalizeDBThresholds(data) {
   if (!data) return null;
 
-  // La BD retourne soit data directement, soit data.defaultThresholds
   const src = data.defaultThresholds ?? data;
-
   const result = {};
   const keys = Object.keys(EMPTY_THRESHOLDS);
 
   for (const key of keys) {
-    // On n'accepte que les valeurs numériques — on rejette null/undefined/NaN
     const val = src[key];
     if (typeof val === "number" && !isNaN(val)) {
       result[key] = val;
     }
-    // Si la clé est absente de la BD, elle reste absente du résultat
-    // (le merge avec les seuils du poulailler gérera le cas)
   }
 
   return Object.keys(result).length > 0 ? result : null;
@@ -125,13 +120,10 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
       setLoading(true);
       setDbLoadError(false);
 
-      // ── Étape 1 : seuils par défaut depuis BD (obligatoire) ───────────────
-      // On attend ce résultat avant tout — c'est la source de vérité
       let dbDefaults = null;
 
       try {
         const defaultRes = await getDefaultThresholds();
-
         if (defaultRes.success && defaultRes.data) {
           dbDefaults = normalizeDBThresholds(defaultRes.data);
         }
@@ -140,14 +132,12 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
       }
 
       if (!dbDefaults) {
-        // BD inaccessible ou retourne des données invalides
         setDbLoadError(true);
         setToast({
           visible: true,
           message: "Impossible de charger les seuils système depuis la BD",
           type: "error",
         });
-        // On ne peut pas afficher de valeurs sensées sans la BD → on arrête ici
         setLoading(false);
         return;
       }
@@ -155,22 +145,18 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
       setDefaultThresholds(dbDefaults);
       console.log("[AlertSettings] Seuils BD chargés ✓", dbDefaults);
 
-      // ── Étape 2 : seuils poulailler + alertes + stats en parallèle ────────
       const [threshRes, alertRes, statsRes] = await Promise.all([
         getThresholds(poultryId),
         getAlerts(poultryId),
         getAlertStats(poultryId),
       ]);
 
-      // Merge : base = BD, override = seuils propres au poulailler
-      // Si le poulailler n'a pas de seuil personnalisé → on garde celui de la BD
       if (threshRes.success && threshRes.data) {
         const poultryThresholds = normalizeDBThresholds(threshRes.data) ?? {};
         const merged = { ...dbDefaults, ...poultryThresholds };
         setThresholds(merged);
         previousThresholds.current = merged;
       } else {
-        // Pas de seuils propres → on affiche uniquement ceux de la BD
         setThresholds(dbDefaults);
         previousThresholds.current = dbDefaults;
       }
@@ -202,7 +188,12 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
 
   // ── Threshold handlers ────────────────────────────────────────────────────
   const handleThresholdChange = (key, text) => {
-    const numeric = text.replace(/[^0-9.-]/g, "");
+    // ✅ FIX 2 : Gestion de la virgule (français) -> on la remplace par un point
+    const normalizedText = text.replace(",", ".");
+
+    // On nettoie tout sauf les chiffres, le point et le signe moins
+    const numeric = normalizedText.replace(/[^0-9.-]/g, "");
+
     if (numeric === "" || !isNaN(parseFloat(numeric))) {
       setThresholds((prev) => ({
         ...prev,
@@ -287,7 +278,6 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
   };
 
   const handleMarkAllAsRead = async () => {
-    // Optimistic update immédiat
     setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
     setStats((prev) => (prev ? { ...prev, unread: 0 } : prev));
 
@@ -295,7 +285,6 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
       await markAllAlertsAsRead(poultryId);
     } catch (e) {
       console.log("[AlertSettings] markAllAsRead error:", e);
-      // Rollback si backend échoue
       const alertRes = await getAlerts(poultryId);
       if (alertRes.success) {
         setAlerts(

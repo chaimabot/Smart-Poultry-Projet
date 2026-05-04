@@ -6,7 +6,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Switch,
   TextInput,
   ActivityIndicator,
   RefreshControl,
@@ -22,10 +21,8 @@ import Toast from "../../../components/Toast";
 
 import useAlertSettings, { PARAM_ICONS } from "../../../hooks/useAlertSettings";
 
-// ── Severity helpers ──────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// FIX 1: removed stray `value: stats.danger ?? 0` — stats is not in scope here
-// FIX 2: removed `item.type === "CRITIQUE"` — not a valid schema enum value
 function getSeverityMeta(item) {
   if (item.severity === "danger")
     return { icon: "error-outline", label: "DANGER", color: "#ef4444" };
@@ -42,7 +39,6 @@ const AlertSettingsScreen = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
 
   const [activeTab, setActiveTab] = useState("settings");
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState({
     visible: false,
@@ -81,7 +77,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
     }
   }, [fetchData]);
 
-  // ── Theme shortcuts ───────────────────────────────────────────────────────
+  // ── Thème ───────────────────────────────────────────────────────────────────
   const bg = darkMode ? colors.slate950 : colors.slate50;
   const cardBg = darkMode ? "#1e293b" : "#ffffff";
   const borderCol = darkMode ? "#334155" : "#e2e8f0";
@@ -91,10 +87,10 @@ const AlertSettingsScreen = ({ route, navigation }) => {
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
-  // FIX 3: was `!(a.read || a.read)` — tautology; schema only has `read`
-  const unreadCount = alerts.filter((a) => !a.read).length;
+  // ✅ FIX : Utiliser stats.unread en priorité (plus fiable que la liste paginée)
+  const unreadCount = stats?.unread ?? alerts.filter((a) => !a.read).length;
 
-  // ── Input helper ──────────────────────────────────────────────────────────
+  // ── Input helper ────────────────────────────────────────────────────────────
   const renderInput = (label, value, key, unit) => (
     <View style={styles.inputContainer}>
       <Text style={[styles.inputLabel, { color: subCol }]}>{label}</Text>
@@ -106,7 +102,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
       >
         <TextInput
           style={[styles.input, { color: textCol }]}
-          value={value.toString()}
+          value={value != null ? String(value) : ""}
           onChangeText={(t) => handleThresholdChange(key, t)}
           keyboardType="decimal-pad"
           placeholder="0"
@@ -117,7 +113,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
     </View>
   );
 
-  // ── Section label with icon ───────────────────────────────────────────────
+  // ── Section label ───────────────────────────────────────────────────────────
   const renderSectionLabel = (iconName, label) => (
     <View style={styles.sectionLabelRow}>
       <View
@@ -135,15 +131,16 @@ const AlertSettingsScreen = ({ route, navigation }) => {
     </View>
   );
 
-  // ── Loading ───────────────────────────────────────────────────────────────
-  if (loading)
+  // ── Loading ─────────────────────────────────────────────────────────────────
+  if (loading) {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: bg }]}>
         <ActivityIndicator size="large" color="#22C55E" />
       </View>
     );
+  }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: bg }]}>
       <StatusBar style={darkMode ? "light" : "dark"} />
@@ -171,24 +168,39 @@ const AlertSettingsScreen = ({ route, navigation }) => {
           {poultryName} — Alertes
         </Text>
 
-        {hasChanges && activeTab === "settings" ? (
-          <TouchableOpacity onPress={handleSave} disabled={saving}>
-            <Text style={[styles.saveText, { color: "#22C55E" }]}>
-              {saving ? "..." : "ENREGISTRER"}
-            </Text>
-          </TouchableOpacity>
+        {/* ✅ FIX : Logique des boutons selon l'onglet actif */}
+        {activeTab === "settings" ? (
+          hasChanges ? (
+            <TouchableOpacity onPress={handleSave} disabled={saving}>
+              <Text style={[styles.saveText, { color: "#22C55E" }]}>
+                {saving ? "..." : "ENREGISTRER"}
+              </Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity onPress={handleReset}>
+              <View
+                style={[
+                  styles.iconBtn,
+                  {
+                    backgroundColor: "rgba(34,197,94,0.1)",
+                    borderColor: "#22C55E",
+                  },
+                ]}
+              >
+                <MaterialIcons name="refresh" size={22} color="#22C55E" />
+              </View>
+            </TouchableOpacity>
+          )
         ) : (
-          <TouchableOpacity onPress={handleReset}>
+          // Onglet Alertes : bouton refresh uniquement
+          <TouchableOpacity onPress={handleRefresh}>
             <View
               style={[
                 styles.iconBtn,
-                {
-                  backgroundColor: "rgba(34,197,94,0.1)",
-                  borderColor: "#22C55E",
-                },
+                { backgroundColor: cardBg, borderColor: borderCol },
               ]}
             >
-              <MaterialIcons name="refresh" size={22} color="#22C55E" />
+              <MaterialIcons name="refresh" size={22} color={textCol} />
             </View>
           </TouchableOpacity>
         )}
@@ -275,30 +287,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               </View>
             </View>
 
-            {/* Notifications toggle */}
-            <View
-              style={[
-                styles.card,
-                {
-                  backgroundColor: cardBg,
-                  borderColor: borderCol,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: 24,
-                },
-              ]}
-            >
-              <Text style={[styles.cardTitle, { color: textCol }]}>
-                Notifications push
-              </Text>
-              <Switch
-                value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
-                trackColor={{ false: borderCol, true: "#22C55E" }}
-                thumbColor="#fff"
-              />
-            </View>
+            {/* ✅ FIX : Switch Notifications supprimé (non fonctionnel) */}
 
             {/* Température */}
             {renderSectionLabel("thermostat", "Température")}
@@ -394,9 +383,9 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                     color: "#ef4444",
                   },
                   {
-                    // FIX 4: was `stats.danger || 0` — || treats 0 as falsy; use ?? instead
+                    // ✅ FIX : Accès correct à bySeverity.danger
                     label: "Danger",
-                    value: stats.danger ?? 0,
+                    value: stats.bySeverity?.danger ?? 0,
                     icon: "error-outline",
                     color: "#ef4444",
                   },
@@ -485,7 +474,6 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               </View>
             ) : (
               alerts.map((item) => {
-                // FIX 5: was `item.isRead || item.read` — isRead doesn't exist on schema
                 const isRead = item.read;
                 const meta = getSeverityMeta(item);
                 const param = PARAM_ICONS[item.parameter] || {
@@ -510,7 +498,6 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                         isRead && { opacity: 0.5 },
                       ]}
                     >
-                      {/* Icône dans carré neutre */}
                       <View
                         style={[
                           styles.alertIconWrap,
@@ -527,7 +514,6 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                         />
                       </View>
 
-                      {/* Contenu */}
                       <View style={{ flex: 1 }}>
                         <Text
                           style={[
@@ -575,7 +561,6 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                         </View>
                       </View>
 
-                      {/* Dot non lu */}
                       {!isRead && (
                         <View
                           style={[

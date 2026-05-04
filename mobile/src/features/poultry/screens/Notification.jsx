@@ -1,27 +1,37 @@
-// screens/Notifications.jsx
-import React, { useState, useCallback, useMemo } from "react";
+// screens/Notifications.jsx - 100% DYNAMIC ✅ Compatible AlertController
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import {
   View,
   Text,
   TouchableOpacity,
   ScrollView,
-  FlatList,
   SafeAreaView,
   Platform,
   StatusBar,
   RefreshControl,
-  SectionList,
+  ActivityIndicator,
+  Alert,
 } from "react-native";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
+import { useNavigation } from "@react-navigation/native";
+import { useNotifications } from "../../../context/NotificationsContext";
+
+// ─── Helper : extraire l'ID poulailler ──────────────────────────────────────
+function getPoultryId(alert) {
+  const raw = alert.poulailler ?? alert.poultryId ?? null;
+  if (!raw) return null;
+  if (typeof raw === "object" && raw._id) return String(raw._id);
+  return String(raw);
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
 function relativeTime(ts) {
   if (!ts) return "À l'instant";
   const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
   if (diff < 60) return "À l'instant";
   if (diff < 3600) return `Il y a ${Math.floor(diff / 60)} min`;
   if (diff < 86400) return `Il y a ${Math.floor(diff / 3600)} h`;
+  if (diff < 172800) return "Hier";
   return new Date(ts).toLocaleDateString("fr-FR", {
     day: "2-digit",
     month: "short",
@@ -29,6 +39,7 @@ function relativeTime(ts) {
   });
 }
 
+// ── Severity : "info" | "warn" | "danger" (modèle Mongoose) ─────────────────
 function severityConfig(severity) {
   if (severity === "danger")
     return {
@@ -37,9 +48,16 @@ function severityConfig(severity) {
       badgeBg: "#FEF2F2",
       badgeColor: "#B91C1C",
       badgeBorder: "#FCA5A5",
-      label: "Danger",
+      label: "🔴 Critique",
+      shortLabel: "Critique",
+      sectionTitle: "Alertes critiques",
+      sectionIcon: "warning",
       icon: "warning",
       iconColor: "#EF4444",
+      sectionBg: "#FEF2F2",
+      sectionBorder: "#FCA5A5",
+      sectionTextColor: "#991B1B",
+      order: 0,
     };
   if (severity === "warn")
     return {
@@ -48,122 +66,90 @@ function severityConfig(severity) {
       badgeBg: "#FFFBEB",
       badgeColor: "#92400E",
       badgeBorder: "#FCD34D",
-      label: "Attention",
+      label: "⚠️ Attention",
+      shortLabel: "Attention",
+      sectionTitle: "À surveiller",
+      sectionIcon: "error-outline",
       icon: "error-outline",
       iconColor: "#F59E0B",
+      sectionBg: "#FFFBEB",
+      sectionBorder: "#FCD34D",
+      sectionTextColor: "#78350F",
+      order: 1,
     };
+  // "info" par défaut
   return {
     bg: "#F0FDF4",
     dot: "#22C55E",
     badgeBg: "#F0FDF4",
     badgeColor: "#15803D",
     badgeBorder: "#86EFAC",
-    label: "Normal",
-    icon: "check-circle-outline",
+    label: "ℹ️ Information",
+    shortLabel: "Info",
+    sectionTitle: "Informations",
+    sectionIcon: "info-outline",
+    icon: "info-outline",
     iconColor: "#22C55E",
+    sectionBg: "#F0FDF4",
+    sectionBorder: "#86EFAC",
+    sectionTextColor: "#14532D",
+    order: 2,
   };
 }
 
-// ─── MOCK DATA (remplacer par vos hooks/API réels) ───────────────────────────
-// Structure attendue depuis usePoultryState() ou votre contexte global
-const MOCK_POULAILLERS = [
-  { _id: "p1", name: "Poulailler A – Lot 12", location: "Secteur Nord" },
-  { _id: "p2", name: "Poulailler B – Lot 7", location: "Secteur Est" },
-  { _id: "p3", name: "Poulailler C – Lot 3", location: "Secteur Sud" },
-];
-
-const MOCK_ALERTS = [
-  {
-    _id: "a1",
-    poultryId: "p1",
-    severity: "danger",
-    read: false,
-    type: "Température",
-    message:
-      "Température critique : 38°C détectée dans la zone 2. Vérification immédiate requise.",
-    createdAt: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-  },
-  {
-    _id: "a2",
-    poultryId: "p1",
-    severity: "warn",
-    read: false,
-    type: "Humidité",
-    message: "Taux d'humidité élevé (85%). Vérifiez la ventilation.",
-    createdAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-  },
-  {
-    _id: "a3",
-    poultryId: "p2",
-    severity: "danger",
-    read: false,
-    type: "Alimentation",
-    message: "Silo d'aliments presque vide. Rechargement urgent nécessaire.",
-    createdAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-  },
-  {
-    _id: "a4",
-    poultryId: "p2",
-    severity: "normal",
-    read: true,
-    type: "Eau",
-    message: "Consommation d'eau normale. Tout est en ordre.",
-    createdAt: new Date(Date.now() - 5 * 3600 * 1000).toISOString(),
-  },
-  {
-    _id: "a5",
-    poultryId: "p3",
-    severity: "warn",
-    read: false,
-    type: "Éclairage",
-    message: "Cycle d'éclairage décalé de 15 minutes. Recalibrer le minuteur.",
-    createdAt: new Date(Date.now() - 1 * 3600 * 1000).toISOString(),
-  },
-  {
-    _id: "a6",
-    poultryId: "p3",
-    severity: "normal",
-    read: true,
-    type: "Poids",
-    message: "Poids moyen du lot conforme aux objectifs de la semaine.",
-    createdAt: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
-  },
-  {
-    _id: "a7",
-    poultryId: "p1",
-    severity: "normal",
-    read: true,
-    type: "Mortalité",
-    message: "Taux de mortalité journalier dans les normes acceptables.",
-    createdAt: new Date(Date.now() - 48 * 3600 * 1000).toISOString(),
-  },
-];
-// ─────────────────────────────────────────────────────────────────────────────
+// Ordre d'affichage des sections
+const SEVERITY_ORDER = ["danger", "warn", "info"];
 
 const SEVERITY_FILTERS = [
-  { key: "all", label: "Toutes" },
-  { key: "danger", label: "Danger" },
-  { key: "warn", label: "Attention" },
-  { key: "normal", label: "Normal" },
+  { key: "all", label: "Toutes", icon: "list" },
+  { key: "danger", label: "Critique", icon: "warning" },
+  { key: "warn", label: "Attention", icon: "error-outline" },
+  { key: "info", label: "Information", icon: "info-outline" },
 ];
+
+// ── Traductions (modèle Mongoose) ────────────────────────────────────────────
+function translateType(type) {
+  const map = {
+    sensor: "Capteur",
+    door: "Porte",
+    actuator: "Actionneur",
+    mqtt: "Connexion",
+  };
+  return map[type] || type;
+}
+
+function translateParameter(param) {
+  const map = {
+    temperature: "🌡️ Température",
+    humidity: "💧 Humidité",
+    co2: "💨 CO₂",
+    nh3: "💨 NH₃",
+    dust: "💨 Poussière",
+    waterLevel: "💧 Niveau d'eau",
+  };
+  return map[param] || param;
+}
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function StatBadge({ count, color, bg }) {
-  if (!count) return null;
+function BackButton({ onPress }) {
   return (
-    <View
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.7}
       style={{
-        backgroundColor: bg,
-        borderRadius: 10,
-        paddingHorizontal: 7,
-        paddingVertical: 2,
-        minWidth: 22,
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        backgroundColor: "#F1F5F9",
         alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+        borderColor: "#E2E8F0",
       }}
     >
-      <Text style={{ fontSize: 11, fontWeight: "700", color }}>{count}</Text>
-    </View>
+      <Ionicons name="arrow-back" size={22} color="#334155" />
+    </TouchableOpacity>
   );
 }
 
@@ -181,11 +167,13 @@ function PoultryFilterTab({ poultry, isSelected, unreadCount, onPress }) {
         borderRadius: 12,
         backgroundColor: isSelected ? "#22C55E" : "#F1F5F9",
         marginRight: 8,
+        borderWidth: 1,
+        borderColor: isSelected ? "#16A34A" : "#E2E8F0",
       }}
     >
       <MaterialIcons
-        name="home"
-        size={14}
+        name="home-work"
+        size={15}
         color={isSelected ? "#fff" : "#64748B"}
       />
       <Text
@@ -197,7 +185,7 @@ function PoultryFilterTab({ poultry, isSelected, unreadCount, onPress }) {
         }}
         numberOfLines={1}
       >
-        {poultry === "all" ? "Tous les poulaillers" : poultry.name}
+        {poultry === "all" ? "Tous mes poulaillers" : poultry.name}
       </Text>
       {unreadCount > 0 && (
         <View
@@ -219,19 +207,141 @@ function PoultryFilterTab({ poultry, isSelected, unreadCount, onPress }) {
   );
 }
 
-function AlertCard({ alert, poultryName, onMarkRead }) {
+// ── Section header collapsible par sévérité ──────────────────────────────────
+function SeveritySectionHeader({
+  severity,
+  count,
+  unreadCount,
+  collapsed,
+  onToggle,
+}) {
+  const s = severityConfig(severity);
+  return (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={onToggle}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginHorizontal: 16,
+        marginTop: 12,
+        marginBottom: 8,
+        paddingHorizontal: 14,
+        paddingVertical: 10,
+        borderRadius: 12,
+        backgroundColor: s.sectionBg,
+        borderWidth: 1,
+        borderColor: s.sectionBorder,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 8,
+            backgroundColor: "#fff",
+            alignItems: "center",
+            justifyContent: "center",
+            borderWidth: 1,
+            borderColor: s.sectionBorder,
+          }}
+        >
+          <MaterialIcons name={s.sectionIcon} size={16} color={s.iconColor} />
+        </View>
+        <View>
+          <Text
+            style={{
+              fontSize: 14,
+              fontWeight: "800",
+              color: s.sectionTextColor,
+            }}
+          >
+            {s.sectionTitle}
+          </Text>
+          <Text
+            style={{
+              fontSize: 11,
+              color: s.badgeColor,
+              fontWeight: "500",
+              marginTop: 1,
+            }}
+          >
+            {count} alerte{count > 1 ? "s" : ""}
+            {unreadCount > 0
+              ? ` · ${unreadCount} non lue${unreadCount > 1 ? "s" : ""}`
+              : ""}
+          </Text>
+        </View>
+      </View>
+
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <View
+          style={{
+            backgroundColor: "#fff",
+            borderRadius: 10,
+            paddingHorizontal: 8,
+            paddingVertical: 3,
+            borderWidth: 1,
+            borderColor: s.sectionBorder,
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "800", color: s.iconColor }}>
+            {count}
+          </Text>
+        </View>
+        <MaterialIcons
+          name={collapsed ? "keyboard-arrow-down" : "keyboard-arrow-up"}
+          size={22}
+          color={s.badgeColor}
+        />
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function AlertCard({
+  alert,
+  poultryName,
+  onMarkRead,
+  onDelete,
+  isSelectMode,
+  isSelected,
+  onToggleSelect,
+}) {
   const s = severityConfig(alert.severity);
+
+  const handlePress = () => {
+    if (isSelectMode) {
+      onToggleSelect(alert._id);
+    } else if (!alert.read) {
+      onMarkRead(alert._id);
+    }
+  };
+
+  const handleLongPress = () => {
+    if (!isSelectMode) {
+      onToggleSelect(alert._id);
+    }
+  };
+
   return (
     <TouchableOpacity
       activeOpacity={0.85}
-      onPress={() => !alert.read && onMarkRead(alert._id)}
+      onPress={handlePress}
+      onLongPress={handleLongPress}
       style={{
-        backgroundColor: alert.read ? "#fff" : s.bg,
+        backgroundColor: isSelected ? "#EFF6FF" : alert.read ? "#fff" : s.bg,
         borderRadius: 14,
         marginHorizontal: 16,
         marginBottom: 10,
-        borderWidth: 1,
-        borderColor: alert.read ? "#E2E8F0" : s.badgeBorder,
+        borderWidth: isSelected ? 2 : 1,
+        borderColor: isSelected
+          ? "#3B82F6"
+          : alert.read
+            ? "#E2E8F0"
+            : s.badgeBorder,
         padding: 14,
         flexDirection: "row",
         gap: 12,
@@ -243,11 +353,31 @@ function AlertCard({ alert, poultryName, onMarkRead }) {
         elevation: alert.read ? 1 : 2,
       }}
     >
+      {/* Checkbox mode sélection */}
+      {isSelectMode && (
+        <View
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 7,
+            borderWidth: 2,
+            borderColor: isSelected ? "#3B82F6" : "#CBD5E1",
+            backgroundColor: isSelected ? "#3B82F6" : "#fff",
+            alignItems: "center",
+            justifyContent: "center",
+            marginTop: 6,
+            flexShrink: 0,
+          }}
+        >
+          {isSelected && <MaterialIcons name="check" size={16} color="#fff" />}
+        </View>
+      )}
+
       {/* Icône severity */}
       <View
         style={{
-          width: 36,
-          height: 36,
+          width: 38,
+          height: 38,
           borderRadius: 10,
           backgroundColor: alert.read ? "#F8FAFC" : s.badgeBg,
           alignItems: "center",
@@ -259,13 +389,13 @@ function AlertCard({ alert, poultryName, onMarkRead }) {
       >
         <MaterialIcons
           name={s.icon}
-          size={18}
+          size={20}
           color={alert.read ? "#CBD5E1" : s.iconColor}
         />
       </View>
 
       <View style={{ flex: 1 }}>
-        {/* Ligne badge + type + heure */}
+        {/* Badge + type + heure */}
         <View
           style={{
             flexDirection: "row",
@@ -275,12 +405,11 @@ function AlertCard({ alert, poultryName, onMarkRead }) {
           }}
         >
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            {/* Badge severity */}
             <View
               style={{
                 backgroundColor: alert.read ? "#F1F5F9" : s.badgeBg,
                 borderRadius: 20,
-                paddingHorizontal: 7,
+                paddingHorizontal: 8,
                 paddingVertical: 2,
                 borderWidth: 1,
                 borderColor: alert.read ? "#E2E8F0" : s.badgeBorder,
@@ -288,26 +417,39 @@ function AlertCard({ alert, poultryName, onMarkRead }) {
             >
               <Text
                 style={{
-                  fontSize: 9,
+                  fontSize: 10,
                   fontWeight: "700",
                   color: alert.read ? "#94A3B8" : s.badgeColor,
                   textTransform: "uppercase",
                   letterSpacing: 0.4,
                 }}
               >
-                {s.label}
+                {s.shortLabel}
               </Text>
             </View>
-            {/* Type */}
             {alert.type && (
-              <Text
-                style={{ fontSize: 10, color: "#94A3B8", fontWeight: "500" }}
+              <View
+                style={{
+                  backgroundColor: "#F8FAFC",
+                  borderRadius: 10,
+                  paddingHorizontal: 6,
+                  paddingVertical: 1,
+                  borderWidth: 1,
+                  borderColor: "#E2E8F0",
+                }}
               >
-                {alert.type}
-              </Text>
+                <Text
+                  style={{
+                    fontSize: 9,
+                    color: "#64748B",
+                    fontWeight: "600",
+                  }}
+                >
+                  {translateType(alert.type)}
+                </Text>
+              </View>
             )}
           </View>
-          {/* Heure */}
           <Text style={{ fontSize: 10, color: "#CBD5E1", fontWeight: "500" }}>
             {relativeTime(alert.createdAt)}
           </Text>
@@ -316,35 +458,160 @@ function AlertCard({ alert, poultryName, onMarkRead }) {
         {/* Message */}
         <Text
           style={{
-            fontSize: 13,
+            fontSize: 13.5,
             color: alert.read ? "#64748B" : "#1E293B",
             fontWeight: alert.read ? "400" : "600",
-            lineHeight: 19,
-            marginBottom: 6,
+            lineHeight: 20,
+            marginBottom: 4,
           }}
         >
           {alert.message}
         </Text>
 
-        {/* Nom du poulailler (si on affiche "tous") */}
+        {/* Valeur capteur (si disponible) */}
+        {alert.parameter && alert.value != null && (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              marginBottom: 6,
+              backgroundColor: "#F8FAFC",
+              borderRadius: 8,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderWidth: 1,
+              borderColor: "#E2E8F0",
+              alignSelf: "flex-start",
+            }}
+          >
+            <Text style={{ fontSize: 10, color: "#64748B" }}>
+              {translateParameter(alert.parameter)} :
+            </Text>
+            <Text
+              style={{
+                fontSize: 11,
+                fontWeight: "700",
+                color: alert.read ? "#94A3B8" : s.badgeColor,
+              }}
+            >
+              {alert.value}
+              {alert.sensorUnit ? ` ${alert.sensorUnit}` : ""}
+              {alert.threshold != null && (
+                <Text style={{ fontWeight: "400", color: "#94A3B8" }}>
+                  {" "}
+                  (seuil : {alert.threshold}
+                  {alert.sensorUnit ? ` ${alert.sensorUnit}` : ""})
+                </Text>
+              )}
+            </Text>
+          </View>
+        )}
+
+        {/* Nom du poulailler (vue "Tous") */}
         {poultryName && (
           <View
             style={{
               flexDirection: "row",
               alignItems: "center",
               gap: 4,
+              marginBottom: 4,
             }}
           >
-            <MaterialIcons name="home" size={11} color="#94A3B8" />
-            <Text style={{ fontSize: 10, color: "#94A3B8", fontWeight: "500" }}>
+            <MaterialIcons name="home-work" size={11} color="#94A3B8" />
+            <Text
+              style={{
+                fontSize: 10,
+                color: "#94A3B8",
+                fontWeight: "500",
+              }}
+            >
               {poultryName}
+            </Text>
+          </View>
+        )}
+
+        {/* Actions rapides */}
+        {!isSelectMode && (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+              marginTop: 8,
+              paddingTop: 8,
+              borderTopWidth: 1,
+              borderTopColor: "#F1F5F9",
+            }}
+          >
+            {!alert.read && (
+              <TouchableOpacity
+                onPress={() => onMarkRead(alert._id)}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 4,
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 8,
+                  backgroundColor: "#F0FDF4",
+                  borderWidth: 1,
+                  borderColor: "#BBF7D0",
+                }}
+              >
+                <MaterialIcons name="done" size={13} color="#22C55E" />
+                <Text
+                  style={{
+                    fontSize: 10,
+                    fontWeight: "700",
+                    color: "#15803D",
+                  }}
+                >
+                  Marquer lu
+                </Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              onPress={() => onDelete(alert._id)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 4,
+                paddingHorizontal: 10,
+                paddingVertical: 5,
+                borderRadius: 8,
+                backgroundColor: "#FEF2F2",
+                borderWidth: 1,
+                borderColor: "#FCA5A5",
+              }}
+            >
+              <MaterialIcons name="delete-outline" size={13} color="#EF4444" />
+              <Text
+                style={{
+                  fontSize: 10,
+                  fontWeight: "700",
+                  color: "#B91C1C",
+                }}
+              >
+                Supprimer
+              </Text>
+            </TouchableOpacity>
+            <Text
+              style={{
+                fontSize: 9,
+                color: "#CBD5E1",
+                fontStyle: "italic",
+                marginLeft: "auto",
+              }}
+            >
+              Appui long = sélectionner
             </Text>
           </View>
         )}
       </View>
 
-      {/* Indicateur non lu */}
-      {!alert.read && (
+      {/* Point non lu */}
+      {!alert.read && !isSelectMode && (
         <View
           style={{
             width: 8,
@@ -360,35 +627,61 @@ function AlertCard({ alert, poultryName, onMarkRead }) {
   );
 }
 
-function EmptyState({ filterLabel }) {
+function EmptyState({ filterLabel, type = "empty" }) {
+  const messages = {
+    empty:
+      "Tout va bien ! Aucune alerte en cours.\nTirez vers le bas pour actualiser.",
+    filter: `Aucune alerte « ${filterLabel} » pour le moment.`,
+    noPoultry:
+      "Aucun poulailler lié à votre compte.\nAjoutez-en un pour recevoir les alertes.",
+    error: "Impossible de charger les alertes.\nVérifiez votre connexion.",
+  };
+  const titles = {
+    empty: "Aucune alerte",
+    filter: "Rien à afficher",
+    noPoultry: "Pas de poulailler",
+    error: "Problème de connexion",
+  };
+  const icons = {
+    empty: "notifications-none",
+    filter: "filter-list",
+    noPoultry: "home-work",
+    error: "wifi-off",
+  };
+
   return (
     <View
-      style={{ alignItems: "center", paddingTop: 60, paddingHorizontal: 24 }}
+      style={{
+        alignItems: "center",
+        paddingTop: 50,
+        paddingHorizontal: 32,
+      }}
     >
       <View
         style={{
-          width: 64,
-          height: 64,
-          borderRadius: 20,
+          width: 72,
+          height: 72,
+          borderRadius: 22,
           backgroundColor: "#F8FAFC",
           alignItems: "center",
           justifyContent: "center",
-          marginBottom: 12,
-          borderWidth: 1,
+          marginBottom: 16,
+          borderWidth: 1.5,
           borderColor: "#E2E8F0",
         }}
       >
-        <MaterialIcons name="notifications-none" size={30} color="#CBD5E1" />
+        <MaterialIcons name={icons[type]} size={34} color="#CBD5E1" />
       </View>
       <Text
         style={{
-          fontSize: 15,
+          fontSize: 16,
           fontWeight: "700",
           color: "#334155",
-          marginBottom: 6,
+          marginBottom: 8,
+          textAlign: "center",
         }}
       >
-        Aucune notification
+        {titles[type]}
       </Text>
       <Text
         style={{
@@ -398,120 +691,278 @@ function EmptyState({ filterLabel }) {
           lineHeight: 20,
         }}
       >
-        {filterLabel
-          ? `Aucune alerte « ${filterLabel} » pour cette sélection.`
-          : "Tout est en ordre. Aucune alerte active pour vos poulaillers."}
+        {messages[type]}
       </Text>
     </View>
   );
 }
 
-// ─── Summary Cards ───────────────────────────────────────────────────────────
+function LoadingSkeleton() {
+  return (
+    <View style={{ paddingHorizontal: 20, paddingVertical: 20, gap: 12 }}>
+      <View style={{ alignItems: "center", marginBottom: 8 }}>
+        <ActivityIndicator size="small" color="#22C55E" />
+        <Text
+          style={{
+            fontSize: 12,
+            color: "#94A3B8",
+            marginTop: 8,
+            fontWeight: "500",
+          }}
+        >
+          Chargement de vos alertes...
+        </Text>
+      </View>
+      {[1, 2, 3].map((i) => (
+        <View
+          key={i}
+          style={{
+            flexDirection: "row",
+            gap: 12,
+            padding: 14,
+            borderRadius: 14,
+            backgroundColor: "#F8FAFC",
+            borderWidth: 1,
+            borderColor: "#E2E8F0",
+          }}
+        >
+          <View
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              backgroundColor: "#E2E8F0",
+            }}
+          />
+          <View style={{ flex: 1, gap: 8 }}>
+            <View
+              style={{
+                height: 12,
+                width: "70%",
+                backgroundColor: "#E2E8F0",
+                borderRadius: 4,
+              }}
+            />
+            <View
+              style={{
+                height: 16,
+                width: "95%",
+                backgroundColor: "#E2E8F0",
+                borderRadius: 4,
+              }}
+            />
+            <View
+              style={{
+                height: 10,
+                width: "50%",
+                backgroundColor: "#E2E8F0",
+                borderRadius: 4,
+              }}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
 
+// ── SummaryBar : 4 cartes (Non lues / Critique / Attention / Info) ───────────
 function SummaryBar({ alerts }) {
   const danger = alerts.filter(
     (a) => a.severity === "danger" && !a.read,
   ).length;
   const warn = alerts.filter((a) => a.severity === "warn" && !a.read).length;
+  const info = alerts.filter((a) => a.severity === "info" && !a.read).length;
   const total = alerts.filter((a) => !a.read).length;
+
+  const cards = [
+    {
+      label: "Non lues",
+      value: total,
+      icon: "mark-email-unread",
+      activeColor: "#3B82F6",
+      activeBg: "#EFF6FF",
+      activeBorder: "#BFDBFE",
+      activeText: "#1D4ED8",
+    },
+    {
+      label: "Critique",
+      value: danger,
+      icon: "warning",
+      activeColor: "#EF4444",
+      activeBg: "#FEF2F2",
+      activeBorder: "#FCA5A5",
+      activeText: "#B91C1C",
+    },
+    {
+      label: "Attention",
+      value: warn,
+      icon: "error-outline",
+      activeColor: "#F59E0B",
+      activeBg: "#FFFBEB",
+      activeBorder: "#FCD34D",
+      activeText: "#92400E",
+    },
+    {
+      label: "Info",
+      value: info,
+      icon: "info-outline",
+      activeColor: "#22C55E",
+      activeBg: "#F0FDF4",
+      activeBorder: "#86EFAC",
+      activeText: "#15803D",
+    },
+  ];
 
   return (
     <View
       style={{
         flexDirection: "row",
-        gap: 10,
+        gap: 8,
         paddingHorizontal: 16,
         paddingBottom: 14,
       }}
     >
-      {/* Total non lus */}
-      <View
-        style={{
-          flex: 1,
-          backgroundColor: "#F8FAFC",
-          borderRadius: 12,
-          padding: 12,
-          borderWidth: 1,
-          borderColor: "#E2E8F0",
-        }}
-      >
-        <Text
+      {cards.map((item) => (
+        <View
+          key={item.label}
           style={{
-            fontSize: 11,
-            color: "#94A3B8",
-            fontWeight: "600",
-            marginBottom: 2,
+            flex: 1,
+            backgroundColor: item.value > 0 ? item.activeBg : "#F8FAFC",
+            borderRadius: 12,
+            padding: 10,
+            borderWidth: 1,
+            borderColor: item.value > 0 ? item.activeBorder : "#E2E8F0",
+            alignItems: "center",
           }}
         >
-          Non lues
-        </Text>
-        <Text style={{ fontSize: 22, fontWeight: "800", color: "#1E293B" }}>
-          {total}
+          <MaterialIcons
+            name={item.icon}
+            size={16}
+            color={item.value > 0 ? item.activeColor : "#CBD5E1"}
+            style={{ marginBottom: 3 }}
+          />
+          <Text
+            style={{
+              fontSize: 9,
+              color: item.value > 0 ? item.activeText : "#94A3B8",
+              fontWeight: "600",
+              marginBottom: 2,
+            }}
+          >
+            {item.label}
+          </Text>
+          <Text
+            style={{
+              fontSize: 20,
+              fontWeight: "800",
+              color: item.value > 0 ? item.activeColor : "#CBD5E1",
+            }}
+          >
+            {item.value}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+// ── Barre de sélection multiple ──────────────────────────────────────────────
+function SelectionBar({ count, onMarkRead, onDelete, onCancel, onSelectAll }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        backgroundColor: "#EFF6FF",
+        borderBottomWidth: 1,
+        borderBottomColor: "#BFDBFE",
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <TouchableOpacity
+          onPress={onCancel}
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            backgroundColor: "#fff",
+            alignItems: "center",
+            justifyContent: "center",
+            borderWidth: 1,
+            borderColor: "#BFDBFE",
+          }}
+        >
+          <MaterialIcons name="close" size={18} color="#3B82F6" />
+        </TouchableOpacity>
+        <Text style={{ fontSize: 14, fontWeight: "700", color: "#1D4ED8" }}>
+          {count} sélectionnée{count > 1 ? "s" : ""}
         </Text>
       </View>
 
-      {/* Danger */}
-      <View
-        style={{
-          flex: 1,
-          backgroundColor: danger > 0 ? "#FEF2F2" : "#F8FAFC",
-          borderRadius: 12,
-          padding: 12,
-          borderWidth: 1,
-          borderColor: danger > 0 ? "#FCA5A5" : "#E2E8F0",
-        }}
-      >
-        <Text
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <TouchableOpacity
+          onPress={onSelectAll}
           style={{
-            fontSize: 11,
-            color: danger > 0 ? "#B91C1C" : "#94A3B8",
-            fontWeight: "600",
-            marginBottom: 2,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+            borderRadius: 8,
+            backgroundColor: "#fff",
+            borderWidth: 1,
+            borderColor: "#BFDBFE",
           }}
         >
-          Danger
-        </Text>
-        <Text
-          style={{
-            fontSize: 22,
-            fontWeight: "800",
-            color: danger > 0 ? "#EF4444" : "#CBD5E1",
-          }}
-        >
-          {danger}
-        </Text>
-      </View>
+          <MaterialIcons name="select-all" size={14} color="#3B82F6" />
+          <Text style={{ fontSize: 10, fontWeight: "700", color: "#1D4ED8" }}>
+            Tout
+          </Text>
+        </TouchableOpacity>
 
-      {/* Attention */}
-      <View
-        style={{
-          flex: 1,
-          backgroundColor: warn > 0 ? "#FFFBEB" : "#F8FAFC",
-          borderRadius: 12,
-          padding: 12,
-          borderWidth: 1,
-          borderColor: warn > 0 ? "#FCD34D" : "#E2E8F0",
-        }}
-      >
-        <Text
+        <TouchableOpacity
+          onPress={onMarkRead}
           style={{
-            fontSize: 11,
-            color: warn > 0 ? "#92400E" : "#94A3B8",
-            fontWeight: "600",
-            marginBottom: 2,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+            borderRadius: 8,
+            backgroundColor: "#F0FDF4",
+            borderWidth: 1,
+            borderColor: "#BBF7D0",
           }}
         >
-          Attention
-        </Text>
-        <Text
+          <MaterialIcons name="done-all" size={14} color="#22C55E" />
+          <Text style={{ fontSize: 10, fontWeight: "700", color: "#15803D" }}>
+            Lu
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onDelete}
           style={{
-            fontSize: 22,
-            fontWeight: "800",
-            color: warn > 0 ? "#F59E0B" : "#CBD5E1",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+            borderRadius: 8,
+            backgroundColor: "#FEF2F2",
+            borderWidth: 1,
+            borderColor: "#FCA5A5",
           }}
         >
-          {warn}
-        </Text>
+          <MaterialIcons name="delete-outline" size={14} color="#EF4444" />
+          <Text style={{ fontSize: 10, fontWeight: "700", color: "#B91C1C" }}>
+            Supprimer
+          </Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -519,36 +970,47 @@ function SummaryBar({ alerts }) {
 
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 
-/**
- * Notifications.jsx
- *
- * Props (si navigation React Navigation) :
- *   - alerts       : array – toutes les alertes de l'éleveur (depuis contexte/API)
- *   - poulaillers  : array – liste des poulaillers { _id, name, location }
- *   - onMarkRead   : (id: string) => void
- *   - onMarkAllRead: () => void
- *   - onRefresh    : () => Promise<void>
- *
- * En développement les données MOCK ci-dessus sont utilisées.
- */
-export default function Notifications({
-  alerts = MOCK_ALERTS,
-  poulaillers = MOCK_POULAILLERS,
-  onMarkRead = () => {},
-  onMarkAllRead = () => {},
-  onRefresh = () => Promise.resolve(),
-  navigation,
-}) {
+export default function Notifications() {
+  const navigation = useNavigation();
+  const {
+    poulaillers,
+    alerts,
+    loading,
+    error,
+    refreshing,
+    fetchData: onRefresh,
+    markRead: onMarkRead,
+    markAllRead: onMarkAllRead,
+    deleteAlert: onDeleteAlert,
+    deleteAlerts: onDeleteAlerts,
+    deleteAllRead: onDeleteAllRead,
+  } = useNotifications();
+
   const [selectedPoultry, setSelectedPoultry] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [collapsedSections, setCollapsedSections] = useState({});
+  const isSelectMode = selectedIds.size > 0;
 
-  // ── Helpers lookup ──────────────────────────────────────────────────────────
+  const toggleSection = useCallback((severity) => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [severity]: !prev[severity],
+    }));
+  }, []);
+
+  // Auto-refresh toutes les 30s
+  useEffect(() => {
+    const interval = setInterval(() => onRefresh(), 30000);
+    return () => clearInterval(interval);
+  }, [onRefresh]);
+
+  // ── Lookup ──────────────────────────────────────────────────────────────────
   const poultryById = useMemo(() => {
     const map = {};
     poulaillers.forEach((p) => {
-      map[p._id] = p;
+      map[String(p._id)] = p;
     });
     return map;
   }, [poulaillers]);
@@ -556,12 +1018,13 @@ export default function Notifications({
   const unreadByPoultry = useMemo(() => {
     const map = { all: 0 };
     poulaillers.forEach((p) => {
-      map[p._id] = 0;
+      map[String(p._id)] = 0;
     });
     alerts.forEach((a) => {
       if (!a.read) {
-        map.all = (map.all || 0) + 1;
-        if (map[a.poultryId] !== undefined) map[a.poultryId]++;
+        map.all += 1;
+        const pid = getPoultryId(a);
+        if (pid && map[pid] !== undefined) map[pid]++;
       }
     });
     return map;
@@ -570,32 +1033,349 @@ export default function Notifications({
   // ── Filtrage ────────────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     return alerts
-      .filter(
-        (a) => selectedPoultry === "all" || a.poultryId === selectedPoultry,
-      )
+      .filter((a) => {
+        if (selectedPoultry === "all") return true;
+        return getPoultryId(a) === selectedPoultry;
+      })
       .filter((a) => severityFilter === "all" || a.severity === severityFilter)
       .filter((a) => !showUnreadOnly || !a.read)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }, [alerts, selectedPoultry, severityFilter, showUnreadOnly]);
 
-  // ── Refresh ─────────────────────────────────────────────────────────────────
+  // ── Groupement par sévérité (danger > warn > info) ──────────────────────────
+  const groupedBySeverity = useMemo(() => {
+    const groups = {};
+    SEVERITY_ORDER.forEach((sev) => {
+      groups[sev] = [];
+    });
+
+    filtered.forEach((alert) => {
+      const sev = SEVERITY_ORDER.includes(alert.severity)
+        ? alert.severity
+        : "info";
+      groups[sev].push(alert);
+    });
+
+    return SEVERITY_ORDER.filter((sev) => groups[sev].length > 0).map(
+      (sev) => ({
+        severity: sev,
+        alerts: groups[sev],
+        count: groups[sev].length,
+        unreadCount: groups[sev].filter((a) => !a.read).length,
+      }),
+    );
+  }, [filtered]);
+
+  // ── Handlers ────────────────────────────────────────────────────────────────
+
   const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await onRefresh();
-    setRefreshing(false);
+    try {
+      await onRefresh();
+    } catch {
+      Alert.alert("Erreur", "Impossible de rafraîchir.");
+    }
   }, [onRefresh]);
 
-  // ── Mark all read (filtré au poulailler courant) ─────────────────────────────
-  const handleMarkAllRead = useCallback(() => {
-    filtered.filter((a) => !a.read).forEach((a) => onMarkRead(a._id));
-    if (onMarkAllRead) onMarkAllRead(selectedPoultry);
+  const handleMarkAllRead = useCallback(async () => {
+    const unreadIds = filtered.filter((a) => !a.read).map((a) => a._id);
+    if (!unreadIds.length) return;
+    Alert.alert(
+      "Tout marquer comme lu ?",
+      `${unreadIds.length} alerte${unreadIds.length > 1 ? "s" : ""} concernée${unreadIds.length > 1 ? "s" : ""}.`,
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Confirmer",
+          onPress: async () => {
+            try {
+              await Promise.all(unreadIds.map((id) => onMarkRead(id)));
+              if (onMarkAllRead) await onMarkAllRead(selectedPoultry);
+            } catch {
+              Alert.alert("Erreur", "Impossible de marquer comme lu");
+            }
+          },
+        },
+      ],
+    );
   }, [filtered, onMarkRead, onMarkAllRead, selectedPoultry]);
 
+  // Supprimer une seule alerte
+  const handleDeleteOne = useCallback(
+    (id) => {
+      Alert.alert(
+        "Supprimer cette alerte ?",
+        "Cette action est irréversible.",
+        [
+          { text: "Annuler", style: "cancel" },
+          {
+            text: "Supprimer",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                if (onDeleteAlert) await onDeleteAlert(id);
+                else if (onDeleteAlerts) await onDeleteAlerts([id]);
+              } catch {
+                Alert.alert("Erreur", "Impossible de supprimer");
+              }
+            },
+          },
+        ],
+      );
+    },
+    [onDeleteAlert, onDeleteAlerts],
+  );
+
+  // Supprimer toutes les alertes lues
+  // Utilise DELETE /api/alerts?poultryId=... via onDeleteAllRead
+  const handleDeleteAllRead = useCallback(() => {
+    const readIds = filtered.filter((a) => a.read).map((a) => a._id);
+    if (!readIds.length) {
+      Alert.alert("Info", "Aucune alerte lue à supprimer.");
+      return;
+    }
+    Alert.alert(
+      `Supprimer ${readIds.length} alerte${readIds.length > 1 ? "s" : ""} lue${readIds.length > 1 ? "s" : ""} ?`,
+      "Seules les alertes déjà lues seront supprimées.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Supprimer",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              if (onDeleteAllRead) {
+                // ✅ Utilise DELETE /api/alerts?poultryId=...
+                await onDeleteAllRead(
+                  selectedPoultry !== "all" ? selectedPoultry : "all",
+                );
+              } else if (onDeleteAlerts) {
+                await onDeleteAlerts(readIds);
+              }
+            } catch {
+              Alert.alert("Erreur", "Suppression impossible");
+            }
+          },
+        },
+      ],
+    );
+  }, [filtered, onDeleteAllRead, onDeleteAlerts, selectedPoultry]);
+
+  // Mode sélection : toggle
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Mode sélection : tout sélectionner / désélectionner
+  const handleSelectAll = useCallback(() => {
+    setSelectedIds(
+      selectedIds.size === filtered.length
+        ? new Set()
+        : new Set(filtered.map((a) => a._id)),
+    );
+  }, [filtered, selectedIds.size]);
+
+  const cancelSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+
+  // Mode sélection : marquer sélectionnées comme lues
+  const handleMarkSelectedRead = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    try {
+      await Promise.all(ids.map((id) => onMarkRead(id)));
+      setSelectedIds(new Set());
+    } catch {
+      Alert.alert("Erreur", "Impossible de marquer comme lu");
+    }
+  }, [selectedIds, onMarkRead]);
+
+  // Mode sélection : supprimer sélectionnées
+  const handleDeleteSelected = useCallback(() => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    Alert.alert(
+      `Supprimer ${ids.length} alerte${ids.length > 1 ? "s" : ""} ?`,
+      "Cette action est irréversible.",
+      [
+        { text: "Annuler", style: "cancel" },
+        {
+          text: "Supprimer",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              if (onDeleteAlerts) await onDeleteAlerts(ids);
+              else if (onDeleteAlert)
+                await Promise.all(ids.map((id) => onDeleteAlert(id)));
+              setSelectedIds(new Set());
+            } catch {
+              Alert.alert("Erreur", "Suppression impossible");
+            }
+          },
+        },
+      ],
+    );
+  }, [selectedIds, onDeleteAlert, onDeleteAlerts]);
+
+  // Navigation retour (ou annuler sélection)
+  const handleGoBack = useCallback(() => {
+    if (isSelectMode) {
+      cancelSelection();
+      return;
+    }
+    if (navigation.canGoBack()) navigation.goBack();
+  }, [navigation, isSelectMode, cancelSelection]);
+
   const unreadCount = filtered.filter((a) => !a.read).length;
+  const readCount = filtered.filter((a) => a.read).length;
   const currentSeverityLabel = SEVERITY_FILTERS.find(
     (f) => f.key === severityFilter,
   )?.label;
 
+  // ── Loading ─────────────────────────────────────────────────────────────────
+  if (loading && !refreshing) {
+    return (
+      <SafeAreaView
+        style={{
+          flex: 1,
+          backgroundColor: "#F8FAFC",
+          paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
+        }}
+      >
+        <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+          }}
+        >
+          <BackButton onPress={handleGoBack} />
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              alignItems: "center",
+              pointerEvents: "none",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: "800",
+                color: "#0F172A",
+              }}
+            >
+              Mes alertes
+            </Text>
+          </View>
+        </View>
+        <LoadingSkeleton />
+      </SafeAreaView>
+    );
+  }
+
+  // ── Error ───────────────────────────────────────────────────────────────────
+  if (error) {
+    return (
+      <SafeAreaView
+        style={{
+          flex: 1,
+          backgroundColor: "#F8FAFC",
+          paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
+        }}
+      >
+        <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            paddingHorizontal: 16,
+            paddingVertical: 12,
+          }}
+        >
+          <BackButton onPress={handleGoBack} />
+          <View
+            style={{
+              position: "absolute",
+              left: 0,
+              right: 0,
+              alignItems: "center",
+              pointerEvents: "none",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: "800",
+                color: "#0F172A",
+              }}
+            >
+              Mes alertes
+            </Text>
+          </View>
+        </View>
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            padding: 24,
+          }}
+        >
+          <MaterialIcons name="wifi-off" size={64} color="#F59E0B" />
+          <Text
+            style={{
+              fontSize: 18,
+              fontWeight: "700",
+              color: "#1E293B",
+              marginTop: 16,
+              textAlign: "center",
+            }}
+          >
+            Problème de connexion
+          </Text>
+          <Text
+            style={{
+              fontSize: 14,
+              color: "#64748B",
+              textAlign: "center",
+              marginTop: 8,
+              lineHeight: 20,
+            }}
+          >
+            {error}
+          </Text>
+          <TouchableOpacity
+            onPress={handleRefresh}
+            style={{
+              marginTop: 24,
+              paddingHorizontal: 28,
+              paddingVertical: 14,
+              backgroundColor: "#22C55E",
+              borderRadius: 14,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <MaterialIcons name="refresh" size={20} color="#fff" />
+            <Text style={{ color: "#fff", fontWeight: "700", fontSize: 16 }}>
+              Réessayer
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Main render ─────────────────────────────────────────────────────────────
   return (
     <SafeAreaView
       style={{
@@ -606,9 +1386,20 @@ export default function Notifications({
     >
       <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
 
+      {/* Barre de sélection multiple */}
+      {isSelectMode && (
+        <SelectionBar
+          count={selectedIds.size}
+          onMarkRead={handleMarkSelectedRead}
+          onDelete={handleDeleteSelected}
+          onCancel={cancelSelection}
+          onSelectAll={handleSelectAll}
+        />
+      )}
+
       <ScrollView
         style={{ flex: 1 }}
-        stickyHeaderIndices={[0]}
+        stickyHeaderIndices={isSelectMode ? [] : [0]}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -619,191 +1410,261 @@ export default function Notifications({
           />
         }
       >
-        {/* ── Header sticky ──────────────────────────────────────────────────── */}
-        <View
-          style={{
-            backgroundColor: "#F8FAFC",
-            paddingTop: 8,
-            paddingBottom: 4,
-            borderBottomWidth: 1,
-            borderBottomColor: "#E2E8F0",
-          }}
-        >
-          {/* Titre + bouton tout lire */}
+        {/* ── Header sticky ────────────────────────────────────────────────── */}
+        {!isSelectMode && (
           <View
             style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              paddingHorizontal: 16,
-              paddingBottom: 12,
+              backgroundColor: "#F8FAFC",
+              paddingTop: 8,
+              paddingBottom: 4,
+              borderBottomWidth: 1,
+              borderBottomColor: "#E2E8F0",
             }}
           >
-            <View>
-              <Text
-                style={{ fontSize: 22, fontWeight: "800", color: "#0F172A" }}
-              >
-                Notifications
-              </Text>
-              <Text
+            {/* Retour + Titre centré + Boutons actions */}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingHorizontal: 16,
+                paddingBottom: 12,
+              }}
+            >
+              <BackButton onPress={handleGoBack} />
+
+              {/* Titre centré absolument */}
+              <View
                 style={{
-                  fontSize: 12,
-                  color: "#94A3B8",
-                  fontWeight: "500",
-                  marginTop: 1,
-                }}
-              >
-                {unreadCount > 0
-                  ? `${unreadCount} non lue${unreadCount > 1 ? "s" : ""}`
-                  : "Tout est lu"}
-              </Text>
-            </View>
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              {/* Filtre non lus seulement */}
-              <TouchableOpacity
-                onPress={() => setShowUnreadOnly((v) => !v)}
-                style={{
-                  flexDirection: "row",
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
                   alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 11,
-                  paddingVertical: 8,
-                  borderRadius: 10,
-                  backgroundColor: showUnreadOnly ? "#EFF6FF" : "#F1F5F9",
-                  borderWidth: 1,
-                  borderColor: showUnreadOnly ? "#BFDBFE" : "#E2E8F0",
+                  pointerEvents: "none",
                 }}
               >
-                <Ionicons
-                  name={showUnreadOnly ? "eye-off" : "eye-outline"}
-                  size={14}
-                  color={showUnreadOnly ? "#3B82F6" : "#64748B"}
-                />
                 <Text
                   style={{
-                    fontSize: 11,
-                    fontWeight: "700",
-                    color: showUnreadOnly ? "#1D4ED8" : "#64748B",
+                    fontSize: 20,
+                    fontWeight: "800",
+                    color: "#0F172A",
                   }}
                 >
-                  {showUnreadOnly ? "Non lues" : "Toutes"}
+                  Mes alertes
                 </Text>
-              </TouchableOpacity>
-
-              {/* Tout marquer lu */}
-              {unreadCount > 0 && (
-                <TouchableOpacity
-                  onPress={handleMarkAllRead}
+                <Text
                   style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 5,
-                    paddingHorizontal: 11,
-                    paddingVertical: 8,
+                    fontSize: 12,
+                    color: "#94A3B8",
+                    fontWeight: "500",
+                    marginTop: 1,
+                  }}
+                >
+                  {unreadCount > 0
+                    ? `${unreadCount} non lue${unreadCount > 1 ? "s" : ""}`
+                    : "✓ Tout est à jour"}
+                </Text>
+              </View>
+
+              {/* Boutons à droite */}
+              <View style={{ flexDirection: "row", gap: 6 }}>
+                {/* Voir non lues seulement */}
+                <TouchableOpacity
+                  onPress={() => setShowUnreadOnly((v) => !v)}
+                  style={{
+                    width: 36,
+                    height: 36,
                     borderRadius: 10,
-                    backgroundColor: "#F0FDF4",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: showUnreadOnly ? "#EFF6FF" : "#F1F5F9",
                     borderWidth: 1,
-                    borderColor: "#BBF7D0",
+                    borderColor: showUnreadOnly ? "#BFDBFE" : "#E2E8F0",
                   }}
                 >
-                  <MaterialIcons name="done-all" size={14} color="#22C55E" />
-                  <Text
+                  <Ionicons
+                    name={showUnreadOnly ? "eye-off" : "eye-outline"}
+                    size={16}
+                    color={showUnreadOnly ? "#3B82F6" : "#64748B"}
+                  />
+                </TouchableOpacity>
+
+                {/* Tout marquer lu */}
+                {unreadCount > 0 && (
+                  <TouchableOpacity
+                    onPress={handleMarkAllRead}
                     style={{
-                      fontSize: 11,
-                      fontWeight: "700",
-                      color: "#15803D",
+                      width: 36,
+                      height: 36,
+                      borderRadius: 10,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: "#F0FDF4",
+                      borderWidth: 1,
+                      borderColor: "#BBF7D0",
                     }}
                   >
-                    Tout lu
-                  </Text>
-                </TouchableOpacity>
-              )}
+                    <MaterialIcons name="done-all" size={16} color="#22C55E" />
+                  </TouchableOpacity>
+                )}
+
+                {/* Supprimer les lues → DELETE /api/alerts */}
+                {readCount > 0 && (
+                  <TouchableOpacity
+                    onPress={handleDeleteAllRead}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 10,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: "#FEF2F2",
+                      borderWidth: 1,
+                      borderColor: "#FCA5A5",
+                    }}
+                  >
+                    <MaterialIcons
+                      name="delete-sweep"
+                      size={16}
+                      color="#EF4444"
+                    />
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
-          </View>
 
-          {/* Filtre par poulailler (horizontal scroll) */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 10 }}
-          >
-            <PoultryFilterTab
-              poultry="all"
-              isSelected={selectedPoultry === "all"}
-              unreadCount={unreadByPoultry.all}
-              onPress={() => setSelectedPoultry("all")}
-            />
-            {poulaillers.map((p) => (
+            {/* Filtre par poulailler */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingBottom: 10,
+              }}
+            >
               <PoultryFilterTab
-                key={p._id}
-                poultry={p}
-                isSelected={selectedPoultry === p._id}
-                unreadCount={unreadByPoultry[p._id] || 0}
-                onPress={() => setSelectedPoultry(p._id)}
+                poultry="all"
+                isSelected={selectedPoultry === "all"}
+                unreadCount={unreadByPoultry.all}
+                onPress={() => setSelectedPoultry("all")}
               />
-            ))}
-          </ScrollView>
+              {poulaillers.map((p) => (
+                <PoultryFilterTab
+                  key={p._id}
+                  poultry={p}
+                  isSelected={selectedPoultry === String(p._id)}
+                  unreadCount={unreadByPoultry[String(p._id)] || 0}
+                  onPress={() => setSelectedPoultry(String(p._id))}
+                />
+              ))}
+            </ScrollView>
 
-          {/* Filtre par sévérité */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{
-              paddingHorizontal: 16,
-              paddingBottom: 10,
-              gap: 6,
-            }}
-          >
-            {SEVERITY_FILTERS.map((f) => {
-              const active = severityFilter === f.key;
-              const cfg = f.key !== "all" ? severityConfig(f.key) : null;
-              return (
-                <TouchableOpacity
-                  key={f.key}
-                  onPress={() => setSeverityFilter(f.key)}
-                  style={{
-                    paddingHorizontal: 12,
-                    paddingVertical: 6,
-                    borderRadius: 20,
-                    marginRight: 6,
-                    backgroundColor: active
-                      ? cfg
-                        ? cfg.badgeBg
-                        : "#1E293B"
-                      : "#fff",
-                    borderWidth: 1,
-                    borderColor: active
-                      ? cfg
-                        ? cfg.badgeBorder
-                        : "#1E293B"
-                      : "#E2E8F0",
-                  }}
-                >
-                  <Text
+            {/* Filtre par sévérité avec compteur */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{
+                paddingHorizontal: 16,
+                paddingBottom: 10,
+                gap: 6,
+              }}
+            >
+              {SEVERITY_FILTERS.map((f) => {
+                const active = severityFilter === f.key;
+                const cfg = f.key !== "all" ? severityConfig(f.key) : null;
+                const filterCount =
+                  f.key === "all"
+                    ? filtered.length
+                    : filtered.filter((a) => a.severity === f.key).length;
+
+                return (
+                  <TouchableOpacity
+                    key={f.key}
+                    onPress={() => setSeverityFilter(f.key)}
                     style={{
-                      fontSize: 12,
-                      fontWeight: "700",
-                      color: active
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 5,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 20,
+                      marginRight: 6,
+                      backgroundColor: active
                         ? cfg
-                          ? cfg.badgeColor
-                          : "#fff"
-                        : "#64748B",
+                          ? cfg.badgeBg
+                          : "#1E293B"
+                        : "#fff",
+                      borderWidth: 1,
+                      borderColor: active
+                        ? cfg
+                          ? cfg.badgeBorder
+                          : "#1E293B"
+                        : "#E2E8F0",
                     }}
                   >
-                    {f.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-        </View>
+                    <MaterialIcons
+                      name={f.icon}
+                      size={13}
+                      color={
+                        active ? (cfg ? cfg.iconColor : "#fff") : "#94A3B8"
+                      }
+                    />
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        fontWeight: "700",
+                        color: active
+                          ? cfg
+                            ? cfg.badgeColor
+                            : "#fff"
+                          : "#64748B",
+                      }}
+                    >
+                      {f.label}
+                    </Text>
+                    {filterCount > 0 && (
+                      <View
+                        style={{
+                          backgroundColor: active
+                            ? cfg
+                              ? cfg.badgeBorder
+                              : "rgba(255,255,255,0.3)"
+                            : "#F1F5F9",
+                          borderRadius: 8,
+                          paddingHorizontal: 5,
+                          paddingVertical: 1,
+                          minWidth: 18,
+                          alignItems: "center",
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontSize: 9,
+                            fontWeight: "700",
+                            color: active
+                              ? cfg
+                                ? cfg.badgeColor
+                                : "#fff"
+                              : "#94A3B8",
+                          }}
+                        >
+                          {filterCount}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
 
-        {/* ── Résumé chiffres ────────────────────────────────────────────────── */}
+        {/* ── Résumé 4 cartes ──────────────────────────────────────────────── */}
         <View style={{ paddingTop: 16 }}>
           <SummaryBar alerts={filtered} />
         </View>
 
-        {/* ── Contexte poulailler sélectionné ───────────────────────────────── */}
+        {/* ── Info poulailler sélectionné ──────────────────────────────────── */}
         {selectedPoultry !== "all" && poultryById[selectedPoultry] && (
           <View
             style={{
@@ -821,56 +1682,188 @@ export default function Notifications({
           >
             <View
               style={{
-                width: 36,
-                height: 36,
+                width: 38,
+                height: 38,
                 borderRadius: 10,
                 backgroundColor: "#F0FDF4",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              <MaterialIcons name="home" size={18} color="#22C55E" />
+              <MaterialIcons name="home-work" size={18} color="#22C55E" />
             </View>
             <View style={{ flex: 1 }}>
               <Text
-                style={{ fontSize: 14, fontWeight: "700", color: "#1E293B" }}
+                style={{
+                  fontSize: 14,
+                  fontWeight: "700",
+                  color: "#1E293B",
+                }}
               >
                 {poultryById[selectedPoultry].name}
               </Text>
               {poultryById[selectedPoultry].location && (
                 <Text
-                  style={{ fontSize: 11, color: "#94A3B8", fontWeight: "500" }}
+                  style={{
+                    fontSize: 11,
+                    color: "#94A3B8",
+                    fontWeight: "500",
+                  }}
                 >
-                  {poultryById[selectedPoultry].location}
+                  📍 {poultryById[selectedPoultry].location}
                 </Text>
               )}
             </View>
-            <Text style={{ fontSize: 11, color: "#94A3B8", fontWeight: "500" }}>
-              {filtered.length} alerte{filtered.length > 1 ? "s" : ""}
-            </Text>
+            <View
+              style={{
+                backgroundColor: "#F1F5F9",
+                borderRadius: 8,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: "#64748B",
+                  fontWeight: "600",
+                }}
+              >
+                {filtered.length} alerte{filtered.length > 1 ? "s" : ""}
+              </Text>
+            </View>
           </View>
         )}
 
-        {/* ── Liste des alertes ──────────────────────────────────────────────── */}
+        {/* ── Liste groupée par sévérité ───────────────────────────────────── */}
         {filtered.length === 0 ? (
           <EmptyState
             filterLabel={severityFilter !== "all" ? currentSeverityLabel : null}
+            type={
+              severityFilter !== "all" || showUnreadOnly ? "filter" : "empty"
+            }
           />
         ) : (
           <View style={{ paddingBottom: 32 }}>
-            {filtered.map((alert) => (
-              <AlertCard
-                key={alert._id}
-                alert={alert}
-                // Afficher le nom du poulailler seulement en vue "Tous"
-                poultryName={
-                  selectedPoultry === "all"
-                    ? poultryById[alert.poultryId]?.name
-                    : null
-                }
-                onMarkRead={onMarkRead}
-              />
-            ))}
+            {/* Compteur + bouton Sélectionner */}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                paddingHorizontal: 16,
+                paddingBottom: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: "#94A3B8",
+                  fontWeight: "500",
+                }}
+              >
+                {filtered.length} alerte{filtered.length > 1 ? "s" : ""}{" "}
+                affichée{filtered.length > 1 ? "s" : ""}
+              </Text>
+              {!isSelectMode && (
+                <TouchableOpacity
+                  onPress={() => {
+                    if (filtered.length > 0) toggleSelect(filtered[0]._id);
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 4,
+                    paddingHorizontal: 8,
+                    paddingVertical: 4,
+                    borderRadius: 6,
+                    backgroundColor: "#F1F5F9",
+                  }}
+                >
+                  <MaterialIcons name="checklist" size={12} color="#64748B" />
+                  <Text
+                    style={{
+                      fontSize: 10,
+                      color: "#64748B",
+                      fontWeight: "600",
+                    }}
+                  >
+                    Sélectionner
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Sections par sévérité : danger → warn → info */}
+            {groupedBySeverity.map((group) => {
+              const isCollapsed = collapsedSections[group.severity] === true;
+              return (
+                <View key={group.severity}>
+                  {/* Header de section collapsible */}
+                  <SeveritySectionHeader
+                    severity={group.severity}
+                    count={group.count}
+                    unreadCount={group.unreadCount}
+                    collapsed={isCollapsed}
+                    onToggle={() => toggleSection(group.severity)}
+                  />
+
+                  {/* Alertes de la section */}
+                  {!isCollapsed &&
+                    group.alerts.map((alert) => {
+                      const pid = getPoultryId(alert);
+                      return (
+                        <AlertCard
+                          key={alert._id}
+                          alert={alert}
+                          poultryName={
+                            selectedPoultry === "all" && pid
+                              ? (poultryById[pid]?.name ?? null)
+                              : null
+                          }
+                          onMarkRead={onMarkRead}
+                          onDelete={handleDeleteOne}
+                          isSelectMode={isSelectMode}
+                          isSelected={selectedIds.has(alert._id)}
+                          onToggleSelect={toggleSelect}
+                        />
+                      );
+                    })}
+
+                  {/* Message si section fermée */}
+                  {isCollapsed && (
+                    <View
+                      style={{
+                        marginHorizontal: 16,
+                        marginBottom: 4,
+                        paddingVertical: 6,
+                        alignItems: "center",
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          color: "#94A3B8",
+                          fontStyle: "italic",
+                        }}
+                      >
+                        {group.count} alerte
+                        {group.count > 1 ? "s" : ""} masquée
+                        {group.count > 1 ? "s" : ""} ·{" "}
+                        <Text
+                          style={{
+                            fontWeight: "600",
+                            fontStyle: "normal",
+                          }}
+                        >
+                          Appuyez pour afficher
+                        </Text>
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              );
+            })}
           </View>
         )}
       </ScrollView>

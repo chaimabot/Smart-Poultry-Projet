@@ -1,4 +1,9 @@
+// services/poultry.js - COMPLET ✅ Sans doublons
 import api from "./api";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POULAILLERS
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Récupère la liste de tous les poulaillers
 export const getPoultries = async () => {
@@ -10,7 +15,7 @@ export const getPoultries = async () => {
   }
 };
 
-// Récupère les informations d’un poulailler par son id
+// Récupère les informations d'un poulailler par son id
 export const getPoultryById = async (id) => {
   try {
     const response = await api.get(`/poulaillers/${id}`);
@@ -26,19 +31,19 @@ export const createPoultry = async (poultryData) => {
     console.log(
       "[createPoultry] body envoyé :",
       JSON.stringify(poultryData, null, 2),
-    ); // ← ajoute
+    );
     const response = await api.post("/poulaillers", poultryData);
     return response.data;
   } catch (error) {
     console.log(
       "[createPoultry] erreur complète :",
       JSON.stringify(error.response?.data, null, 2),
-    ); // ← ajoute
+    );
     throw error.response ? error.response.data : { error: "Erreur réseau" };
   }
 };
 
-// Met à jour les informations d’un poulailler
+// Met à jour les informations d'un poulailler
 export const updatePoultry = async (id, poultryData) => {
   try {
     const response = await api.put(`/poulaillers/${id}`, poultryData);
@@ -58,7 +63,7 @@ export const deletePoultry = async (id) => {
   }
 };
 
-// Archive un poulailler (le rendre inactif)
+// Archive un poulailler
 export const archivePoultry = async (id) => {
   try {
     const response = await api.post(`/poulaillers/${id}/archive`);
@@ -71,7 +76,9 @@ export const archivePoultry = async (id) => {
 // Restaure un poulailler archivé
 export const restorePoultry = async (id) => {
   try {
-    const response = await api.put(`/poulaillers/${id}`, { isArchived: false });
+    const response = await api.put(`/poulaillers/${id}`, {
+      isArchived: false,
+    });
     return response.data;
   } catch (error) {
     throw error.response ? error.response.data : { error: "Erreur réseau" };
@@ -108,7 +115,7 @@ export const getCriticalPoultries = async () => {
   }
 };
 
-// Récupère les seuils d’un poulailler
+// Récupère les seuils d'un poulailler
 export const getThresholds = async (id) => {
   try {
     const response = await api.get(`/poulaillers/${id}/thresholds`);
@@ -118,85 +125,10 @@ export const getThresholds = async (id) => {
   }
 };
 
-// Met à jour les seuils d’un poulailler
+// Met à jour les seuils d'un poulailler
 export const updateThresholds = async (id, thresholds) => {
   try {
     const response = await api.put(`/poulaillers/${id}/thresholds`, thresholds);
-    return response.data;
-  } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
-  }
-};
-
-// Récupère les alertes d’un poulailler
-export const getAlerts = async (poultryId) => {
-  try {
-    const response = await api.get("/alerts", {
-      params: { poulaillerId: poultryId },
-    });
-    return response.data;
-  } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
-  }
-};
-
-// Marque une alerte comme lue
-export const markAlertAsRead = async (alertId) => {
-  try {
-    const response = await api.post("/alerts/read", { alertId });
-    return response.data;
-  } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
-  }
-};
-
-// Marque toutes les alertes d’un poulailler comme lues
-export const markAllAlertsAsRead = async (poultryId) => {
-  try {
-    const response = await api.post("/alerts/read", {
-      poulaillerId: poultryId,
-    });
-    return response.data;
-  } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
-  }
-};
-
-// Supprime les alertes déjà lues
-export const deleteReadAlerts = async (poultryId) => {
-  try {
-    const response = await api.delete("/alerts", {
-      params: { poulaillerId: poultryId },
-    });
-    return response.data;
-  } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
-  }
-};
-
-// Crée une alerte liée à un actionneur (porte, ventilateur, lampe)
-export const createActuatorAlert = async (poultryId, actuator, state) => {
-  try {
-    const response = await api.post("/alerts", {
-      poulaillerId: poultryId,
-      type: "actuator",
-      actuator,
-      state: state ? "on" : "off",
-      triggeredBy: "manual",
-    });
-    return response.data;
-  } catch (error) {
-    console.error("[poultry] createActuatorAlert error:", error.message);
-    return null;
-  }
-};
-
-// Récupère les statistiques des alertes
-export const getAlertStats = async (poultryId) => {
-  try {
-    const response = await api.get("/alerts/stats", {
-      params: { poulaillerId: poultryId },
-    });
     return response.data;
   } catch (error) {
     throw error.response ? error.response.data : { error: "Erreur réseau" };
@@ -232,7 +164,7 @@ export const controlActuator = async (id, actuator, state, mode = "manual") => {
   }
 };
 
-// Récupère l’historique des mesures d’un capteur
+// Récupère l'historique des mesures d'un capteur
 export const getMeasureHistory = async (
   id,
   sensor = "temperature",
@@ -258,13 +190,149 @@ export const getDefaultThresholds = async () => {
     return { success: false, data: null };
   }
 };
+
 // Récupère le device (module ESP32) associé à un poulailler
-// Retourne { success: true, data: { macAddress: "142B2FC7D704", ... } }
 export const getDeviceByPoulailler = async (poulaillerId) => {
   try {
     const response = await api.get(`/devices/by-poulailler/${poulaillerId}`);
     return response.data;
   } catch (error) {
     throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/alerts/poulailler/:id ───────────────────────────────────────────
+// Récupère les alertes d'un poulailler
+// Retourne { success, count, total, page, pages, data: [...] }
+export const getAlerts = async (poulaillerId, params = {}) => {
+  try {
+    const response = await api.get(`/alerts/poulailler/${poulaillerId}`, {
+      params,
+    });
+    // Support les deux formats : { success, data: [...] } ou tableau direct
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── GET /api/alerts/stats ─────────────────────────────────────────────────────
+// Récupère les statistiques des alertes d'un poulailler
+export const getAlertStats = async (poultryId) => {
+  try {
+    const response = await api.get("/alerts/stats", {
+      params: { poultryId },
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── PATCH /api/alerts/:id/read ───────────────────────────────────────────────
+// Marque une alerte spécifique comme lue
+export const markAlertAsRead = async (alertId) => {
+  try {
+    const response = await api.patch(`/alerts/${alertId}/read`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── PATCH /api/alerts/bulk/read ──────────────────────────────────────────────
+// Marque plusieurs alertes comme lues en une seule requête
+// Body : { alertIds: ["id1", "id2", ...] }
+export const markBulkAlertsAsRead = async (alertIds) => {
+  try {
+    const response = await api.patch(`/alerts/bulk/read`, { alertIds });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── POST /api/alerts/read ────────────────────────────────────────────────────
+// Marque toutes les alertes d'un poulailler comme lues
+export const markAllAlertsAsRead = async (poultryId) => {
+  try {
+    const response = await api.post("/alerts/read", {
+      poulaillerId: poultryId,
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── DELETE /api/alerts ───────────────────────────────────────────────────────
+// Supprime les alertes déjà lues d'un poulailler
+export const deleteReadAlerts = async (poultryId) => {
+  try {
+    const response = await api.delete("/alerts", {
+      params: { poultryId },
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── DELETE /api/alerts/:id ───────────────────────────────────────────────────
+// Supprime une alerte spécifique
+export const deleteOneAlert = async (alertId) => {
+  try {
+    const response = await api.delete(`/alerts/${alertId}`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+
+// ── DELETE /api/alerts/bulk ──────────────────────────────────────────────────
+// Supprime plusieurs alertes par IDs
+// Body : { alertIds: ["id1", "id2", ...] }
+export const deleteBulkAlerts = async (alertIds) => {
+  try {
+    const response = await api.delete(`/alerts/bulk`, {
+      data: { alertIds },
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
+export async function updateActuator(
+  poultryId,
+  actuator,
+  state,
+  mode = "manual",
+) {
+  const res = await api.patch(`/poulaillers/${poultryId}/actuators`, {
+    actuator,
+    state,
+    mode,
+  });
+  return res.data;
+}
+// ── POST /api/alerts ─────────────────────────────────────────────────────────
+// Crée une alerte liée à un actionneur (porte, ventilateur, lampe)
+export const createActuatorAlert = async (poultryId, actuator, state) => {
+  try {
+    const response = await api.post("/alerts", {
+      poulaillerId: poultryId,
+      type: "actuator",
+      actuator,
+      state: state ? "on" : "off",
+      triggeredBy: "manual",
+    });
+    return response.data;
+  } catch (error) {
+    console.error("[poultry] createActuatorAlert error:", error.message);
+    return null;
   }
 };

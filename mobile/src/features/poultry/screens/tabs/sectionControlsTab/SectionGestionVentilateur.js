@@ -1,93 +1,35 @@
+// components/SectionGestionVentilateur.jsx
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet, Alert } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
-import { controlVentilateur } from "../../../../../services/ventilateurService";
 
 export default function SectionGestionVentilateur({
-  poultryId,
-  data,
-  onUpdate,
+  fanOn, // boolean : état actuel du fan
+  fanAuto, // boolean : mode auto actif
+  onToggleAuto, // () => void : depuis usePoultryState.toggleFanAuto
+  onFanOn, // () => void : allumer manuellement
+  onFanOff, // () => void : éteindre manuellement
 }) {
-  const [fanOn, setFanOn] = React.useState(data?.status === true);
-  const [fanAuto, setFanAuto] = React.useState(data?.mode === "auto");
-
-  React.useEffect(() => {
-    setFanOn(data?.status === true);
-    setFanAuto(data?.mode === "auto");
-  }, [data?.mode, data?.status]);
-
-  const handleToggleAuto = async () => {
-    try {
-      const newMode = fanAuto ? "manual" : "auto";
-      const currentAction = fanOn ? "on" : "off";
-
-      console.log("[SectionGestionVentilateur] Envoi commande ventilateur:", {
-        poultryId,
-        mode: newMode,
-        action: currentAction,
-      });
-
-      const response = await controlVentilateur(
-        poultryId,
-        newMode,
-        currentAction,
-      );
-
-      console.log("[SectionGestionVentilateur] Réponse API:", response);
-
-      setFanAuto(!fanAuto);
-      if (onUpdate) onUpdate();
-    } catch (error) {
-      const errorMsg =
-        error.error ||
-        error.message ||
-        "Impossible de changer le mode du ventilateur.";
-      console.error("[SectionGestionVentilateur] Error:", error);
-      Alert.alert("Erreur", errorMsg);
-    }
-  };
-
-  const handleToggleStatus = async (action) => {
+  const handleManualOn = () => {
     if (fanAuto) {
       Alert.alert(
         "Mode Automatique actif",
-        "Veuillez désactiver le mode automatique pour contrôler le ventilateur manuellement.",
+        "Désactivez le mode automatique pour contrôler manuellement.",
       );
       return;
     }
+    onFanOn?.();
+  };
 
-    try {
-      console.log("[SectionGestionVentilateur] Envoi commande ventilateur:", {
-        poultryId,
-        mode: "manual",
-        action,
-      });
-
-      const response = await controlVentilateur(poultryId, "manual", action);
-
-      console.log("[SectionGestionVentilateur] Réponse API:", response);
-
-      setFanOn(action === "on");
-      if (onUpdate) onUpdate();
-
+  const handleManualOff = () => {
+    if (fanAuto) {
       Alert.alert(
-        "Succès",
-        `Ventilateur ${action === "on" ? "démarré" : "arrêté"}`,
+        "Mode Automatique actif",
+        "Désactivez le mode automatique pour contrôler manuellement.",
       );
-    } catch (error) {
-      const errorMsg =
-        error.error || error.message || "La commande du ventilateur a échoué.";
-      console.error("[SectionGestionVentilateur] Error:", error);
-
-      if (errorMsg.includes("Accès non autorisé")) {
-        Alert.alert(
-          "Authentification requise",
-          "Veuillez vous reconnecter pour contrôler le ventilateur.",
-        );
-      } else {
-        Alert.alert("Erreur", errorMsg);
-      }
+      return;
     }
+    onFanOff?.();
   };
 
   return (
@@ -101,15 +43,13 @@ export default function SectionGestionVentilateur({
           <Text style={styles.label}>Ventilateur</Text>
           <Text style={styles.sub}>
             {fanAuto
-              ? "Auto â€” Température"
-              : `Manuel â€” ${fanOn ? "● En marche" : "○ Arrêté"}`}
+              ? `Auto — ${fanOn ? "● En marche" : "○ En attente"}`
+              : `Manuel — ${fanOn ? "● En marche" : "○ Arrêté"}`}
           </Text>
         </View>
 
-        <TouchableOpacity
-          onPress={handleToggleAuto}
-          style={styles.segmentWrapper}
-        >
+        {/* Toggle AUTO / MANU */}
+        <TouchableOpacity onPress={onToggleAuto} style={styles.segmentWrapper}>
           <View style={styles.segment}>
             <View style={[styles.segmentBtn, fanAuto && styles.segmentActive]}>
               <Text style={[styles.segmentText, fanAuto && styles.textWhite]}>
@@ -125,10 +65,11 @@ export default function SectionGestionVentilateur({
         </TouchableOpacity>
       </View>
 
+      {/* Boutons manuels : affichés seulement en mode MANU */}
       {!fanAuto && (
         <View style={{ flexDirection: "row", gap: 8 }}>
           <TouchableOpacity
-            onPress={() => handleToggleStatus("on")}
+            onPress={handleManualOn}
             disabled={fanOn}
             style={[styles.btn, styles.btnOn, fanOn && styles.btnDisabled]}
           >
@@ -145,13 +86,23 @@ export default function SectionGestionVentilateur({
           </TouchableOpacity>
 
           <TouchableOpacity
-            onPress={() => handleToggleStatus("off")}
+            onPress={handleManualOff}
             disabled={!fanOn}
-            style={[styles.btn, styles.btnOff]}
+            style={[styles.btn, styles.btnOff, !fanOn && styles.btnDisabled]}
           >
             <MaterialIcons name="stop" size={16} color="#EF4444" />
             <Text style={[styles.btnText, { color: "#EF4444" }]}>Arrêter</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Info mode auto */}
+      {fanAuto && (
+        <View style={styles.autoInfo}>
+          <MaterialIcons name="info-outline" size={13} color="#64748B" />
+          <Text style={styles.autoInfoText}>
+            L'app surveille les seuils et commande l'ESP32 automatiquement
+          </Text>
         </View>
       )}
     </View>
@@ -179,10 +130,7 @@ const styles = StyleSheet.create({
   },
   label: { fontSize: 14, fontWeight: "700", color: "#1E293B" },
   sub: { fontSize: 11, color: "#94A3B8", fontWeight: "500", marginTop: 2 },
-  segmentWrapper: {
-    overflow: "hidden",
-    borderRadius: 100,
-  },
+  segmentWrapper: { overflow: "hidden", borderRadius: 100 },
   segment: {
     flexDirection: "row",
     backgroundColor: "#F1F5F9",
@@ -190,11 +138,7 @@ const styles = StyleSheet.create({
     padding: 3,
     gap: 2,
   },
-  segmentBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
+  segmentBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   segmentActive: { backgroundColor: "#22C55E" },
   segmentText: { fontSize: 10, fontWeight: "700", color: "#94A3B8" },
   textWhite: { color: "#fff" },
@@ -210,6 +154,16 @@ const styles = StyleSheet.create({
   },
   btnOn: { backgroundColor: "#22C55E", borderColor: "#22C55E40" },
   btnOff: { backgroundColor: "#F8FAFC", borderColor: "#F1F5F9" },
-  btnDisabled: { backgroundColor: "#F0FDF4", opacity: 0.6 },
+  btnDisabled: { opacity: 0.5 },
   btnText: { fontSize: 12, fontWeight: "700" },
+  autoInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 8,
+    padding: 8,
+    marginTop: 8,
+  },
+  autoInfoText: { fontSize: 10, color: "#64748B", flex: 1 },
 });

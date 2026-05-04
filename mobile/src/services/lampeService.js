@@ -4,7 +4,7 @@ import api from "./api";
 export const controlLamp = async (id, mode, action) => {
   try {
     // Utilise la route PATCH configurée dans le backend
-    const response = await api.patch(`/lampe/${id}/control`, {
+    const response = await api.post(`/lampe/${id}/control`, {
       mode, // 'auto' ou 'manual'
       action, // 'on' ou 'off'
     });

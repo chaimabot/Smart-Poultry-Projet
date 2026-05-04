@@ -95,7 +95,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             fontWeight: "500",
           }}
         >
-          Connexion MQTT...
+          Chargement ...
         </Text>
       </SafeAreaView>
     );

@@ -1,4 +1,3 @@
-// tabs/HistoryTab.js
 import React, { useState } from "react";
 import {
   View,
@@ -12,15 +11,14 @@ import { MaterialIcons } from "@expo/vector-icons";
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function isSensor(alert) {
-  const sensorTypes = [
+  return [
     "temperature",
     "humidity",
     "co2",
     "nh3",
     "dust",
     "water_level",
-  ];
-  return sensorTypes.includes((alert.type || "").toLowerCase());
+  ].includes(alert.type);
 }
 
 function detectActuatorKind(alert) {
@@ -36,43 +34,22 @@ function detectActuatorKind(alert) {
 function formatTime(ts) {
   if (!ts) return "";
   const d = new Date(ts);
-  const today = new Date();
-  const isToday =
-    d.getDate() === today.getDate() &&
-    d.getMonth() === today.getMonth() &&
-    d.getFullYear() === today.getFullYear();
-
-  if (isToday) {
-    return (
-      "Aujourd'hui à " +
-      d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
-    );
-  }
-  return (
-    d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" }) +
-    " à " +
-    d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
-  );
+  return d.toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
-// ─── Textes lisibles pour l'éleveur ──────────────────────────────────────────
-
+// ─── Textes simplifiés ────────────────────────────────────────────────────────
 const SENSOR_LABELS = {
   temperature: "Température",
   humidity: "Humidité",
-  co2: "Qualité de l'air (CO2)",
-  nh3: "Gaz ammoniaque (NH3)",
-  dust: "Poussière dans l'air",
+  co2: "CO₂",
+  nh3: "NH₃",
+  dust: "Poussière",
   water_level: "Niveau d'eau",
-};
-
-const SENSOR_ICONS = {
-  temperature: "thermostat",
-  humidity: "water-drop",
-  co2: "co2",
-  nh3: "warning",
-  dust: "grain",
-  water_level: "water",
 };
 
 const ACTUATOR_LABELS = {
@@ -80,100 +57,76 @@ const ACTUATOR_LABELS = {
   lamp: "Lampe",
   door: "Porte",
   pump: "Pompe",
-  other: "Équipement",
 };
 
-const ACTUATOR_ICONS = {
-  fan: "air",
-  lamp: "lightbulb",
-  door: "sensor-door",
-  pump: "water",
-  other: "settings",
-};
-
-// Explications lisibles selon le type d'événement
-function getEventTitle(alert) {
+// Génère un message clair et concis
+function getEventMessage(alert) {
   if (isSensor(alert)) {
     const label = SENSOR_LABELS[alert.type] || alert.type;
-    const danger = alert.severity === "danger";
-    return danger
-      ? `⚠ ${label} à un niveau dangereux`
-      : `${label} hors de la plage normale`;
+    const severity = alert.severity === "danger" ? "CRITIQUE" : "ATTENTION";
+    const value = alert.value ? ` (${alert.value}${getUnit(alert.type)})` : "";
+    return `Alerte : ${label} trop ${alert.direction === "above" ? "élevée" : "basse"}${value}`;
   }
+
   const kind = detectActuatorKind(alert);
   const label = ACTUATOR_LABELS[kind] || "Équipement";
-  if (alert.auto) return `${label} activé automatiquement`;
-  return `${label} commandé manuellement`;
-}
+  const action = alert.state === "on" ? "démarré" : "arrêté";
+  const mode = alert.auto ? "automatiquement" : "manuellement";
+  const reason = getReason(alert);
 
-function getEventDescription(alert) {
-  // Utilise le message brut s'il est lisible, sinon construit un message clair
-  if (alert.message && alert.message.length > 0) return alert.message;
-
-  if (isSensor(alert)) {
-    return "Le capteur a détecté une valeur anormale. Vérifiez le poulailler.";
+  if (kind === "door") {
+    const doorAction = alert.state === "open" ? "ouverte" : "fermée";
+    return `Action : Porte ${doorAction} ${mode}${reason ? ` (${reason})` : ""}`;
   }
-  const kind = detectActuatorKind(alert);
-  if (kind === "fan")
-    return alert.auto
-      ? "Le ventilateur s'est déclenché pour corriger la température ou l'humidité."
-      : "Vous avez allumé ou éteint le ventilateur.";
-  if (kind === "lamp")
-    return alert.auto
-      ? "La lampe s'est allumée automatiquement selon le programme."
-      : "Vous avez allumé ou éteint la lampe.";
-  if (kind === "door")
-    return alert.auto
-      ? "La porte s'est ouverte ou fermée automatiquement."
-      : "Vous avez commandé la porte.";
-  if (kind === "pump")
-    return alert.auto
-      ? "La pompe s'est activée automatiquement pour remplir l'eau."
-      : "Vous avez activé ou arrêté la pompe.";
-  return "Action enregistrée.";
+
+  return `Action : ${label} ${action} ${mode}${reason ? ` (${reason})` : ""}`;
 }
 
-// ─── Config visuelle par type d'événement ────────────────────────────────────
+function getReason(alert) {
+  if (!alert.message) return "";
 
+  const msg = alert.message.toLowerCase();
+  if (msg.includes("humidité")) return "humidité anormale";
+  if (msg.includes("température")) return "température anormale";
+  if (msg.includes("co₂") || msg.includes("co2"))
+    return "qualité de l'air dégradée";
+  if (msg.includes("nh₃") || msg.includes("nh3")) return "gaz toxique détecté";
+  if (msg.includes("poussière")) return "poussière excessive";
+  if (msg.includes("niveau d'eau")) return "niveau d'eau bas";
+  return "";
+}
+
+function getUnit(type) {
+  const units = {
+    temperature: "°C",
+    humidity: "%",
+    co2: "ppm",
+    nh3: "ppm",
+    dust: "µg/m³",
+    water_level: "%",
+  };
+  return units[type] || "";
+}
+
+// ─── Config visuelle ────────────────────────────────────────────────────────
 function getCardStyle(alert) {
   if (isSensor(alert)) {
-    const danger = alert.severity === "danger";
     return {
-      accentColor: danger ? "#A32D2D" : "#854F0B",
-      accentBg: danger ? "#FCEBEB" : "#FAEEDA",
-      borderColor: danger ? "#F09595" : "#FAC775",
-      tagLabel: danger ? "Niveau critique" : "Valeur anormale",
-      tagColor: danger ? "#A32D2D" : "#854F0B",
-      tagBg: danger ? "#FCEBEB" : "#FAEEDA",
-    };
-  }
-  if (alert.auto) {
-    return {
-      accentColor: "#0F6E56",
-      accentBg: "#E1F5EE",
-      borderColor: "#9FE1CB",
-      tagLabel: "Automatique",
-      tagColor: "#0F6E56",
-      tagBg: "#E1F5EE",
+      icon: "warning",
+      color: alert.severity === "danger" ? "#DC2626" : "#D97706",
+      bgColor: alert.severity === "danger" ? "#FEE2E2" : "#FEF3C7",
+      borderColor: alert.severity === "danger" ? "#FCA5A5" : "#FDE68A",
     };
   }
   return {
-    accentColor: "#185FA5",
-    accentBg: "#E6F1FB",
-    borderColor: "#B5D4F4",
-    tagLabel: "Manuel",
-    tagColor: "#185FA5",
-    tagBg: "#E6F1FB",
+    icon: "settings",
+    color: "#059669",
+    bgColor: "#D1FAE5",
+    borderColor: "#6EE7B7",
   };
 }
 
-function getIcon(alert) {
-  if (isSensor(alert)) return SENSOR_ICONS[alert.type] || "sensors";
-  return ACTUATOR_ICONS[detectActuatorKind(alert)] || "notifications";
-}
-
-// ─── Carte événement ──────────────────────────────────────────────────────────
-
+// ─── Carte événement simplifiée ───────────────────────────────────────────────
 function EventCard({ alert }) {
   const style = getCardStyle(alert);
   const unread = !alert.read;
@@ -182,60 +135,52 @@ function EventCard({ alert }) {
     <View
       style={{
         backgroundColor: "#fff",
-        borderRadius: 14,
+        borderRadius: 12,
         borderWidth: 1,
         borderColor: style.borderColor,
         padding: 14,
         marginBottom: 10,
         flexDirection: "row",
         gap: 12,
-        // Point bleu pour non-lu
-        ...(unread
-          ? { borderLeftWidth: 3, borderLeftColor: style.accentColor }
-          : {}),
       }}
     >
       {/* Icône */}
       <View
         style={{
-          width: 42,
-          height: 42,
-          borderRadius: 12,
-          backgroundColor: style.accentBg,
+          width: 36,
+          height: 36,
+          borderRadius: 8,
+          backgroundColor: style.bgColor,
           alignItems: "center",
           justifyContent: "center",
-          flexShrink: 0,
         }}
       >
-        <MaterialIcons
-          name={getIcon(alert)}
-          size={22}
-          color={style.accentColor}
-        />
+        <MaterialIcons name={style.icon} size={18} color={style.color} />
       </View>
 
       {/* Contenu */}
       <View style={{ flex: 1 }}>
-        {/* Titre + heure */}
+        <Text
+          style={{
+            fontSize: 13,
+            fontWeight: "600",
+            color: "#1E293B",
+            lineHeight: 18,
+          }}
+        >
+          {getEventMessage(alert)}
+        </Text>
+
+        {/* Heure */}
         <View
           style={{
             flexDirection: "row",
             justifyContent: "space-between",
-            alignItems: "flex-start",
-            marginBottom: 4,
+            marginTop: 6,
           }}
         >
-          <Text
-            style={{
-              fontSize: 13,
-              fontWeight: "700",
-              color: "#1E293B",
-              flex: 1,
-              paddingRight: 8,
-              lineHeight: 18,
-            }}
-          >
-            {getEventTitle(alert)}
+          <Text style={{ fontSize: 11, color: "#64748B" }}>
+            {formatTime(alert.timestamp)}
           </Text>
           {unread && (
             <View
@@ -243,83 +188,33 @@ function EventCard({ alert }) {
                 width: 8,
                 height: 8,
                 borderRadius: 4,
-                backgroundColor: style.accentColor,
-                marginTop: 4,
-                flexShrink: 0,
+                backgroundColor: style.color,
               }}
             />
           )}
-        </View>
-
-        {/* Description claire */}
-        <Text
-          style={{
-            fontSize: 12,
-            color: "#475569",
-            lineHeight: 18,
-            marginBottom: 8,
-          }}
-        >
-          {getEventDescription(alert)}
-        </Text>
-
-        {/* Bas de carte : tag + heure */}
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: style.tagBg,
-              borderRadius: 20,
-              paddingHorizontal: 9,
-              paddingVertical: 3,
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 10,
-                fontWeight: "700",
-                color: style.tagColor,
-                textTransform: "uppercase",
-                letterSpacing: 0.3,
-              }}
-            >
-              {style.tagLabel}
-            </Text>
-          </View>
-          <Text style={{ fontSize: 11, color: "#94A3B8" }}>
-            {formatTime(alert.timestamp)}
-          </Text>
         </View>
       </View>
     </View>
   );
 }
 
-// ─── Filtres ──────────────────────────────────────────────────────────────────
-
+// ─── Filtres ────────────────────────────────────────────────────────────────
 const FILTERS = [
   { key: "all", label: "Tout", icon: "list" },
-  { key: "sensor", label: "Capteurs", icon: "sensors" },
+  { key: "sensor", label: "Alertes", icon: "warning" },
   { key: "fan", label: "Ventilateur", icon: "air" },
   { key: "lamp", label: "Lampe", icon: "lightbulb" },
-  { key: "door", label: "Porte", icon: "sensor-door" },
+  { key: "door", label: "Porte", icon: "door-sliding" },
   { key: "pump", label: "Pompe", icon: "water" },
 ];
 
 function matchesFilter(alert, key) {
   if (key === "all") return true;
   if (key === "sensor") return isSensor(alert);
-  if (isSensor(alert)) return false;
   return detectActuatorKind(alert) === key;
 }
 
-// ─── Composant principal ──────────────────────────────────────────────────────
-
+// ─── Composant principal ────────────────────────────────────────────────────
 export default function HistoryTab({
   alerts = [],
   onRefresh,
@@ -330,7 +225,6 @@ export default function HistoryTab({
   onMarkAllRead,
 }) {
   const [filter, setFilter] = useState("all");
-
   const unreadCount = alerts.filter((a) => !a.read).length;
 
   const filtered = [...alerts]
@@ -339,11 +233,7 @@ export default function HistoryTab({
 
   return (
     <ScrollView
-      contentContainerStyle={{
-        paddingTop: 20,
-        paddingBottom: 40,
-        paddingHorizontal: 16,
-      }}
+      contentContainerStyle={{ padding: 16, paddingBottom: 20 }}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
@@ -351,52 +241,36 @@ export default function HistoryTab({
           tintColor="#22C55E"
         />
       }
-      showsVerticalScrollIndicator={false}
     >
-      {/* ── En-tête ── */}
-      <View
-        style={{
-          flexDirection: "row",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
-      >
-        <View>
-          <Text style={{ fontSize: 15, fontWeight: "700", color: "#1E293B" }}>
-            Historique des événements
-          </Text>
-          <Text style={{ fontSize: 12, color: "#94A3B8", marginTop: 2 }}>
-            {alerts.length === 0
-              ? "Aucun événement enregistré"
-              : `${alerts.length} événement${alerts.length > 1 ? "s" : ""} au total`}
-          </Text>
-        </View>
+      {/* En-tête */}
+      <View style={{ marginBottom: 16 }}>
+        <Text style={{ fontSize: 18, fontWeight: "700", color: "#1E293B" }}>
+          Historique
+        </Text>
         {unreadCount > 0 && (
           <TouchableOpacity
             onPress={onMarkAllRead}
             style={{
+              marginTop: 12,
               backgroundColor: "#F0FDF4",
-              borderRadius: 20,
-              paddingHorizontal: 12,
-              paddingVertical: 7,
-              borderWidth: 1,
-              borderColor: "#BBF7D0",
+              padding: 10,
+              borderRadius: 8,
+              alignItems: "center",
             }}
           >
-            <Text style={{ fontSize: 12, fontWeight: "700", color: "#15803D" }}>
-              Tout marquer lu ({unreadCount})
+            <Text style={{ color: "#15803D", fontWeight: "600" }}>
+              Marquer tout comme lu ({unreadCount})
             </Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* ── Filtres ── */}
+      {/* Filtres */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
         style={{ marginBottom: 16 }}
-        contentContainerStyle={{ gap: 8, paddingRight: 4 }}
+        contentContainerStyle={{ gap: 8 }}
       >
         {FILTERS.map((f) => {
           const active = filter === f.key;
@@ -404,7 +278,9 @@ export default function HistoryTab({
             f.key === "all"
               ? alerts.length
               : alerts.filter((a) => matchesFilter(a, f.key)).length;
-          if (f.key !== "all" && count === 0) return null; // cache les filtres vides
+
+          if (f.key !== "all" && count === 0) return null;
+
           return (
             <TouchableOpacity
               key={f.key}
@@ -412,83 +288,47 @@ export default function HistoryTab({
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 5,
-                paddingHorizontal: 13,
+                gap: 6,
+                paddingHorizontal: 12,
                 paddingVertical: 8,
                 borderRadius: 20,
-                backgroundColor: active ? "#1E293B" : "#F8FAFC",
-                borderWidth: 1,
-                borderColor: active ? "#1E293B" : "#E2E8F0",
+                backgroundColor: active ? "#1E293B" : "#F3F4F6",
               }}
             >
               <MaterialIcons
                 name={f.icon}
-                size={13}
-                color={active ? "#fff" : "#64748B"}
+                size={16}
+                color={active ? "#fff" : "#4B5563"}
               />
               <Text
                 style={{
-                  fontSize: 12,
-                  fontWeight: "700",
-                  color: active ? "#fff" : "#64748B",
+                  color: active ? "#fff" : "#4B5563",
+                  fontSize: 13,
+                  fontWeight: "600",
                 }}
               >
-                {f.label}
+                {f.label} {count > 0 && `(${count})`}
               </Text>
-              <View
-                style={{
-                  backgroundColor: active ? "rgba(255,255,255,0.2)" : "#E2E8F0",
-                  borderRadius: 10,
-                  paddingHorizontal: 5,
-                  paddingVertical: 1,
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 10,
-                    fontWeight: "700",
-                    color: active ? "#fff" : "#64748B",
-                  }}
-                >
-                  {count}
-                </Text>
-              </View>
             </TouchableOpacity>
           );
         })}
       </ScrollView>
 
-      {/* ── Liste ── */}
+      {/* Liste des événements */}
       {filtered.length === 0 ? (
-        <View style={{ alignItems: "center", paddingVertical: 60, gap: 10 }}>
-          <View
-            style={{
-              width: 64,
-              height: 64,
-              borderRadius: 20,
-              backgroundColor: "#F8FAFC",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <MaterialIcons name="history" size={30} color="#CBD5E1" />
-          </View>
-          <Text style={{ fontSize: 14, fontWeight: "700", color: "#1E293B" }}>
-            Aucun événement ici
-          </Text>
-          <Text style={{ fontSize: 12, color: "#94A3B8", textAlign: "center" }}>
-            Tirez vers le bas pour actualiser.
+        <View style={{ alignItems: "center", padding: 40 }}>
+          <MaterialIcons name="history" size={48} color="#CBD5E1" />
+          <Text style={{ marginTop: 12, color: "#6B7280", fontSize: 14 }}>
+            Aucun événement trouvé
           </Text>
         </View>
       ) : (
-        <View>
-          {filtered.map((alert, idx) => (
-            <EventCard key={alert._id || idx} alert={alert} />
-          ))}
-        </View>
+        filtered.map((alert) => (
+          <EventCard key={alert._id || alert.timestamp} alert={alert} />
+        ))
       )}
 
-      {/* ── Bouton paramètres ── */}
+      {/* Bouton Paramètres */}
       {alerts.length > 0 && (
         <TouchableOpacity
           onPress={() =>
@@ -498,23 +338,16 @@ export default function HistoryTab({
             })
           }
           style={{
-            marginTop: 8,
+            marginTop: 20,
             padding: 14,
-            borderRadius: 14,
-            flexDirection: "row",
+            backgroundColor: "#F3F4F6",
+            borderRadius: 12,
             alignItems: "center",
-            justifyContent: "center",
-            gap: 8,
-            backgroundColor: "#F8FAFC",
-            borderWidth: 1,
-            borderColor: "#E2E8F0",
           }}
         >
-          <MaterialIcons name="tune" size={16} color="#64748B" />
-          <Text style={{ fontSize: 13, fontWeight: "700", color: "#64748B" }}>
+          <Text style={{ color: "#374151", fontWeight: "600" }}>
             Modifier les seuils d'alerte
           </Text>
-          <MaterialIcons name="chevron-right" size={17} color="#94A3B8" />
         </TouchableOpacity>
       )}
     </ScrollView>
