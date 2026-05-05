@@ -127,9 +127,21 @@ try {
   console.error("[ROUTES] pompe fail:", e.message);
 }
 try {
+  console.log("[ROUTES] Attempting to load lampe routes...");
   lampeRoutes = require("./routes/lampe");
+  console.log(
+    "[ROUTES] ✓ lampeRoutes loaded successfully:",
+    lampeRoutes.stack
+      ? "controller object"
+      : Object.keys(lampeRoutes._router ? "router" : lampeRoutes),
+  );
 } catch (e) {
-  console.error("[ROUTES] lampe fail:", e.message);
+  console.error("[ROUTES] ✗ lampe fail - FULL ERROR:", e);
+  console.error("[ROUTES] Stack:", e.stack);
+  console.error(
+    "[ROUTES] Checking files: ./routes/lampe.js exists?",
+    require("fs").existsSync("./routes/lampe.js"),
+  );
 }
 try {
   ventilateurRoutes = require("./routes/ventilateur");
@@ -156,7 +168,12 @@ if (alertRoutes) app.use("/api/alerts", alertRoutes);
 if (systemConfigRoutes) app.use("/api/system-config", systemConfigRoutes);
 if (modulesRoutes) app.use("/api/modules", modulesRoutes);
 if (pompeRoutes) app.use("/api/pompe", pompeRoutes);
-if (lampeRoutes) app.use("/api/lampe", lampeRoutes);
+if (lampeRoutes) {
+  console.log("[ROUTES] Mounting /api/lampe ✓");
+  app.use("/api/lampe", lampeRoutes);
+} else {
+  console.error("[ROUTES] ❌ SKIPPING /api/lampe mount - routes undefined!");
+}
 if (ventilateurRoutes) app.use("/api/ventilateur", ventilateurRoutes);
 if (devicesRoutes) app.use("/api/devices", devicesRoutes);
 
