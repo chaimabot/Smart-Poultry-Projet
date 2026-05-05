@@ -333,24 +333,33 @@ const handleMqttMessage = async (topic, message) => {
 
 // ✅ Envoie la config complète (modes + seuils) à l'ESP32
 // Appelé à chaque réception de status pour resynchroniser l'ESP32
+// Dans mqttService.js — remplacer publishConfig par ceci :
+
 const publishConfig = (macAddress, poulailler) => {
   if (!client || !client.connected) return;
 
+  // ✅ On n'envoie QUE les seuils dans la config automatique.
+  // Les modes (fanMode, lampMode, pumpMode) ne sont PAS envoyés ici.
+  //
+  // Pourquoi ? Parce que publishConfig est appelé à chaque /status reçu
+  // de l'ESP32. Si on envoie lampMode:"auto" → l'ESP32 active le mode auto
+  // → publie /status {lampAuto:true} → backend re-publie config → boucle infinie.
+  //
+  // Les modes sont envoyés UNIQUEMENT par les routes dédiées :
+  //   - PATCH /lampe/:id/control       → cmd/lamp  {mode, on}
+  //   - PATCH /ventilateur/:id/control → cmd/fan   {mode, on}
+  //   - PATCH /pompe/:id/control       → cmd/pump  {mode, on}
   const config = {
     tempMin: poulailler.thresholds.temperatureMin,
     tempMax: poulailler.thresholds.temperatureMax,
     waterMin: poulailler.thresholds.waterLevelMin,
     co2Max: poulailler.thresholds.co2Max,
-    // ✅ Les modes viennent de la BD — l'ESP32 va les appliquer
-    fanMode: poulailler.actuatorStates.ventilation.mode,
-    lampMode: poulailler.actuatorStates.lamp.mode,
-    pumpMode: poulailler.actuatorStates.pump.mode,
   };
 
   const topic = `poulailler/${macAddress}/config`;
   client.publish(topic, JSON.stringify(config), { qos: 1 });
   console.log(
-    `[MQTT] Config envoyée à ${macAddress} — fan:${config.fanMode} lamp:${config.lampMode} pump:${config.pumpMode}`,
+    `[MQTT] Config seuils envoyée à ${macAddress} — tempMin:${config.tempMin} tempMax:${config.tempMax}`,
   );
 };
 
