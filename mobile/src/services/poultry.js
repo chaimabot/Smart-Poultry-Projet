@@ -145,6 +145,7 @@ export const getMonitoringData = async (id) => {
   }
 };
 
+// ✅ CORRIGÉ — déclaration complète de la fonction
 // Envoie une commande pour contrôler un actionneur
 export const controlActuator = async (id, actuator, state, mode = "manual") => {
   try {
@@ -213,7 +214,6 @@ export const getAlerts = async (poulaillerId, params = {}) => {
     const response = await api.get(`/alerts/poulailler/${poulaillerId}`, {
       params,
     });
-    // Support les deux formats : { success, data: [...] } ou tableau direct
     return response.data;
   } catch (error) {
     throw error.response ? error.response.data : { error: "Erreur réseau" };
@@ -306,19 +306,7 @@ export const deleteBulkAlerts = async (alertIds) => {
     throw error.response ? error.response.data : { error: "Erreur réseau" };
   }
 };
-export async function updateActuator(
-  poultryId,
-  actuator,
-  state,
-  mode = "manual",
-) {
-  const res = await api.patch(`/poulaillers/${poultryId}/actuators`, {
-    actuator,
-    state,
-    mode,
-  });
-  return res.data;
-}
+
 // ── POST /api/alerts ─────────────────────────────────────────────────────────
 // Crée une alerte liée à un actionneur (porte, ventilateur, lampe)
 export const createActuatorAlert = async (poultryId, actuator, state) => {
@@ -334,5 +322,15 @@ export const createActuatorAlert = async (poultryId, actuator, state) => {
   } catch (error) {
     console.error("[poultry] createActuatorAlert error:", error.message);
     return null;
+  }
+};
+
+// ── GET /api/poulaillers/:id/commands ── Historique commandes
+export const getPoulaillerCommands = async (poultryId) => {
+  try {
+    const response = await api.get(`/poulaillers/${poultryId}/commands`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
   }
 };

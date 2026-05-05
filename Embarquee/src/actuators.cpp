@@ -236,7 +236,7 @@ void actuators_tick(float temp, float water, float co2) {
     else if (temp > _th.tempMax) actuators_setLamp(false);
   }
   if (_state.fanAuto) {
-    if (temp > _th.tempMax || co2 > 1000.0f) actuators_setFan(true);
+    if (temp > _th.tempMax || co2 > _th.co2Max) actuators_setFan(true);
     else                                      actuators_setFan(false);
   }
   if (_state.pumpAuto) {

@@ -361,6 +361,7 @@ export default function ControlsTab({
   actuators,
   toggleFanAuto,
   setFan,
+  fanAutoReason,
   toggleLampAuto,
   setLamp,
   toggleDoor,
@@ -402,6 +403,7 @@ export default function ControlsTab({
         <SectionGestionVentilateur
           fanOn={actuators.fan}
           fanAuto={actuators.fanAuto}
+          fanAutoReason={fanAutoReason} // ← AJOUTE ÇA !
           onToggleAuto={toggleFanAuto}
           onFanOn={() => setFan(true)}
           onFanOff={() => setFan(false)}

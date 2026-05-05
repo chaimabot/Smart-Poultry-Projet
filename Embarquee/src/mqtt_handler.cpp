@@ -10,7 +10,6 @@
 extern String DEVICE_ID;
 
 // Topics initialisés dynamiquement dans mqtt_init()
-// (DEVICE_ID n'est pas encore disponible au chargement statique)
 String TOPIC_BASE     = "";
 String TOPIC_MEASURES = "";
 String TOPIC_STATUS   = "";
@@ -31,7 +30,6 @@ void mqtt_init(PubSubClient& client, WiFiClientSecure& sClient) {
   client.setServer(MQTT_BROKER, MQTT_PORT);
   client.setCallback(onMessage);
 
-  // Construction des topics avec l'adresse MAC
   TOPIC_BASE     = "poulailler/" + DEVICE_ID + "/";
   TOPIC_MEASURES = TOPIC_BASE + "measures";
   TOPIC_STATUS   = TOPIC_BASE + "status";
@@ -48,10 +46,11 @@ void mqtt_init(PubSubClient& client, WiFiClientSecure& sClient) {
 // =========================================================
 void mqtt_loop(PubSubClient& client) {
   static unsigned long lastReconnect = 0;
+
   if (!client.connected()) {
     if (millis() - lastReconnect > 5000) {
       lastReconnect = millis();
-      // Client ID unique basé sur l'adresse MAC
+
       String clientId = "ESP32-" + DEVICE_ID;
       if (client.connect(clientId.c_str(), MQTT_USER, MQTT_PASS)) {
         Serial.println("[MQTT] Connecte au broker (ID: " + clientId + ")");
@@ -75,14 +74,14 @@ void mqtt_publishMeasures(PubSubClient& client, const SensorData& data) {
 
   StaticJsonDocument<384> doc;
   doc["temperature"]       = round(data.temperature * 10) / 10.0;
-  doc["humidity"]          = round(data.humidity    * 10) / 10.0;
+  doc["humidity"]          = round(data.humidity * 10) / 10.0;
   doc["co2"]               = (int)data.co2;
-  doc["nh3"]               = round(data.nh3         * 10) / 10.0;
-  doc["airQualityPercent"] = (int)data.airQualityPercent;
-  doc["nh3DigitalAlert"]   = data.nh3DigitalAlert;
-  doc["waterLevel"]        = round(data.waterLevel  * 10) / 10.0;
+  doc["nh3"]               = round(data.nh3 * 10) / 10.0;
+  doc["airQualityPercent"]  = (int)data.airQualityPercent;
+  doc["nh3DigitalAlert"]    = data.nh3DigitalAlert;
+  doc["waterLevel"]        = round(data.waterLevel * 10) / 10.0;
   doc["timestamp"]         = millis();
-  doc["deviceId"]          = DEVICE_ID; // Inclus dans la payload pour faciliter le backend
+  doc["deviceId"]          = DEVICE_ID;
 
   char buf[512];
   serializeJson(doc, buf);
@@ -97,14 +96,13 @@ void mqtt_publishStatus(PubSubClient& client, const ActuatorState& state) {
   doc["lampOn"]    = state.lampOn;
   doc["pumpOn"]    = state.pumpOn;
   doc["fanOn"]     = state.fanOn;
-  // Champ booléen rétro-compat + état riche texte
-  doc["doorOpen"]  = state.doorOpen();                           // true si OPEN ou OPENING
-  doc["doorState"] = actuators_doorStateName(state.doorState);  // "OPEN","CLOSED","OPENING"...
+  doc["doorOpen"]  = state.doorOpen();
+  doc["doorState"] = actuators_doorStateName(state.doorState);
   doc["lampAuto"]  = state.lampAuto;
   doc["pumpAuto"]  = state.pumpAuto;
   doc["fanAuto"]   = state.fanAuto;
   doc["doorAuto"]  = _doorSched.active;
-  doc["deviceId"]  = DEVICE_ID; // Inclus dans la payload pour faciliter le backend
+  doc["deviceId"]  = DEVICE_ID;
 
   char buf[512];
   serializeJson(doc, buf);
@@ -115,66 +113,107 @@ void mqtt_publishStatus(PubSubClient& client, const ActuatorState& state) {
 //  Callback messages entrants
 // =========================================================
 void onMessage(char* topic, byte* payload, unsigned int length) {
-  String msg = "";
-  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  String msg;
+  msg.reserve(length + 1);
+
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
 
   StaticJsonDocument<768> doc;
-  if (deserializeJson(doc, msg)) {
-    Serial.println("[MQTT] JSON invalide — message ignore");
+  DeserializationError err = deserializeJson(doc, msg);
+  if (err) {
+    Serial.print("[MQTT] JSON invalide — ");
+    Serial.println(err.c_str());
     return;
   }
 
   String t = String(topic);
 
-  // ---- Commandes porte --------------------------------
+  // -------------------------------------------------------
+  // Porte
+  // -------------------------------------------------------
   if (t == TOPIC_CMD_DOOR) {
-    const char* action = doc["action"];
-    if (!action) return;
-
-    if      (strcmp(action, "open")  == 0) actuators_moveDoor(true);
-    else if (strcmp(action, "close") == 0) actuators_moveDoor(false);
-    else if (strcmp(action, "stop")  == 0) actuators_stopDoor();
-    else {
+    const char* action = doc["action"] | "";
+    if (strcmp(action, "open") == 0) {
+      actuators_moveDoor(true);
+    } else if (strcmp(action, "close") == 0) {
+      actuators_moveDoor(false);
+    } else if (strcmp(action, "stop") == 0) {
+      actuators_stopDoor();
+    } else {
       Serial.printf("[MQTT] Action porte inconnue : %s\n", action);
     }
+
     mqtt_publishStatus(mqttClient, _state);
     return;
   }
 
-  // ---- Commandes lampe --------------------------------
+  // -------------------------------------------------------
+  // Lampe
+  // -------------------------------------------------------
   if (t == TOPIC_CMD_LAMP) {
     bool on = doc["on"] | false;
-    const char* mode = doc["mode"];
+    const char* mode = doc["mode"] | "manual";
+
+    if (strcmp(mode, "auto") == 0) {
+      actuators_setLampAuto(true);
+      Serial.println("[MQTT] Lampe -> AUTO");
+    } else {
+      actuators_setLampAuto(false);
+      Serial.println("[MQTT] Lampe -> MANUAL");
+    }
+
     actuators_setLamp(on);
-    if      (mode && strcmp(mode, "manual") == 0) actuators_setLampAuto(false);
-    else if (mode && strcmp(mode, "auto")   == 0) actuators_setLampAuto(true);
     mqtt_publishStatus(mqttClient, _state);
     return;
   }
 
-  // ---- Commandes pompe --------------------------------
+  // -------------------------------------------------------
+  // Pompe
+  // -------------------------------------------------------
   if (t == TOPIC_CMD_PUMP) {
     bool on = doc["on"] | false;
-    const char* mode = doc["mode"];
+    const char* mode = doc["mode"] | "manual";
+
+    if (strcmp(mode, "auto") == 0) {
+      actuators_setPumpAuto(true);
+      Serial.println("[MQTT] Pompe -> AUTO");
+    } else {
+      actuators_setPumpAuto(false);
+      Serial.println("[MQTT] Pompe -> MANUAL");
+    }
+
     actuators_setPump(on);
-    if      (mode && strcmp(mode, "manual") == 0) actuators_setPumpAuto(false);
-    else if (mode && strcmp(mode, "auto")   == 0) actuators_setPumpAuto(true);
     mqtt_publishStatus(mqttClient, _state);
     return;
   }
 
-  // ---- Commandes ventilateur --------------------------
+  // -------------------------------------------------------
+  // Ventilateur
+  // -------------------------------------------------------
   if (t == TOPIC_CMD_FAN) {
     bool on = doc["on"] | false;
-    const char* mode = doc["mode"];
+    const char* mode = doc["mode"] | "manual";
+
+    if (strcmp(mode, "auto") == 0) {
+      actuators_setFanAuto(true);
+      Serial.println("[MQTT] Ventilateur -> AUTO");
+    } else {
+      actuators_setFanAuto(false);
+      Serial.println("[MQTT] Ventilateur -> MANUAL");
+    }
+
     actuators_setFan(on);
-    if      (mode && strcmp(mode, "manual") == 0) actuators_setFanAuto(false);
-    else if (mode && strcmp(mode, "auto")   == 0) actuators_setFanAuto(true);
+    Serial.printf("[MQTT] FAN cmd reçue — mode=%s on=%d\n", mode, on ? 1 : 0);
+
     mqtt_publishStatus(mqttClient, _state);
     return;
   }
 
-  // ---- Configuration & planning -----------------------
+  // -------------------------------------------------------
+  // Configuration & planning
+  // -------------------------------------------------------
   if (t == TOPIC_CONFIG) {
     if (doc.containsKey("doorSched")) {
       _doorSched.openH  = doc["doorSched"]["openH"]  | _doorSched.openH;
@@ -182,22 +221,49 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       _doorSched.closeH = doc["doorSched"]["closeH"] | _doorSched.closeH;
       _doorSched.closeM = doc["doorSched"]["closeM"] | _doorSched.closeM;
       _doorSched.active = doc["doorSched"]["active"] | _doorSched.active;
+
       actuators_saveSched();
-      Serial.printf("[MQTT] Planning mis a jour : O=%02d:%02d F=%02d:%02d actif=%d\n",
+
+      Serial.printf(
+        "[MQTT] Planning mis à jour : O=%02d:%02d F=%02d:%02d actif=%d\n",
         _doorSched.openH, _doorSched.openM,
         _doorSched.closeH, _doorSched.closeM,
-        _doorSched.active);
+        _doorSched.active
+      );
     }
+
     if (doc.containsKey("currentTime")) {
       actuators_updateTime(
         doc["currentTime"]["h"] | 0,
         doc["currentTime"]["m"] | 0
       );
     }
+
     if (doc.containsKey("tempMin"))  _th.tempMin  = doc["tempMin"];
     if (doc.containsKey("tempMax"))  _th.tempMax  = doc["tempMax"];
-    if (doc.containsKey("waterMin")) _th.waterMin = doc["waterMin"];
+    if (doc.containsKey("waterMin")) _th.waterMin  = doc["waterMin"];
+    if (doc.containsKey("co2Max"))   _th.co2Max   = doc["co2Max"];
+
+    // ✅ Restaurer les modes depuis la BD (envoyés par le backend)
+    if (doc.containsKey("fanMode")) {
+      bool isAuto = strcmp(doc["fanMode"] | "manual", "auto") == 0;
+      actuators_setFanAuto(isAuto);
+      Serial.printf("[MQTT] fanMode restaure -> %s\n", isAuto ? "AUTO" : "MANUAL");
+    }
+    if (doc.containsKey("lampMode")) {
+      bool isAuto = strcmp(doc["lampMode"] | "manual", "auto") == 0;
+      actuators_setLampAuto(isAuto);
+      Serial.printf("[MQTT] lampMode restaure -> %s\n", isAuto ? "AUTO" : "MANUAL");
+    }
+    if (doc.containsKey("pumpMode")) {
+      bool isAuto = strcmp(doc["pumpMode"] | "manual", "auto") == 0;
+      actuators_setPumpAuto(isAuto);
+      Serial.printf("[MQTT] pumpMode restaure -> %s\n", isAuto ? "AUTO" : "MANUAL");
+    }
 
     mqtt_publishStatus(mqttClient, _state);
+    return;
   }
+
+  Serial.printf("[MQTT] Topic non géré : %s\n", t.c_str());
 }

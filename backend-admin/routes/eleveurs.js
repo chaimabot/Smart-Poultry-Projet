@@ -48,7 +48,14 @@ router.put("/:id", updateEleveur);
 // Basculer le statut d'un breeder (activer/désactiver)
 router.put("/:id/toggle-status", async (req, res) => {
   try {
+    console.log("[DEBUG] Toggle status - Starting for user:", req.params.id);
+
     const user = await User.findById(req.params.id);
+    console.log(
+      "[DEBUG] User found:",
+      !!user,
+      user ? { _id: user._id, role: user.role, isActive: user.isActive } : null,
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -64,9 +71,15 @@ router.put("/:id/toggle-status", async (req, res) => {
       });
     }
 
+    console.log("[DEBUG] Before save - isActive:", user.isActive);
+
     // Inverser le statut
     user.isActive = !user.isActive;
-    await user.save();
+    console.log("[DEBUG] After toggle - isActive:", user.isActive);
+
+    console.log("[DEBUG] Calling user.save()...");
+    const savedUser = await user.save();
+    console.log("[DEBUG] Save successful:", !!savedUser);
 
     res.json({
       success: true,
@@ -78,9 +91,11 @@ router.put("/:id/toggle-status", async (req, res) => {
     });
   } catch (err) {
     console.error("[TOGGLE STATUS ERROR]", err);
+    console.error("[DEBUG] Error stack:", err.stack);
     res.status(500).json({
       success: false,
       error: "Erreur lors de la mise à jour",
+      details: err.message,
     });
   }
 });

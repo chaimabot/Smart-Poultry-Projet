@@ -43,3 +43,4 @@
 #define DEFAULT_TEMP_MAX         30.0f
 #define DEFAULT_WATER_MIN        25.0f
 #define DEFAULT_WATER_HYSTERESIS 10.0f
+#define DEFAULT_CO2_MAX          1000.0f

@@ -1,5 +1,3 @@
-// Code à copier-coller dans PoultryDetailScreen.js après les state variables
-
 import realtimeService from "../../services/realtimeService";
 import { SENSOR_CONFIG } from "../../hooks/sensorConfig";
 

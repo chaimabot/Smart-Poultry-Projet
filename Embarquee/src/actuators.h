@@ -43,6 +43,7 @@ struct Thresholds {
   float tempMax         = DEFAULT_TEMP_MAX;
   float waterMin        = DEFAULT_WATER_MIN;
   float waterHysteresis = DEFAULT_WATER_HYSTERESIS;
+  float co2Max          = DEFAULT_CO2_MAX;
 };
 
 extern ActuatorState _state;

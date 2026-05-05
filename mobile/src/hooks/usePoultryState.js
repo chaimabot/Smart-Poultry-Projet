@@ -9,7 +9,6 @@ import {
   markAllAlertsAsRead,
   getThresholds,
   getDeviceByPoulailler,
-  updatePoultry,
   controlActuator,
 } from "../services/poultry";
 
@@ -66,7 +65,7 @@ const THRESHOLD_MAP = {
   waterLevel: { min: "waterLevelMin", max: null },
 };
 
-// ── Statut capteur : danger = dépassement du seuil (pas de marge) ───────────
+// ── Statut capteur ────────────────────────────────────────────────────────────
 function calculateSensorStatus(key, value, dbThresholds) {
   const numVal = Number(value);
   if (isNaN(numVal) || !dbThresholds) return "normal";
@@ -77,30 +76,27 @@ function calculateSensorStatus(key, value, dbThresholds) {
   const max = map.max ? Number(dbThresholds[map.max]) : null;
   const min = map.min ? Number(dbThresholds[map.min]) : null;
 
-  if (max !== null && numVal > max) return "danger"; // Plus de warn → direct danger
+  if (max !== null && numVal > max) return "danger";
   if (min !== null && numVal < min) return "danger";
 
   return "normal";
 }
 
-// ── Affichage seuils (danger = seuil max) ───────────────────────────────────
 export function buildThresholdsForDisplay(dbThresholds) {
   if (!dbThresholds) return {};
   const result = {};
   for (const key of Object.keys(THRESHOLD_MAP)) {
     const map = THRESHOLD_MAP[key];
     if (map.max && dbThresholds[map.max] != null) {
-      const maxVal = Number(dbThresholds[map.max]);
-      result[key] = { danger: `> ${maxVal}` }; // Danger direct au seuil
+      result[key] = { danger: `> ${Number(dbThresholds[map.max])}` };
     } else if (map.min && dbThresholds[map.min] != null) {
-      const minVal = Number(dbThresholds[map.min]);
-      result[key] = { danger: `< ${minVal}` };
+      result[key] = { danger: `< ${Number(dbThresholds[map.min])}` };
     }
   }
   return result;
 }
 
-// ── AUTO ventilateur : ON dès que température > temperatureMax (30°C) ───────
+// ── Logique AUTO ventilateur ──────────────────────────────────────────────────
 function shouldFanBeOn(sensorsArray, thresholds) {
   if (!thresholds) {
     return { shouldBeOn: false, reason: "Seuils non configurés" };
@@ -122,20 +118,19 @@ function shouldFanBeOn(sensorsArray, thresholds) {
 
   if (temp !== null && tempMax !== null && temp > tempMax) {
     const reason = `Température > ${tempMax}°C (${temp}°C)`;
-    console.log(`[AUTO-FAN] ${reason} → Fan ON`);
     return { shouldBeOn: true, reason };
   }
 
   if (co2 !== null && co2Max !== null && co2 > co2Max) {
     const reason = `CO2 > ${co2Max} ppm (${co2} ppm)`;
-    console.log(`[AUTO-FAN] ${reason} → Fan ON`);
     return { shouldBeOn: true, reason };
   }
 
-  const reason = "Conditions normales";
-  console.log(`[AUTO-FAN] ${reason} → Fan OFF`);
-  return { shouldBeOn: false, reason };
+  return { shouldBeOn: false, reason: "Conditions normales" };
 }
+
+// ── Durée sans données avant de passer "Hors ligne" (ms) ─────────────────────
+const DATA_TIMEOUT_MS = 15_000; // 15 secondes
 
 // ── Hook principal ───────────────────────────────────────────────────────────
 export default function usePoultryState({ poultryId, poultryName }) {
@@ -151,10 +146,16 @@ export default function usePoultryState({ poultryId, poultryName }) {
   const autoFanDecisionRef = useRef(null);
   const triggerAutoFanRef = useRef(null);
 
+  // ── Ref du timer "pas de données" ────────────────────────────────────────
+  const dataTimeoutRef = useRef(null);
+
   const [macAddress, setMacAddress] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // isConnected = true uniquement si on reçoit des données fraîches de l'ESP32
   const [isConnected, setIsConnected] = useState(false);
+
   const [alertCount, setAlertCount] = useState(0);
   const [alerts, setAlerts] = useState([]);
   const [thresholds, setThresholds] = useState(null);
@@ -190,9 +191,12 @@ export default function usePoultryState({ poultryId, poultryName }) {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      // Nettoyer le timer au démontage
+      if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current);
     };
   }, []);
 
+  // ── Animation pulse ───────────────────────────────────────────────────────
   useEffect(() => {
     const anim = Animated.loop(
       Animated.sequence([
@@ -212,7 +216,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     return () => anim.stop();
   }, []);
 
-  // Mise à jour statut capteurs
   useEffect(() => {
     thresholdsRef.current = thresholds;
     if (!thresholds) return;
@@ -226,6 +229,25 @@ export default function usePoultryState({ poultryId, poultryName }) {
       })),
     );
   }, [thresholds]);
+
+  // ── Réinitialise le timer "données ESP32" ─────────────────────────────────
+  // Appelé à chaque message /measures ou /status reçu de l'ESP32.
+  // Si aucun message n'arrive pendant DATA_TIMEOUT_MS, on passe hors ligne.
+  const resetDataTimeout = useCallback(() => {
+    if (!isMountedRef.current) return;
+
+    // Marquer comme connecté dès réception d'un message
+    setIsConnected(true);
+
+    // Annuler l'ancien timer et en démarrer un nouveau
+    if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current);
+    dataTimeoutRef.current = setTimeout(() => {
+      if (isMountedRef.current) {
+        console.log("[ESP32] Aucune donnée reçue depuis 15s → Hors ligne");
+        setIsConnected(false);
+      }
+    }, DATA_TIMEOUT_MS);
+  }, []);
 
   const sendFanCommand = useCallback((on) => {
     const client = mqttClientRef.current;
@@ -290,14 +312,13 @@ export default function usePoultryState({ poultryId, poultryName }) {
         });
 
         const savedMode = data?.actuatorStates?.ventilation?.mode;
-        const savedStatus = data?.actuatorStates?.ventilation?.status;
         const isAuto = savedMode === "auto";
 
         fanAutoRef.current = isAuto;
         setActuators((prev) => ({
           ...prev,
           fanAuto: isAuto,
-          fan: savedStatus === "on",
+          fan: data?.actuatorStates?.ventilation?.status === "on",
         }));
       }
     } catch (e) {
@@ -321,7 +342,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
     await fetchAlerts();
   }, [poultryId, poultryName, fetchAlerts]);
 
-  // MQTT (inchangé sauf la partie measures)
+  // ── MQTT ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!poultryId || !macAddress) return;
     let client;
@@ -344,9 +365,19 @@ export default function usePoultryState({ poultryId, poultryName }) {
 
     client.on("connect", () => {
       if (!isMountedRef.current) return;
-      setIsConnected(true);
+      // NE PAS mettre isConnected=true ici.
+      // On attend les vraies données de l'ESP32.
       client.subscribe(`poulailler/${macAddress}/measures`);
       client.subscribe(`poulailler/${macAddress}/status`);
+      console.log("[MQTT] Broker connecté — en attente de données ESP32...");
+    });
+
+    // Broker déconnecté → hors ligne immédiatement
+    client.on("offline", () => {
+      if (!isMountedRef.current) return;
+      console.log("[MQTT] Broker hors ligne → Hors ligne");
+      setIsConnected(false);
+      if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current);
     });
 
     client.on("message", (topic, message) => {
@@ -355,6 +386,9 @@ export default function usePoultryState({ poultryId, poultryName }) {
         const data = JSON.parse(message.toString());
 
         if (topic.endsWith("/measures")) {
+          // ✅ Données reçues de l'ESP32 → connecté + reset timer
+          resetDataTimeout();
+
           setSensors((prev) => {
             const updated = prev.map((sensor) => {
               const raw = data[sensor.key];
@@ -375,7 +409,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
             if (fanAutoRef.current && rawThresholdsRef.current) {
               const result = shouldFanBeOn(updated, rawThresholdsRef.current);
               autoFanDecisionRef.current = result.shouldBeOn;
-              setFanAutoReason(result.reason); // Raison mise à jour
+              setFanAutoReason(result.reason);
               triggerAutoFanRef.current?.();
             }
 
@@ -384,40 +418,46 @@ export default function usePoultryState({ poultryId, poultryName }) {
         }
 
         if (topic.endsWith("/status")) {
+          // ✅ Status reçu de l'ESP32 → connecté + reset timer
+          resetDataTimeout();
+
           setActuators((prev) => ({
             ...prev,
+            fanAuto: fanAutoRef.current,
             fan: fanAutoRef.current ? prev.fan : (data.fanOn ?? prev.fan),
             lamp: data.lampOn ?? prev.lamp,
-            fanAuto: prev.fanAuto,
             lampAuto: data.lampAuto ?? prev.lampAuto,
             door: data.doorOpen ?? prev.door,
             doorState: data.doorState ?? prev.doorState,
             doorMoving:
               data.doorState === "OPENING" || data.doorState === "CLOSING",
           }));
+
           setPumpData({
             pumpOn: data.pumpOn ?? false,
             pumpAuto: data.pumpAuto ?? false,
           });
-          if (data.doorAuto !== undefined)
+
+          if (data.doorAuto !== undefined) {
             setDoorMode(data.doorAuto ? "horaire" : "manuel");
+          }
         }
       } catch (e) {
         console.error("[MQTT] parse error:", e?.message);
       }
     });
 
-    // ... cleanup
     return () => {
       if (client) {
         client.removeAllListeners();
         client.end(true);
       }
       mqttClientRef.current = null;
+      if (dataTimeoutRef.current) clearTimeout(dataTimeoutRef.current);
+      setIsConnected(false);
     };
-  }, [macAddress]);
+  }, [macAddress, resetDataTimeout]);
 
-  // Chargement initial
   useEffect(() => {
     if (!poultryId) {
       setLoading(false);
@@ -430,31 +470,32 @@ export default function usePoultryState({ poultryId, poultryName }) {
     })();
   }, [poultryId]);
 
-  // Toggle AUTO
   const toggleFanAuto = useCallback(async () => {
     const newAuto = !fanAutoRef.current;
     fanAutoRef.current = newAuto;
     lastFanAutoCmd.current = null;
-
     setActuators((prev) => ({ ...prev, fanAuto: newAuto }));
 
     try {
-      // ✅ Utilise API actionneurs au lieu de updatePoultry générique
       await controlActuator(
         poultryId,
         "ventilation",
-        actuators.fan,
+        "off",
         newAuto ? "auto" : "manual",
       );
-      console.log(`[DB] Mode ventilateur → ${newAuto ? "auto" : "manual"}`);
     } catch (e) {
-      console.error("[API] Erreur sauvegarde ventilateur:", e.message);
+      console.error("[API] Erreur sauvegarde mode:", e?.message);
+      fanAutoRef.current = !newAuto;
+      setActuators((prev) => ({ ...prev, fanAuto: !newAuto }));
+      return;
     }
 
     if (newAuto) {
+      await fetchThresholds();
       setSensors((current) => {
-        if (rawThresholdsRef.current) {
-          const result = shouldFanBeOn(current, rawThresholdsRef.current);
+        const freshThresholds = rawThresholdsRef.current;
+        if (freshThresholds) {
+          const result = shouldFanBeOn(current, freshThresholds);
           setFanAutoReason(result.reason);
           sendFanCommand(result.shouldBeOn);
         } else {
@@ -467,14 +508,19 @@ export default function usePoultryState({ poultryId, poultryName }) {
       setFanAutoReason("");
       sendFanCommand(false);
     }
-  }, [sendFanCommand, poultryId, actuators.fan]);
+  }, [poultryId, sendFanCommand, fetchThresholds]);
 
   const setFan = useCallback(
     async (v) => {
       if (fanAutoRef.current) return;
       sendFanCommand(v);
       try {
-        await createActuatorAlert(poultryId, "fan", v);
+        await controlActuator(
+          poultryId,
+          "ventilation",
+          v ? "on" : "off",
+          "manual",
+        );
         await fetchAlerts();
       } catch (e) {
         console.warn("[setFan]", e?.message);
@@ -482,8 +528,6 @@ export default function usePoultryState({ poultryId, poultryName }) {
     },
     [sendFanCommand, poultryId, fetchAlerts],
   );
-
-  // ... autres handlers (lamp, pump, door, etc.) inchangés
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -510,7 +554,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
     pulseAnim,
     toggleFanAuto,
     setFan,
-    fanAutoReason, // Raison affichée
+    fanAutoReason,
     onRefresh,
   };
 }

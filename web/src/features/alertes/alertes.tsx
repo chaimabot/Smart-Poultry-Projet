@@ -42,13 +42,6 @@ interface Eleveur {
   email: string;
 }
 
-interface AlertesStats {
-  actives: number;
-  critiques: number;
-  poulaillersEnAlerte: number;
-  dernieres24h: number;
-}
-
 const parameterLabels: Record<string, string> = {
   temperature: "Température",
   humidity: "Humidité",
@@ -59,29 +52,6 @@ const parameterLabels: Record<string, string> = {
   waterLevel: "Niveau d'eau",
 };
 
-// Fonction pour calculer la durée de l'alerte
-function getAlertDuration(createdAt: string, resolvedAt?: string): string {
-  if (!resolvedAt) return "En cours";
-
-  const start = new Date(createdAt);
-  const end = new Date(resolvedAt);
-  const diffMs = end.getTime() - start.getTime();
-
-  const minutes = Math.floor(diffMs / 60000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) {
-    return `${days}j ${hours % 24}h`;
-  } else if (hours > 0) {
-    return `${hours}h ${minutes % 60}min`;
-  } else if (minutes > 0) {
-    return `${minutes}min`;
-  }
-  return "< 1min";
-}
-
-// Format date for display
 function formatDateTime(dateString: string): string {
   const date = new Date(dateString);
   return date.toLocaleString("fr-FR", {
@@ -97,15 +67,12 @@ export default function Alertes() {
   const [alertes, setAlertes] = useState<Alerte[]>([]);
   const [poulaillers, setPoulaillers] = useState<Poulailler[]>([]);
   const [eleveurs, setEleveurs] = useState<Eleveur[]>([]);
-  const [stats, setStats] = useState<AlertesStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filtres
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
   const [filters, setFilters] = useState({
-    severity: "",
     resolved: "",
     read: "",
     parameter: "",
@@ -121,7 +88,6 @@ export default function Alertes() {
   });
   const [selectedAlertes, setSelectedAlertes] = useState<string[]>([]);
 
-  // Charger la liste des poulaillers
   const fetchPoulaillers = async () => {
     try {
       const response = await poulaillersAPI.getAll({ limit: 1000 });
@@ -131,23 +97,12 @@ export default function Alertes() {
     }
   };
 
-  // Charger la liste des éleveurs
   const fetchEleveurs = async () => {
     try {
       const response = await eleveursAPI.getAll({ limit: 1000 });
       setEleveurs(response.data.data || []);
     } catch (err) {
       console.error("Erreur fetchEleveurs:", err);
-    }
-  };
-
-  // Charger les statistiques
-  const fetchStats = async () => {
-    try {
-      const response = await alertesAPI.getStats();
-      setStats(response.data.data);
-    } catch (err) {
-      console.error("Erreur stats:", err);
     }
   };
 
@@ -162,7 +117,6 @@ export default function Alertes() {
 
       if (dateStart) params.startDate = dateStart;
       if (dateEnd) params.endDate = dateEnd;
-      if (filters.severity) params.severity = filters.severity;
       if (filters.resolved !== "") params.resolved = filters.resolved;
       if (filters.read !== "") params.read = filters.read;
       if (filters.parameter) params.parameter = filters.parameter;
@@ -184,10 +138,6 @@ export default function Alertes() {
   };
 
   useEffect(() => {
-    fetchStats();
-  }, []);
-
-  useEffect(() => {
     fetchAlertes();
   }, [filters, pagination.page, dateStart, dateEnd]);
 
@@ -196,36 +146,14 @@ export default function Alertes() {
     fetchEleveurs();
   }, []);
 
-  const handleMarkAsRead = async (id: string) => {
-    try {
-      await alertesAPI.markAsRead(id);
-      fetchAlertes();
-      fetchStats();
-    } catch (err) {
-      console.error("Erreur markAsRead:", err);
-    }
-  };
-
   const handleMarkAllAsRead = async () => {
     if (!confirm("Voulez-vous marquer toutes les alertes comme lues?")) return;
     try {
       const allIds = alertes.map((a) => a.id);
       await alertesAPI.markMultipleAsRead(allIds);
       fetchAlertes();
-      fetchStats();
     } catch (err) {
       console.error("Erreur markAllAsRead:", err);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm("Êtes-vous sûr de vouloir supprimer cette alerte?")) return;
-    try {
-      await alertesAPI.delete(id);
-      fetchAlertes();
-      fetchStats();
-    } catch (err) {
-      console.error("Erreur delete:", err);
     }
   };
 
@@ -251,7 +179,6 @@ export default function Alertes() {
       await alertesAPI.markMultipleAsRead(selectedAlertes);
       setSelectedAlertes([]);
       fetchAlertes();
-      fetchStats();
     } catch (err) {
       console.error("Erreur markMultipleAsRead:", err);
     }
@@ -259,7 +186,6 @@ export default function Alertes() {
 
   const clearFilters = () => {
     setFilters({
-      severity: "",
       resolved: "",
       read: "",
       parameter: "",
@@ -271,7 +197,6 @@ export default function Alertes() {
     setPagination((prev) => ({ ...prev, page: 1 }));
   };
 
-  // Compter les alertes non lues
   const nonLuesCount = alertes.filter((a) => !a.read).length;
 
   return (
@@ -291,77 +216,8 @@ export default function Alertes() {
                   Supervision globale de toutes les alertes
                 </p>
               </div>
-              {nonLuesCount > 0 && (
-                <button
-                  onClick={handleMarkAllAsRead}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium flex items-center gap-2"
-                >
-                  <span className="material-symbols-outlined text-sm">
-                    done_all
-                  </span>
-                  Tout marquer comme lu
-                </button>
-              )}
             </div>
           </div>
-
-          {/* KPIs */}
-          {stats && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="material-symbols-outlined text-orange-500">
-                    warning
-                  </span>
-                  <span className="text-xs font-medium text-slate-500 uppercase">
-                    En cours
-                  </span>
-                </div>
-                <p className="text-2xl font-bold text-slate-900 dark:text-white">
-                  {stats.actives}
-                </p>
-              </div>
-              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="material-symbols-outlined text-red-500">
-                    error
-                  </span>
-                  <span className="text-xs font-medium text-slate-500 uppercase">
-                    Critiques
-                  </span>
-                </div>
-                <p className="text-2xl font-bold text-red-600">
-                  {stats.critiques}
-                </p>
-              </div>
-              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="material-symbols-outlined text-slate-500">
-                    home
-                  </span>
-                  <span className="text-xs font-medium text-slate-500 uppercase">
-                    Poulaillers en alerte
-                  </span>
-                </div>
-                <p className="text-2xl font-bold text-slate-900 dark:text-white">
-                  {stats.poulaillersEnAlerte}
-                </p>
-              </div>
-              <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="material-symbols-outlined text-blue-500">
-                    schedule
-                  </span>
-                  <span className="text-xs font-medium text-slate-500 uppercase">
-                    24 dernières heures
-                  </span>
-                </div>
-                <p className="text-2xl font-bold text-slate-900 dark:text-white">
-                  {stats.dernieres24h}
-                </p>
-              </div>
-            </div>
-          )}
 
           {/* Filtres */}
           <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 mb-6">
@@ -372,14 +228,14 @@ export default function Alertes() {
                   type="date"
                   value={dateStart}
                   onChange={(e) => setDateStart(e.target.value)}
-                  className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
+                  className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
                 />
                 <span className="text-slate-500">à</span>
                 <input
                   type="date"
                   value={dateEnd}
                   onChange={(e) => setDateEnd(e.target.value)}
-                  className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
+                  className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
                 />
               </div>
 
@@ -389,7 +245,7 @@ export default function Alertes() {
                 onChange={(e) =>
                   setFilters({ ...filters, eleveurId: e.target.value })
                 }
-                className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm min-w-[160px]"
+                className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm min-w-[160px]"
               >
                 <option value="">Tous les éleveurs</option>
                 {eleveurs.map((e) => (
@@ -405,7 +261,7 @@ export default function Alertes() {
                 onChange={(e) =>
                   setFilters({ ...filters, poulaillerId: e.target.value })
                 }
-                className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm min-w-[160px]"
+                className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm min-w-[160px]"
               >
                 <option value="">Tous les poulaillers</option>
                 {poulaillers.map((p) => (
@@ -421,7 +277,7 @@ export default function Alertes() {
                 onChange={(e) =>
                   setFilters({ ...filters, parameter: e.target.value })
                 }
-                className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
+                className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
               >
                 <option value="">Tous paramètres</option>
                 <option value="temperature">Température</option>
@@ -438,24 +294,11 @@ export default function Alertes() {
                 onChange={(e) =>
                   setFilters({ ...filters, read: e.target.value })
                 }
-                className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
+                className="px-3 py-1.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
               >
                 <option value="">Toutes</option>
                 <option value="true">Lues</option>
                 <option value="false">Non lues</option>
-              </select>
-
-              {/* Filtre sévérité */}
-              <select
-                value={filters.severity}
-                onChange={(e) =>
-                  setFilters({ ...filters, severity: e.target.value })
-                }
-                className="px-3 py-1.5 pr-8 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-sm"
-              >
-                <option value="">Toutes sévérités</option>
-                <option value="critical">Critique</option>
-                <option value="warning">Avertissement</option>
               </select>
 
               <button
@@ -533,19 +376,10 @@ export default function Alertes() {
                           Seuil
                         </th>
                         <th className="px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase">
-                          Sévérité
-                        </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase">
                           Date
                         </th>
                         <th className="px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase">
-                          Durée
-                        </th>
-                        <th className="px-3 py-3 text-left text-xs font-medium text-slate-500 uppercase">
                           Statut
-                        </th>
-                        <th className="px-3 py-3 text-right text-xs font-medium text-slate-500 uppercase">
-                          Actions
                         </th>
                       </tr>
                     </thead>
@@ -553,7 +387,7 @@ export default function Alertes() {
                       {alertes.length === 0 ? (
                         <tr>
                           <td
-                            colSpan={11}
+                            colSpan={8}
                             className="px-6 py-8 text-center text-slate-500"
                           >
                             Aucune alerte trouvée
@@ -621,27 +455,8 @@ export default function Alertes() {
                                 </span>
                               )}
                             </td>
-                            <td className="px-3 py-4">
-                              <span
-                                className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
-                                  alerte.severity === "critical"
-                                    ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-                                    : "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-                                }`}
-                              >
-                                {alerte.severity === "critical"
-                                  ? "Critique"
-                                  : "Avertissement"}
-                              </span>
-                            </td>
                             <td className="px-3 py-4 text-slate-500 text-sm">
                               {formatDateTime(alerte.createdAt)}
-                            </td>
-                            <td className="px-3 py-4 text-slate-500 text-sm">
-                              {getAlertDuration(
-                                alerte.createdAt,
-                                alerte.resolvedAt,
-                              )}
                             </td>
                             <td className="px-3 py-4">
                               {!alerte.read ? (
@@ -653,39 +468,6 @@ export default function Alertes() {
                                   Lue
                                 </span>
                               )}
-                            </td>
-                            <td className="px-3 py-4">
-                              <div className="flex items-center justify-end gap-1">
-                                <Link
-                                  to={`/poulaillers/${alerte.poulailler?.id}`}
-                                  className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                  title="Voir le poulailler"
-                                >
-                                  <span className="material-symbols-outlined text-sm">
-                                    open_in_new
-                                  </span>
-                                </Link>
-                                {!alerte.read && (
-                                  <button
-                                    onClick={() => handleMarkAsRead(alerte.id)}
-                                    className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                    title="Marquer comme lu"
-                                  >
-                                    <span className="material-symbols-outlined text-sm">
-                                      mark_email_read
-                                    </span>
-                                  </button>
-                                )}
-                                <button
-                                  onClick={() => handleDelete(alerte.id)}
-                                  className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                  title="Supprimer"
-                                >
-                                  <span className="material-symbols-outlined text-sm">
-                                    delete
-                                  </span>
-                                </button>
-                              </div>
                             </td>
                           </tr>
                         ))

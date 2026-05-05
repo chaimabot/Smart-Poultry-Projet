@@ -39,7 +39,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
   const [showNotifPopup, setShowNotifPopup] = useState(false);
 
   const {
-    // state
     loading,
     refreshing,
     isConnected,
@@ -58,8 +57,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
     setDoorSchedule,
     pulseAnim,
     stopDoor,
-    // handlers
     toggleFanAuto,
+    fanAutoReason,
     toggleLampAuto,
     setFan,
     setLamp,
@@ -73,9 +72,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
     onRefresh,
   } = usePoultryState({ poultryId, poultryName });
 
-  // ── FIX 1 : attendre que poultryInfo soit disponible ─────────────────────
-  // `loading` peut passer à false avant que le backend renvoie poultryInfo.
-  // On garde l'écran de chargement tant que l'objet est absent ou vide.
   if (loading || !poultryInfo) {
     return (
       <SafeAreaView
@@ -101,12 +97,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
     );
   }
 
-  // ── Valeur de secours pour le nom (FIX 2) ────────────────────────────────
-  // Utilisée partout où poultryInfo.name est lu, au cas où le champ
-  // arriverait null/undefined même après le guard ci-dessus.
   const displayName = poultryInfo?.name || poultryName || "Poulailler";
 
-  // ── Render ───────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F8FAFC" }}>
       <StatusBar barStyle="dark-content" />
@@ -147,7 +139,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
 
         {/* Title + connection status */}
         <View style={{ flex: 1, alignItems: "center", marginHorizontal: 12 }}>
-          {/* ✅ FIX 2 — sécurisé avec displayName */}
           <Text
             style={{ fontSize: 16, fontWeight: "800", color: "#1E293B" }}
             numberOfLines={1}
@@ -171,8 +162,14 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 transform: [{ scale: isConnected ? pulseAnim : 1 }],
               }}
             />
-            <Text style={{ fontSize: 11, color: "#94A3B8", fontWeight: "500" }}>
-              {isConnected ? "MQTT connecté" : "Hors ligne"}
+            <Text
+              style={{
+                fontSize: 11,
+                fontWeight: "500",
+                color: isConnected ? "#22C55E" : "#EF4444",
+              }}
+            >
+              {isConnected ? "connecté" : "Hors ligne"}
             </Text>
           </View>
         </View>
@@ -233,7 +230,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
             onPress={() =>
               navigation.navigate("AlertSettingsScreen", {
                 poultryId,
-                // ✅ FIX 2 — sécurisé avec displayName
                 poultryName: displayName,
               })
             }
@@ -313,6 +309,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             isConnected={isConnected}
             actuators={actuators}
             toggleFanAuto={toggleFanAuto}
+            fanAutoReason={fanAutoReason}
             setFan={setFan}
             toggleLampAuto={toggleLampAuto}
             setLamp={setLamp}
@@ -343,7 +340,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
             refreshing={refreshing}
             navigation={navigation}
             poultryId={poultryId}
-            // ✅ FIX 2 — sécurisé avec displayName
             poultryName={displayName}
           />
         )}
