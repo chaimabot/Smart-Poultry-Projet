@@ -43,6 +43,23 @@ const lampeService = {
     client.publish(topic, payload, { qos: 1 });
     console.log(`[MQTT→ESP32] ${topic}: ${payload}`);
 
+    // =========================================================================
+    // ✅ CORRECTION CRITIQUE : sauvegarder le mode ET le statut en base
+    // Sans ça, fetchPoultryInfo lit toujours actuatorStates.lamp = undefined
+    // → lampAutoRef reste false → le mobile croit toujours être en mode manuel
+    // =========================================================================
+    await Poulailler.findByIdAndUpdate(id, {
+      $set: {
+        "actuatorStates.lamp.mode": mode, // "auto" ou "manual"
+        "actuatorStates.lamp.status": action, // "on" ou "off"
+        "actuatorStates.lamp.updatedAt": new Date(),
+      },
+    });
+
+    console.log(
+      `[DB] actuatorStates.lamp mis à jour → mode: ${mode}, status: ${action}`,
+    );
+
     // Garder une trace de la commande en base
     return await Command.create({
       poulailler: id,
