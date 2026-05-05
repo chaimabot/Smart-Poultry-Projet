@@ -80,7 +80,7 @@ const poulaillerSchema = new mongoose.Schema(
       },
       lamp: {
         status: { type: String, enum: ["on", "off"], default: "off" },
-        mode: { type: String, enum: ["auto", "manual"], default: "auto" },
+        mode: { type: String, enum: ["auto", "manual"], default: "manual" }, // ← CHANGÉ
       },
       pump: {
         status: { type: String, enum: ["on", "off"], default: "off" },
