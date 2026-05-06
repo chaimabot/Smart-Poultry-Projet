@@ -108,9 +108,7 @@ async function getDefaultThresholds() {
       temperatureMax: 28,
       humidityMin: 40,
       humidityMax: 70,
-      co2Max: 1500,
-      nh3Max: 25,
-      dustMax: 150,
+      airQualityMin: 20, // ← remplace co2Max, nh3Max, dustMax
       waterLevelMin: 20,
     };
   }
@@ -508,17 +506,26 @@ exports.getCriticalPoulaillers = async (req, res) => {
 exports.getThresholds = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
 
-    res.status(200).json({ success: true, data: poulailler.thresholds });
+    const t = poulailler.thresholds.toObject();
+
+    // Normaliser : mapper les anciens champs → airQualityMin
+    const normalized = {
+      temperatureMin: t.temperatureMin,
+      temperatureMax: t.temperatureMax,
+      humidityMin: t.humidityMin,
+      humidityMax: t.humidityMax,
+      airQualityMin: t.airQualityMin ?? t.co2Max ?? 20, // ← fallback anciens champs
+      waterLevelMin: t.waterLevelMin,
+    };
+
+    res.status(200).json({ success: true, data: normalized });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
@@ -533,29 +540,31 @@ exports.getThresholds = async (req, res) => {
 exports.updateThresholds = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
-
-    if (!poulailler) {
+    if (!poulailler)
       return res
         .status(404)
         .json({ success: false, error: "Poulailler non trouvé" });
-    }
-    if (poulailler.owner.toString() !== req.user.id) {
+    if (poulailler.owner.toString() !== req.user.id)
       return res.status(403).json({ success: false, error: "Non autorisé" });
-    }
+
+    const t = poulailler.thresholds.toObject();
+
+    // Supprimer les anciens champs de la BD au passage
+    const { co2Max, nh3Max, dustMax, ...cleanOld } = t;
 
     poulailler.thresholds = {
-      ...poulailler.thresholds.toObject(),
-      ...req.body,
+      ...cleanOld,
+      ...req.body, // contient airQualityMin envoyé par le mobile
     };
-    // FIX #13 : poulailler.thresholds est un sous-document Mongoose, pas un
-    //           plain object. Le spread `{ ...poulailler.thresholds }` copie les
-    //           propriétés du prototype Mongoose (getters/setters) ce qui peut
-    //           perdre des valeurs. `.toObject()` produit un plain object fiable.
-    await poulailler.save();
 
+    await poulailler.save();
     await syncConfig(req.params.id, mqttService);
 
-    res.status(200).json({ success: true, data: poulailler.thresholds });
+    // Retourner normalisé
+    const saved = poulailler.thresholds.toObject();
+    const { co2Max: _c, nh3Max: _n, dustMax: _d, ...normalized } = saved;
+
+    res.status(200).json({ success: true, data: normalized });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
@@ -940,8 +949,6 @@ exports.getMeasureHistory = async (req, res) => {
   }
 };
 
-
-
 // @desc    Obtenir l'historique des commandes d'un poulailler
 // @route   GET /api/poulaillers/:id/commands
 // @access  Private
@@ -951,10 +958,14 @@ exports.getPoulaillerCommands = async (req, res) => {
     const poulailler = await Poulailler.findById(req.params.id);
 
     if (!poulailler) {
-      return res.status(404).json({ success: false, error: "Poulailler non trouvé" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Poulailler non trouvé" });
     }
     if (poulailler.owner.toString() !== req.user.id) {
-      return res.status(403).json({ success: false, error: "Accès non autorisé" });
+      return res
+        .status(403)
+        .json({ success: false, error: "Accès non autorisé" });
     }
 
     const commands = await Command.find({ poulailler: req.params.id })
@@ -962,17 +973,16 @@ exports.getPoulaillerCommands = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(50);
 
-    res.status(200).json({ 
-      success: true, 
-      count: commands.length, 
-      data: commands 
+    res.status(200).json({
+      success: true,
+      count: commands.length,
+      data: commands,
     });
   } catch (err) {
     console.error("[COMMANDS] Erreur:", err);
     res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 };
-
 
 // Export syncConfig pour usage dans mqttService
 exports.syncConfig = syncConfig;

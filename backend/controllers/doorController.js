@@ -140,7 +140,15 @@ exports.updateDoorSchedule = async (req, res) => {
     }
 
     await schedule.save();
-
+    // Mettre à jour door.mode dans Poulailler
+    try {
+      const Poulailler = require("../models/Poulailler");
+      await Poulailler.findByIdAndUpdate(id, {
+        "actuatorStates.door.mode": enabled !== false ? "auto" : "manual",
+      });
+    } catch (e) {
+      console.error("[DOOR] Erreur mise à jour door.mode:", e.message);
+    }
     try {
       await publishDoorConfig(id, schedule);
       console.log("[DOOR] Planning publie vers ESP32", {

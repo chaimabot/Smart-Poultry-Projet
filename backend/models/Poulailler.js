@@ -64,9 +64,7 @@ const poulaillerSchema = new mongoose.Schema(
       temperatureMax: { type: Number, default: 28 },
       humidityMin: { type: Number, default: 40 },
       humidityMax: { type: Number, default: 70 },
-      co2Max: { type: Number, default: 1500 },
-      nh3Max: { type: Number, default: 25 },
-      dustMax: { type: Number, default: 150 },
+      airQualityMin: { type: Number, default: 20 }, // % bon = danger si trop bas
       waterLevelMin: { type: Number, default: 20 },
     },
     actuatorStates: {
@@ -80,7 +78,7 @@ const poulaillerSchema = new mongoose.Schema(
       },
       lamp: {
         status: { type: String, enum: ["on", "off"], default: "off" },
-        mode: { type: String, enum: ["auto", "manual"], default: "manual" }, // ← CHANGÉ
+        mode: { type: String, enum: ["auto", "manual"], default: "manual" },
       },
       pump: {
         status: { type: String, enum: ["on", "off"], default: "off" },
@@ -90,9 +88,7 @@ const poulaillerSchema = new mongoose.Schema(
     lastMonitoring: {
       temperature: { type: Number, default: null },
       humidity: { type: Number, default: null },
-      co2: { type: Number, default: null },
-      nh3: { type: Number, default: null },
-      dust: { type: Number, default: null },
+      airQualityPercent: { type: Number, default: null }, // 0-100%, bas = mauvais
       waterLevel: { type: Number, default: null },
       timestamp: { type: Date, default: null },
     },
@@ -118,23 +114,19 @@ poulaillerSchema.virtual("hasAlert").get(function () {
       (m.temperature < t.temperatureMin || m.temperature > t.temperatureMax)) ||
     (m.humidity != null &&
       (m.humidity < t.humidityMin || m.humidity > t.humidityMax)) ||
-    (m.co2 != null && m.co2 > t.co2Max) ||
-    (m.nh3 != null && m.nh3 > t.nh3Max) ||
-    (m.dust != null && m.dust > t.dustMax) ||
+    (m.airQualityPercent != null && m.airQualityPercent < t.airQualityMin) ||
     (m.waterLevel != null && m.waterLevel < t.waterLevelMin)
   );
 });
-
-// FIXED: Removed middleware entirely - frontend calculates densite
-// poulaillerSchema.pre('save', async function(next) { ... });
 
 poulaillerSchema.methods.toMqttConfig = function () {
   return {
     tempMin: this.thresholds.temperatureMin,
     tempMax: this.thresholds.temperatureMax,
+    airQualityMin: this.thresholds.airQualityMin,
     waterMin: this.thresholds.waterLevelMin,
     waterHysteresis: 10,
-    lampMode: this.actuatorStates?.lamp?.mode ?? "auto",
+    lampMode: this.actuatorStates?.lamp?.mode ?? "manual",
     pumpMode: this.actuatorStates?.pump?.mode ?? "auto",
     fanMode: this.actuatorStates?.ventilation?.mode ?? "auto",
   };

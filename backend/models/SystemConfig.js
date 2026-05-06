@@ -1,103 +1,72 @@
-// models/SystemConfig.js
 const mongoose = require("mongoose");
 
-// Schéma pour la configuration système (seuils par défaut)
 const systemConfigSchema = new mongoose.Schema(
   {
-    // Identifiant unique (sera toujours "system" pour avoir un seul document)
     configId: {
       type: String,
       default: "default",
       unique: true,
     },
-    // Seuils par défaut pour les nouveaux poulaillers
     defaultThresholds: {
-      temperatureMin: {
-        type: Number,
-        default: 18,
-        min: -10,
-        max: 50,
-      },
-      temperatureMax: {
-        type: Number,
-        default: 28,
-        min: -10,
-        max: 50,
-      },
-      humidityMin: {
-        type: Number,
-        default: 40,
-        min: 0,
-        max: 100,
-      },
-      humidityMax: {
-        type: Number,
-        default: 70,
-        min: 0,
-        max: 100,
-      },
-      co2Max: {
-        type: Number,
-        default: 1500,
-        min: 0,
-        max: 10000,
-      },
-      co2Warning: {
-        type: Number,
-        default: 2500,
-        min: 0,
-        max: 10000,
-      },
-      co2Critical: {
-        type: Number,
-        default: 3000,
-        min: 0,
-        max: 10000,
-      },
-      nh3Max: {
-        type: Number,
-        default: 25,
-        min: 0,
-        max: 100,
-      },
-      dustMax: {
-        type: Number,
-        default: 150,
-        min: 0,
-        max: 1000,
-      },
-      waterLevelMin: {
-        type: Number,
-        default: 20,
-        min: 0,
-        max: 100,
-      },
+      temperatureMin: { type: Number, default: 18, min: -10, max: 50 },
+      temperatureMax: { type: Number, default: 28, min: -10, max: 50 },
+      humidityMin: { type: Number, default: 40, min: 0, max: 100 },
+      humidityMax: { type: Number, default: 70, min: 0, max: 100 },
+      airQualityMin: { type: Number, default: 20, min: 0, max: 100 }, // ← remplace co2Max/nh3Max/dustMax
+      waterLevelMin: { type: Number, default: 20, min: 0, max: 100 },
     },
   },
-  {
-    timestamps: true, // Ajoute createdAt et updatedAt automatiquement
-  },
+  { timestamps: true },
 );
 
-// Méthode statique pour obtenir ou créer la config
 systemConfigSchema.statics.getDefaultThresholds = async function () {
   let config = await this.findOne({ configId: "default" });
-
   if (!config) {
-    // Créer la config par défaut si elle n'existe pas
     config = await this.create({ configId: "default" });
   }
 
-  return config.defaultThresholds;
+  const t = config.defaultThresholds.toObject();
+
+  // Migration auto : si l'ancien doc en BD a co2Max mais pas airQualityMin
+  if (t.airQualityMin == null && t.co2Max != null) {
+    t.airQualityMin = 20; // valeur par défaut propre
+    await this.updateOne(
+      { configId: "default" },
+      {
+        "defaultThresholds.airQualityMin": 20,
+        $unset: {
+          "defaultThresholds.co2Max": "",
+          "defaultThresholds.co2Warning": "",
+          "defaultThresholds.co2Critical": "",
+          "defaultThresholds.nh3Max": "",
+          "defaultThresholds.dustMax": "",
+        },
+      },
+    );
+  }
+
+  return t;
 };
 
-// Méthode statique pour mettre à jour les seuils par défaut
 systemConfigSchema.statics.updateDefaultThresholds = async function (
   thresholds,
 ) {
+  // Nettoyer les anciens champs s'ils arrivent encore
+  const { co2Max, co2Warning, co2Critical, nh3Max, dustMax, ...clean } =
+    thresholds;
+
   const config = await this.findOneAndUpdate(
     { configId: "default" },
-    { defaultThresholds: thresholds },
+    {
+      defaultThresholds: clean,
+      $unset: {
+        "defaultThresholds.co2Max": "",
+        "defaultThresholds.co2Warning": "",
+        "defaultThresholds.co2Critical": "",
+        "defaultThresholds.nh3Max": "",
+        "defaultThresholds.dustMax": "",
+      },
+    },
     { new: true, upsert: true },
   );
 
