@@ -9,7 +9,6 @@ const alertSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ── Classification ────────────────────────────────────────────────────────
     type: {
       type: String,
       enum: ["sensor", "door", "actuator", "mqtt"],
@@ -22,12 +21,10 @@ const alertSchema = new mongoose.Schema(
       required: true,
     },
 
-    // ── Champs spécifiques capteur (optionnels) ───────────────────────────────
     parameter: {
       type: String,
-      // FIX: null is not a valid enum value in Mongoose — use sparse or just omit it
       enum: ["temperature", "humidity", "co2", "nh3", "dust", "waterLevel"],
-      default: undefined, // FIX: was `null`, which fails enum validation on non-sensor alerts
+      default: undefined,
     },
     value: {
       type: Number,
@@ -39,20 +36,54 @@ const alertSchema = new mongoose.Schema(
     },
     direction: {
       type: String,
-      enum: ["above", "below"], // FIX: removed `null` from enum — null is not a valid enum member in Mongoose
-      default: undefined, // FIX: use undefined so the field is simply absent when not applicable
+      enum: ["above", "below"],
+      default: undefined,
     },
 
-    // ── Champs affichage ──────────────────────────────────────────────────────
     message: {
       type: String,
       required: true,
     },
+
+    // ✅ CORRECTION : Icônes textuelles (noms Lucide) au lieu d'émojis
     icon: {
       type: String,
-      enum: ["⚠️", "🔴", "✅", "🌡️", "💧", "💨", "🚪", "🔌", "🐔"],
-      default: "⚠️",
+      enum: [
+        // Sévérité
+        "alert-circle",
+        "alert-triangle",
+        "info",
+
+        // Capteurs
+        "thermometer",
+        "droplets",
+        "wind",
+        "flask-conical",
+        "cloud-fog",
+        "cup-soda",
+
+        // Porte
+        "door-open",
+        "door-closed",
+        "door-warn",
+
+        // Actionneurs
+        "fan",
+        "fan-off",
+        "lightbulb",
+        "lightbulb-off",
+
+        // MQTT / Réseau
+        "wifi",
+        "wifi-off",
+
+        // Générique
+        "circle-check",
+        "circle-help",
+      ],
+      default: "circle-help",
     },
+
     severity: {
       type: String,
       enum: ["info", "warn", "danger"],
@@ -60,11 +91,10 @@ const alertSchema = new mongoose.Schema(
       default: "info",
     },
 
-    // ── État ──────────────────────────────────────────────────────────────────
     read: {
       type: Boolean,
       default: false,
-      index: true, // FIX: add index here since it's used heavily in queries
+      index: true,
     },
     resolvedAt: {
       type: Date,
@@ -76,7 +106,7 @@ const alertSchema = new mongoose.Schema(
   },
 );
 
-// ── Index ─────────────────────────────────────────────────────────────────────
+// Index
 alertSchema.index({ poulailler: 1, read: 1, createdAt: -1 });
 alertSchema.index({ poulailler: 1, type: 1, key: 1, severity: 1 });
 alertSchema.index({ poulailler: 1, severity: 1, createdAt: -1 });
