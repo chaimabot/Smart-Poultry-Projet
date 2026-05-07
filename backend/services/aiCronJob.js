@@ -1,95 +1,62 @@
 const cron = require("node-cron");
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
-const { captureFromESP32, analyzeWithGemini } = require("./aiService");
+const { publishCaptureTrigger, analyzeWithGemini } = require("./aiService");
+const { waitForImage } = require("../controllers/uploadController");
 
-// ============================================================
-// Cron job — Analyse automatique toutes les 2 heures
-// Déclenché par le backend sans intervention utilisateur
-// ============================================================
 function startAiCronJob() {
-  // "0 */2 * * *" = toutes les 2 heures pile
   cron.schedule("0 */2 * * *", async () => {
-    console.log(
-      "[CRON IA] Déclenchement analyse automatique :",
-      new Date().toISOString(),
-    );
+    console.log("[CRON IA] Déclenchement :", new Date().toISOString());
 
-    try {
-      // Récupérer tous les poulaillers actifs (non archivés)
-      const poulaillers = await Poulailler.find({ isArchived: false });
-      console.log(`[CRON IA] ${poulaillers.length} poulailler(s) à analyser`);
+    const poulaillers = await Poulailler.find({ isArchived: false });
 
-      for (const poulailler of poulaillers) {
-        const espIp = poulailler.espCamIp || process.env.ESP32_CAM_IP;
+    for (const poulailler of poulaillers) {
+      try {
+        const id = poulailler._id.toString();
+        const sensorData = {
+          temperature: poulailler.lastMonitoring?.temperature ?? null,
+          humidity: poulailler.lastMonitoring?.humidity ?? null,
+          co2: poulailler.lastMonitoring?.co2 ?? null,
+          nh3: poulailler.lastMonitoring?.nh3 ?? null,
+          animalCount: poulailler.animalCount,
+          surface: poulailler.surface,
+        };
 
-        if (!espIp) {
-          console.warn(
-            `[CRON IA] Pas d'IP ESP32-CAM pour ${poulailler._id} — ignoré`,
-          );
-          continue;
-        }
+        // 1. Trigger MQTT
+        await publishCaptureTrigger(id);
 
-        try {
-          console.log(
-            `[CRON IA] Analyse de ${poulailler.name} (${poulailler._id})`,
-          );
+        // 2. Attendre image (30 s)
+        const { image } = await waitForImage(id, sensorData, "auto");
 
-          // 1. Capture
-          const imageBase64 = await captureFromESP32(espIp);
+        // 3. Gemini
+        const geminiResult = await analyzeWithGemini(image, sensorData);
 
-          // 2. Données capteurs
-          const sensorData = {
-            temperature: poulailler.lastMonitoring?.temperature ?? null,
-            humidity: poulailler.lastMonitoring?.humidity ?? null,
-            co2: poulailler.lastMonitoring?.co2 ?? null,
-            nh3: poulailler.lastMonitoring?.nh3 ?? null,
-            animalCount: poulailler.animalCount,
-            surface: poulailler.surface,
-          };
+        // 4. Sauvegarde
+        await AiAnalysis.create({
+          poulaillerId: id,
+          triggeredBy: "auto",
+          sensors: sensorData,
+          result: geminiResult,
+        });
 
-          // 3. Analyse Gemini
-          const geminiResult = await analyzeWithGemini(imageBase64, sensorData);
+        console.log(
+          `[CRON IA] ✓ ${poulailler.name} — Score: ${geminiResult.healthScore}`,
+        );
 
-          // 4. Sauvegarde
-          const analysis = await AiAnalysis.create({
-            poulaillerId: poulailler._id,
-            triggeredBy: "auto",
-            sensors: sensorData,
-            result: geminiResult,
-          });
+        if (
+          geminiResult.urgencyLevel === "critique" ||
+          geminiResult.detections.mortalityDetected
+        )
+          console.warn(`[CRON IA] ⚠ ALERTE pour ${poulailler.name}`);
 
-          console.log(
-            `[CRON IA] ✓ ${poulailler.name} — Score: ${geminiResult.healthScore} | Urgence: ${geminiResult.urgencyLevel}`,
-          );
-
-          // 5. Alerte si critique
-          if (
-            geminiResult.urgencyLevel === "critique" ||
-            geminiResult.detections.mortalityDetected
-          ) {
-            console.warn(`[CRON IA] ⚠ ALERTE CRITIQUE pour ${poulailler.name}`);
-            // TODO : appeler Expo Push Notifications ici
-          }
-
-          // Pause 5s entre chaque poulailler pour respecter la limite Gemini (15 req/min)
-          await new Promise((resolve) => setTimeout(resolve, 5000));
-        } catch (err) {
-          // Erreur sur un poulailler → on logue et on continue avec les suivants
-          console.error(
-            `[CRON IA] ✗ Échec pour ${poulailler.name} :`,
-            err.message,
-          );
-        }
+        await new Promise((r) => setTimeout(r, 5000)); // pause Gemini rate limit
+      } catch (err) {
+        console.error(`[CRON IA] ✗ ${poulailler.name} :`, err.message);
       }
-
-      console.log("[CRON IA] Cycle terminé :", new Date().toISOString());
-    } catch (err) {
-      console.error("[CRON IA] Erreur générale :", err.message);
     }
   });
 
-  console.log("[CRON IA] Planificateur démarré — analyse toutes les 2 heures");
+  console.log("[CRON IA] Planificateur démarré");
 }
 
 module.exports = { startAiCronJob };
