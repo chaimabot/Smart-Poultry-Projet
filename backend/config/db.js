@@ -9,6 +9,8 @@ const connectDB = async () => {
     );
 
     console.log(`MongoDB Connecté: ${conn.connection.host}`);
+    const { startAiCronJob } = require("./services/aiCronJob");
+    startAiCronJob();
   } catch (error) {
     console.error(`Erreur de connexion MongoDB: ${error.message}`);
     process.exit(1); // Arrêter le processus avec échec

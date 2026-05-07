@@ -168,6 +168,15 @@ if (alertRoutes) app.use("/api/alerts", alertRoutes);
 if (systemConfigRoutes) app.use("/api/system-config", systemConfigRoutes);
 if (modulesRoutes) app.use("/api/modules", modulesRoutes);
 if (pompeRoutes) app.use("/api/pompe", pompeRoutes);
+if (devicesRoutes) app.use("/api/devices", devicesRoutes);
+// Route IA Vision
+try {
+  const aiRoutes = require("./routes/ai");
+  app.use("/api/ai", aiRoutes);
+  console.log("[ROUTES] ✓ ai chargé");
+} catch (e) {
+  console.error("[ROUTES] ai fail:", e.message);
+}
 if (lampeRoutes) {
   console.log("[ROUTES] Mounting /api/lampe ✓");
   app.use("/api/lampe", lampeRoutes);
