@@ -191,6 +191,12 @@ app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
 });
 
+// Test endpoint upload image (debug)
+app.post("/api/upload-image", (req, res) => {
+  console.log("IMAGE RECUE");
+  res.json({ success: true });
+});
+
 // Gestion des erreurs 404
 app.use((req, res, next) => {
   res.status(404).json({ success: false, error: "Route non trouvée" });
