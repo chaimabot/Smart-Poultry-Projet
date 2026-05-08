@@ -7,13 +7,11 @@ const cron = require("node-cron");
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
 const Alert = require("../models/Alert");
+const { pendingImages } = require("../controllers/aiController");
 const {
   publishCaptureTrigger,
   analyzeWithGemini,
 } = require("../services/aiService");
-
-// Map partagée avec aiController (ou utiliser Redis en production)
-const pendingImages = new Map();
 
 function startAiCronJob() {
   cron.schedule("0 */2 * * *", async () => {
@@ -43,18 +41,15 @@ function startAiCronJob() {
 
         const thresholds = poulailler.thresholds;
 
-        // 1. Trigger MQTT
         await publishCaptureTrigger(id);
         console.log(`[CRON IA] Trigger → ${poulailler.name}`);
 
-        // 2. Attendre image (polling sur pendingImages)
         const image = await waitForCronImage(id, 30000);
 
         if (!image) {
           console.warn(
             `[CRON IA] Pas d'image pour ${poulailler.name} — analyse capteurs uniquement`,
           );
-          // Analyse avec image vide (fallback capteurs)
           const aiResult = await analyzeWithGemini("", sensorData, thresholds);
 
           await AiAnalysis.create({
@@ -67,10 +62,8 @@ function startAiCronJob() {
           continue;
         }
 
-        // 3. Analyse complète
         const aiResult = await analyzeWithGemini(image, sensorData, thresholds);
 
-        // 4. Sauvegarde
         await AiAnalysis.create({
           poulaillerId: id,
           triggeredBy: "auto",
@@ -83,7 +76,6 @@ function startAiCronJob() {
           `[CRON IA] ✓ ${poulailler.name} — Score: ${aiResult.healthScore}`,
         );
 
-        // 5. Alerte critique
         if (
           aiResult.urgencyLevel === "critique" ||
           aiResult.detections.mortalityDetected
@@ -106,7 +98,6 @@ function startAiCronJob() {
         console.error(`[CRON IA] ✗ ${poulailler.name} :`, err.message);
       }
 
-      // Pause entre poulaillers
       await new Promise((r) => setTimeout(r, 5000));
     }
 
@@ -116,7 +107,6 @@ function startAiCronJob() {
   console.log("[CRON IA] Planificateur démarré (toutes les 2 heures)");
 }
 
-// Attend l'image avec polling
 async function waitForCronImage(poulaillerId, timeoutMs) {
   const id = poulaillerId.toString().trim();
   const start = Date.now();
@@ -133,5 +123,4 @@ async function waitForCronImage(poulaillerId, timeoutMs) {
   return null;
 }
 
-// Export pour partager pendingImages avec aiController
-module.exports = { startAiCronJob, pendingImages };
+module.exports = { startAiCronJob };
