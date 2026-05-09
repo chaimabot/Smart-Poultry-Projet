@@ -6,10 +6,8 @@
 #include "actuators.h"
 #include "sensors.h"
 
-// --- DEVICE_ID défini dans main.cpp (adresse MAC WiFi) ---
 extern String DEVICE_ID;
 
-// Topics initialisés dynamiquement dans mqtt_init()
 String TOPIC_BASE     = "";
 String TOPIC_MEASURES = "";
 String TOPIC_STATUS   = "";
@@ -26,7 +24,7 @@ extern PubSubClient  mqttClient;
 
 // =========================================================
 void mqtt_init(PubSubClient& client, WiFiClientSecure& sClient) {
-  sClient.setInsecure(); // Ajouter CA cert en production
+  sClient.setInsecure();
   client.setServer(MQTT_BROKER, MQTT_PORT);
   client.setCallback(onMessage);
 
@@ -73,15 +71,12 @@ void mqtt_publishMeasures(PubSubClient& client, const SensorData& data) {
   if (!client.connected()) return;
 
   StaticJsonDocument<384> doc;
-  doc["temperature"]       = round(data.temperature * 10) / 10.0;
-  doc["humidity"]          = round(data.humidity * 10) / 10.0;
-  doc["co2"]               = (int)data.co2;
-  doc["nh3"]               = round(data.nh3 * 10) / 10.0;
-  doc["airQualityPercent"]  = (int)data.airQualityPercent;
-  doc["nh3DigitalAlert"]    = data.nh3DigitalAlert;
-  doc["waterLevel"]        = round(data.waterLevel * 10) / 10.0;
-  doc["timestamp"]         = millis();
-  doc["deviceId"]          = DEVICE_ID;
+  doc["temperature"]      = round(data.temperature * 10) / 10.0;
+  doc["humidity"]         = round(data.humidity * 10) / 10.0;
+  doc["airQualityPercent"] = (int)data.airQualityPercent;
+  doc["waterLevel"]       = round(data.waterLevel * 10) / 10.0;
+  doc["timestamp"]        = millis();
+  doc["deviceId"]         = DEVICE_ID;
 
   char buf[512];
   serializeJson(doc, buf);
@@ -115,10 +110,7 @@ void mqtt_publishStatus(PubSubClient& client, const ActuatorState& state) {
 void onMessage(char* topic, byte* payload, unsigned int length) {
   String msg;
   msg.reserve(length + 1);
-
-  for (unsigned int i = 0; i < length; i++) {
-    msg += (char)payload[i];
-  }
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
 
   StaticJsonDocument<768> doc;
   DeserializationError err = deserializeJson(doc, msg);
@@ -131,26 +123,21 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
   String t = String(topic);
 
   // -------------------------------------------------------
-  // Porte
+  // Porte — publie status car action physique immédiate
   // -------------------------------------------------------
   if (t == TOPIC_CMD_DOOR) {
     const char* action = doc["action"] | "";
-    if (strcmp(action, "open") == 0) {
-      actuators_moveDoor(true);
-    } else if (strcmp(action, "close") == 0) {
-      actuators_moveDoor(false);
-    } else if (strcmp(action, "stop") == 0) {
-      actuators_stopDoor();
-    } else {
-      Serial.printf("[MQTT] Action porte inconnue : %s\n", action);
-    }
+    if      (strcmp(action, "open")  == 0) actuators_moveDoor(true);
+    else if (strcmp(action, "close") == 0) actuators_moveDoor(false);
+    else if (strcmp(action, "stop")  == 0) actuators_stopDoor();
+    else Serial.printf("[MQTT] Action porte inconnue : %s\n", action);
 
-    mqtt_publishStatus(mqttClient, _state);
+    mqtt_publishStatus(mqttClient, _state); // ✅ nécessaire — action physique
     return;
   }
 
   // -------------------------------------------------------
-  // Lampe
+  // Lampe — publie status car état change immédiatement
   // -------------------------------------------------------
   if (t == TOPIC_CMD_LAMP) {
     bool on = doc["on"] | false;
@@ -163,14 +150,14 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       actuators_setLampAuto(false);
       Serial.println("[MQTT] Lampe -> MANUAL");
     }
-
     actuators_setLamp(on);
-    mqtt_publishStatus(mqttClient, _state);
+
+    mqtt_publishStatus(mqttClient, _state); // ✅ nécessaire — état changé
     return;
   }
 
   // -------------------------------------------------------
-  // Pompe
+  // Pompe — publie status car état change immédiatement
   // -------------------------------------------------------
   if (t == TOPIC_CMD_PUMP) {
     bool on = doc["on"] | false;
@@ -183,14 +170,14 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       actuators_setPumpAuto(false);
       Serial.println("[MQTT] Pompe -> MANUAL");
     }
-
     actuators_setPump(on);
-    mqtt_publishStatus(mqttClient, _state);
+
+    mqtt_publishStatus(mqttClient, _state); // ✅ nécessaire — état changé
     return;
   }
 
   // -------------------------------------------------------
-  // Ventilateur
+  // Ventilateur — publie status car état change immédiatement
   // -------------------------------------------------------
   if (t == TOPIC_CMD_FAN) {
     bool on = doc["on"] | false;
@@ -203,16 +190,17 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       actuators_setFanAuto(false);
       Serial.println("[MQTT] Ventilateur -> MANUAL");
     }
-
     actuators_setFan(on);
     Serial.printf("[MQTT] FAN cmd reçue — mode=%s on=%d\n", mode, on ? 1 : 0);
 
-    mqtt_publishStatus(mqttClient, _state);
+    mqtt_publishStatus(mqttClient, _state); // ✅ nécessaire — état changé
     return;
   }
 
   // -------------------------------------------------------
   // Configuration & planning
+  // ❌ PAS de mqtt_publishStatus ici — évite la boucle
+  //    config → status → config → status → ...
   // -------------------------------------------------------
   if (t == TOPIC_CONFIG) {
     if (doc.containsKey("doorSched")) {
@@ -221,7 +209,6 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       _doorSched.closeH = doc["doorSched"]["closeH"] | _doorSched.closeH;
       _doorSched.closeM = doc["doorSched"]["closeM"] | _doorSched.closeM;
       _doorSched.active = doc["doorSched"]["active"] | _doorSched.active;
-
       actuators_saveSched();
 
       Serial.printf(
@@ -241,10 +228,11 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
 
     if (doc.containsKey("tempMin"))  _th.tempMin  = doc["tempMin"];
     if (doc.containsKey("tempMax"))  _th.tempMax  = doc["tempMax"];
-    if (doc.containsKey("waterMin")) _th.waterMin  = doc["waterMin"];
-    if (doc.containsKey("co2Max"))   _th.co2Max   = doc["co2Max"];
+    if (doc.containsKey("waterMin")) _th.waterMin = doc["waterMin"];
 
-    // ✅ Restaurer les modes depuis la BD (envoyés par le backend)
+    Serial.printf("[MQTT] Seuils mis à jour — tempMin:%.1f tempMax:%.1f waterMin:%.1f\n",
+                  _th.tempMin, _th.tempMax, _th.waterMin);
+
     if (doc.containsKey("fanMode")) {
       bool isAuto = strcmp(doc["fanMode"] | "manual", "auto") == 0;
       actuators_setFanAuto(isAuto);
@@ -261,7 +249,8 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
       Serial.printf("[MQTT] pumpMode restaure -> %s\n", isAuto ? "AUTO" : "MANUAL");
     }
 
-    mqtt_publishStatus(mqttClient, _state);
+    // ❌ mqtt_publishStatus supprimé — c'était la cause de la boucle
+    Serial.println("[MQTT] Config appliquée (pas de status publié)");
     return;
   }
 

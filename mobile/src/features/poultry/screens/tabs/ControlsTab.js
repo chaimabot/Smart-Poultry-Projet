@@ -360,8 +360,11 @@ export default function ControlsTab({
   isConnected,
   actuators,
   toggleFanAuto,
+  togglePumpAuto,
+  pumpAutoReason,
   setFan,
   fanAutoReason,
+  lampAutoReason,
   toggleLampAuto,
   setLamp,
   toggleDoor,
@@ -409,11 +412,15 @@ export default function ControlsTab({
           onFanOff={() => setFan(false)}
         />
 
-        {/* Lampe Chauffante */}
         <SectionGestionLampe
           poultryId={poultryId}
-          data={actuators.lamp || { lampAuto: false, lampOn: false }}
+          data={{
+            lampOn: actuators.lamp ?? false, // ← boolean extrait proprement
+            lampAuto: actuators.lampAuto ?? false, // ← boolean extrait proprement
+          }}
           onUpdate={onRefresh}
+          onToggleAuto={toggleLampAuto}
+          lampAutoReason={lampAutoReason}
         />
 
         {/* Porte Automatique */}
@@ -430,272 +437,15 @@ export default function ControlsTab({
           stopDoor={stopDoor}
         />
       </View>
-
       {/* ── Pompe à Eau ── */}
       <SectionLabel>Gestion de l'eau</SectionLabel>
       <SectionGestionEau
         poultryId={poultryId}
-        data={pumpData || { pumpAuto: false, pumpOn: false }}
+        data={pumpData}
+        pumpAutoReason={pumpAutoReason}
+        onToggleAuto={togglePumpAuto}
         onUpdate={onRefresh}
       />
-
-      {/* ── Distributeur de nourriture ── */}
-      <SectionLabel>Distributeur de nourriture</SectionLabel>
-      <Card style={{ marginBottom: 24 }}>
-        {/* En-tête */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            marginBottom: 18,
-          }}
-        >
-          <IconBox bg="#FFF7ED" icon="set-meal" color="#F97316" />
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 15, fontWeight: "700", color: "#0F172A" }}>
-              Alimentation automatique
-            </Text>
-            <Text
-              style={{
-                fontSize: 12,
-                color: "#94A3B8",
-                fontWeight: "500",
-                marginTop: 3,
-              }}
-            >
-              {feeder.lastDistribution
-                ? `Dernière : ${formatTime(feeder.lastDistribution)}`
-                : "Aucune distribution aujourd'hui"}
-            </Text>
-          </View>
-          {feeder.isDistributing && (
-            <Badge bg="#FFF7ED" color="#F97316" icon="sync">
-              En cours
-            </Badge>
-          )}
-        </View>
-
-        {/* Durée */}
-        <Stepper
-          label="Durée de distribution"
-          value={feeder.durationSec}
-          unit="s"
-          min={1}
-          max={30}
-          onDecrement={() =>
-            setFeeder((p) => ({
-              ...p,
-              durationSec: Math.max(1, p.durationSec - 1),
-            }))
-          }
-          onIncrement={() =>
-            setFeeder((p) => ({
-              ...p,
-              durationSec: Math.min(30, p.durationSec + 1),
-            }))
-          }
-        />
-        <Text
-          style={{
-            fontSize: 11,
-            color: "#94A3B8",
-            textAlign: "center",
-            marginTop: 8,
-            fontWeight: "500",
-          }}
-        >
-          Durée d'activation du moteur (1 – 30 secondes)
-        </Text>
-
-        <Divider />
-
-        {/* Horaires */}
-        <View
-          style={{
-            flexDirection: "row",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 12,
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 10,
-              fontWeight: "800",
-              color: "#94A3B8",
-              textTransform: "uppercase",
-              letterSpacing: 0.8,
-            }}
-          >
-            Horaires programmés ({feeder.schedules.length})
-          </Text>
-          <TouchableOpacity
-            onPress={addSchedule}
-            activeOpacity={0.8}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 5,
-              backgroundColor: "#F0FDF4",
-              paddingHorizontal: 12,
-              paddingVertical: 6,
-              borderRadius: 20,
-              borderWidth: 1,
-              borderColor: "#22C55E30",
-            }}
-          >
-            <MaterialIcons name="add" size={14} color="#22C55E" />
-            <Text style={{ fontSize: 11, fontWeight: "700", color: "#22C55E" }}>
-              Ajouter
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {feeder.schedules.length === 0 && (
-          <EmptyState icon="schedule" text="Aucun horaire programmé" />
-        )}
-
-        {feeder.schedules.map((schedule) => (
-          <View
-            key={schedule.id}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 10,
-              marginBottom: 10,
-              backgroundColor: schedule.enabled ? "#F0FDF4" : "#F8FAFC",
-              padding: 12,
-              borderRadius: 14,
-              borderWidth: 1.5,
-              borderColor: schedule.enabled ? "#22C55E25" : "#E2E8F0",
-            }}
-          >
-            <Toggle
-              value={schedule.enabled}
-              onPress={() =>
-                updateSchedule(schedule.id, "enabled", !schedule.enabled)
-              }
-            />
-
-            <TimePicker
-              hour={schedule.hour}
-              minute={schedule.minute}
-              enabled={schedule.enabled}
-              onHourUp={() =>
-                updateSchedule(schedule.id, "hour", (schedule.hour + 1) % 24)
-              }
-              onHourDown={() =>
-                updateSchedule(
-                  schedule.id,
-                  "hour",
-                  (schedule.hour - 1 + 24) % 24,
-                )
-              }
-              onMinuteUp={() =>
-                updateSchedule(
-                  schedule.id,
-                  "minute",
-                  (schedule.minute + 5) % 60,
-                )
-              }
-              onMinuteDown={() =>
-                updateSchedule(
-                  schedule.id,
-                  "minute",
-                  (schedule.minute - 5 + 60) % 60,
-                )
-              }
-            />
-
-            <View style={{ flex: 1, marginLeft: 6 }}>
-              <Text
-                style={{
-                  fontSize: 12,
-                  fontWeight: "700",
-                  color: schedule.enabled ? "#22C55E" : "#94A3B8",
-                }}
-              >
-                {schedule.enabled ? "● Actif" : "○ Inactif"}
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              onPress={() => removeSchedule(schedule.id)}
-              activeOpacity={0.7}
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 10,
-                backgroundColor: "#FEF2F2",
-                alignItems: "center",
-                justifyContent: "center",
-                borderWidth: 1,
-                borderColor: "#FECACA",
-              }}
-            >
-              <MaterialIcons name="delete-outline" size={18} color="#EF4444" />
-            </TouchableOpacity>
-          </View>
-        ))}
-
-        <Divider />
-
-        {/* Bouton Distribution manuelle */}
-        <TouchableOpacity
-          onPress={() => distributeFood("manual")}
-          disabled={!isConnected || feeder.isDistributing}
-          activeOpacity={0.8}
-          style={{
-            padding: 16,
-            borderRadius: 16,
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 10,
-            backgroundColor:
-              !isConnected || feeder.isDistributing ? "#F1F5F9" : "#F97316",
-            opacity: !isConnected || feeder.isDistributing ? 0.5 : 1,
-            borderWidth: !isConnected || feeder.isDistributing ? 1 : 0,
-            borderColor: "#E2E8F0",
-          }}
-        >
-          {feeder.isDistributing ? (
-            <ActivityIndicator size="small" color="#F97316" />
-          ) : (
-            <MaterialIcons
-              name="restaurant"
-              size={20}
-              color={!isConnected ? "#94A3B8" : "#fff"}
-            />
-          )}
-          <Text
-            style={{
-              fontSize: 14,
-              fontWeight: "800",
-              color: !isConnected || feeder.isDistributing ? "#94A3B8" : "#fff",
-              letterSpacing: 0.3,
-            }}
-          >
-            {feeder.isDistributing
-              ? `Distribution en cours... (${feeder.durationSec}s)`
-              : "Distribuer maintenant"}
-          </Text>
-        </TouchableOpacity>
-
-        {!isConnected && (
-          <Text
-            style={{
-              fontSize: 11,
-              color: "#94A3B8",
-              textAlign: "center",
-              marginTop: 10,
-              fontWeight: "500",
-            }}
-          >
-            Connectez-vous au poulailler pour distribuer
-          </Text>
-        )}
-      </Card>
     </ScrollView>
   );
 }

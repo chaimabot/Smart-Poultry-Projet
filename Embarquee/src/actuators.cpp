@@ -210,7 +210,7 @@ void actuators_doorLoop() {
   }
 }
 
-void actuators_tick(float temp, float water, float co2) {
+void actuators_tick(float temp, float water, float airQuality) {
   if (_doorSched.active && _currentH != -1) {
     if (_currentH == _doorSched.openH && _currentM == _doorSched.openM) {
       if (_lastOpenTriggeredM != _currentM) {
@@ -236,7 +236,7 @@ void actuators_tick(float temp, float water, float co2) {
     else if (temp > _th.tempMax) actuators_setLamp(false);
   }
   if (_state.fanAuto) {
-    if (temp > _th.tempMax || co2 > _th.co2Max) actuators_setFan(true);
+    if (temp > _th.tempMax || airQuality < _th.airQualityMin)actuators_setFan(true);
     else                                      actuators_setFan(false);
   }
   if (_state.pumpAuto) {

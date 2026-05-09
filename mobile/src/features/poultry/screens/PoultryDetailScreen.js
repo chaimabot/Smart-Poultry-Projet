@@ -20,6 +20,7 @@ import NotificationPopup from "../../../components/NotificationPopup";
 import OverviewTab from "./tabs/OverviewTab";
 import ControlsTab from "./tabs/ControlsTab";
 import HistoryTab from "./tabs/HistoryTab";
+import AIAnalysisTab from "./tabs/AIAnalysisScreen";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ const TABS = [
   { key: "overview", label: "Aperçu", icon: "dashboard" },
   { key: "controls", label: "Contrôles", icon: "tune" },
   { key: "history", label: "Historique", icon: "history" },
+  { key: "ai", label: "IA Santé", icon: "health-and-safety" },
 ];
 
 // ── Screen ────────────────────────────────────────────────────────────────────
@@ -57,8 +59,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
     setDoorSchedule,
     pulseAnim,
     stopDoor,
+    togglePumpAuto,
+    pumpAutoReason,
     toggleFanAuto,
     fanAutoReason,
+    lampAutoReason,
     toggleLampAuto,
     setFan,
     setLamp,
@@ -254,11 +259,13 @@ export default function PoultryDetailScreen({ route, navigation }) {
           flexDirection: "row",
           borderBottomWidth: 1,
           borderBottomColor: "#F1F5F9",
-          paddingHorizontal: 16,
+          paddingHorizontal: 8,
         }}
       >
         {TABS.map((tab) => {
           const active = activeTab === tab.key;
+          // Highlight IA tab with a purple accent
+          const activeColor = tab.key === "ai" ? "#8B5CF6" : "#22C55E";
           return (
             <TouchableOpacity
               key={tab.key}
@@ -266,23 +273,23 @@ export default function PoultryDetailScreen({ route, navigation }) {
               style={{
                 flex: 1,
                 alignItems: "center",
-                paddingVertical: 12,
+                paddingVertical: 10,
                 borderBottomWidth: 2.5,
-                borderBottomColor: active ? "#22C55E" : "transparent",
-                gap: 4,
+                borderBottomColor: active ? activeColor : "transparent",
+                gap: 3,
               }}
               activeOpacity={0.7}
             >
               <MaterialIcons
                 name={tab.icon}
-                size={20}
-                color={active ? "#22C55E" : "#94A3B8"}
+                size={19}
+                color={active ? activeColor : "#94A3B8"}
               />
               <Text
                 style={{
-                  fontSize: 11,
+                  fontSize: 10,
                   fontWeight: active ? "700" : "500",
-                  color: active ? "#22C55E" : "#94A3B8",
+                  color: active ? activeColor : "#94A3B8",
                 }}
               >
                 {tab.label}
@@ -302,6 +309,19 @@ export default function PoultryDetailScreen({ route, navigation }) {
             isConnected={isConnected}
             sensors={sensors}
             thresholds={thresholds}
+            aiScore={null}
+            aiInsight={null}
+            lastAnalysis={null}
+            onGoToAIAnalysis={() =>
+              navigation.navigate("AIAnalysis", {
+                poultryId,
+                poultryName: displayName,
+              })
+            }
+            onGoToChat={() => navigation.navigate("AIChat")}
+            onGoToHistory={() =>
+              navigation.navigate("AIHistory", { poultryId })
+            }
           />
         )}
         {activeTab === "controls" && (
@@ -313,6 +333,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             setFan={setFan}
             toggleLampAuto={toggleLampAuto}
             setLamp={setLamp}
+            lampAutoReason={lampAutoReason}
             toggleDoor={toggleDoor}
             stopDoor={stopDoor}
             doorMoving={actuators?.doorMoving}
@@ -329,6 +350,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
             onUpdateActuator={updateActuator}
             poultryId={poultryId}
             pumpData={pumpData}
+            togglePumpAuto={togglePumpAuto}
+            pumpAutoReason={pumpAutoReason}
             onRefresh={onRefresh}
           />
         )}
@@ -341,6 +364,19 @@ export default function PoultryDetailScreen({ route, navigation }) {
             navigation={navigation}
             poultryId={poultryId}
             poultryName={displayName}
+          />
+        )}
+        {activeTab === "ai" && (
+          <AIAnalysisTab
+            poultryId={poultryId}
+            poultryName={displayName}
+            sensors={sensors}
+            thresholds={thresholds}
+            alerts={alerts}
+            actuators={actuators}
+            isConnected={isConnected}
+            onRefresh={onRefresh}
+            refreshing={refreshing}
           />
         )}
       </View>

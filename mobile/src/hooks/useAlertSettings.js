@@ -13,33 +13,26 @@ import {
 } from "../services/poultry";
 
 // ── Constantes ────────────────────────────────────────────────────────────────
-
 const EMPTY_THRESHOLDS = {
   temperatureMin: null,
   temperatureMax: null,
   humidityMin: null,
   humidityMax: null,
-  co2Max: null,
-  co2Warning: null,
-  co2Critical: null,
-  nh3Max: null,
-  dustMax: null,
+  airQualityMax: null,
   waterLevelMin: null,
 };
 
 export const PARAM_ICONS = {
   temperature: { icon: "thermostat", color: "#ef4444" },
   humidity: { icon: "water-drop", color: "#3b82f6" },
-  co2: { icon: "air", color: "#f97316" },
-  nh3: { icon: "science", color: "#a855f7" },
-  dust: { icon: "blur-on", color: "#f59e0b" },
+  airQualityPercent: { icon: "air", color: "#f97316" }, // ← remplace co2/nh3/dust
   waterLevel: { icon: "water", color: "#06b6d4" },
 };
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
+// ── Validation ────────────────────────────────────────────────────────────────
 export function validateThresholds(vals) {
-  // ✅ FIX 1 : Message d'erreur clair si un champ est vide (null)
   const hasEmptyField = Object.entries(vals).some(
     ([k, v]) =>
       [
@@ -47,16 +40,12 @@ export function validateThresholds(vals) {
         "temperatureMax",
         "humidityMin",
         "humidityMax",
-        "co2Max",
-        "nh3Max",
-        "dustMax",
+        "airQualityMin",
         "waterLevelMin",
-      ].includes(k) && v === null,
+      ].includes(k) && v === null, // ← airQualityMin
   );
-
   if (hasEmptyField) return "Veuillez remplir tous les champs de seuils";
 
-  // ✅ Vérifications logiques
   if (vals.temperatureMin >= vals.temperatureMax)
     return "Température min doit être < max";
   if (vals.humidityMin >= vals.humidityMax)
@@ -65,9 +54,9 @@ export function validateThresholds(vals) {
     return "Température hors plage (-20°C à 50°C)";
   if (vals.humidityMin < 0 || vals.humidityMax > 100)
     return "Humidité entre 0% et 100%";
-  if (vals.co2Max < 400 || vals.co2Max > 5000)
-    return "CO₂ entre 400 et 5000 ppm";
-  if (vals.nh3Max < 0 || vals.nh3Max > 100) return "NH₃ entre 0 et 100 ppm";
+  if (vals.airQualityMin < 0 || vals.airQualityMin > 100)
+    // ← 0-100% au lieu de ppm
+    return "Qualité de l'air entre 0 et 100%";
   if (vals.waterLevelMin < 0 || vals.waterLevelMin > 100)
     return "Niveau d'eau entre 0 et 100%";
 
@@ -78,7 +67,6 @@ export function validateThresholds(vals) {
 
 function normalizeDBThresholds(data) {
   if (!data) return null;
-
   const src = data.defaultThresholds ?? data;
   const result = {};
   const keys = Object.keys(EMPTY_THRESHOLDS);
@@ -87,6 +75,14 @@ function normalizeDBThresholds(data) {
     const val = src[key];
     if (typeof val === "number" && !isNaN(val)) {
       result[key] = val;
+    }
+  }
+
+  // Mapper airQualityMax OU co2Max → airQualityMin
+  if (result.airQualityMin == null) {
+    const fallback = src.airQualityMin ?? src.airQualityMax ?? src.co2Max;
+    if (typeof fallback === "number" && !isNaN(fallback)) {
+      result.airQualityMin = fallback;
     }
   }
 
@@ -202,6 +198,7 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
     }
   };
 
+  // ── handleSave ────────────────────────────────────────────────────────────
   const handleSave = async () => {
     const err = validateThresholds(thresholds);
     if (err) {
@@ -210,7 +207,11 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
     }
     try {
       setSaving(true);
-      const res = await updateThresholds(poultryId, thresholds);
+
+      // Envoyer directement airQualityMin — le modèle backend est maintenant à jour
+      const payload = { ...thresholds }; // ← plus de split co2Max/nh3Max
+
+      const res = await updateThresholds(poultryId, payload);
       if (res.success) {
         previousThresholds.current = thresholds;
         setToast({
@@ -235,7 +236,6 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
       setSaving(false);
     }
   };
-
   const handleReset = () => {
     if (dbLoadError || !defaultThresholds) {
       setToast({

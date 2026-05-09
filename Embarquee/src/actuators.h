@@ -16,7 +16,7 @@ enum DoorState {
 
 struct ActuatorState {
   bool lampOn   = false;
-  bool lampAuto = true;
+  bool lampAuto = false;
   bool pumpOn   = false;
   bool pumpAuto = false;
   bool fanOn    = false;
@@ -43,7 +43,7 @@ struct Thresholds {
   float tempMax         = DEFAULT_TEMP_MAX;
   float waterMin        = DEFAULT_WATER_MIN;
   float waterHysteresis = DEFAULT_WATER_HYSTERESIS;
-  float co2Max          = DEFAULT_CO2_MAX;
+float airQualityMin = DEFAULT_AIR_QUALITY_MIN;
 };
 
 extern ActuatorState _state;
@@ -60,8 +60,7 @@ void actuators_init();
 void actuators_doorLoop();
 
 // À appeler toutes les 5s — logique relais + planning horaire
-void actuators_tick(float temp, float water, float co2);
-
+void actuators_tick(float temp, float water, float airQuality);
 // Heure courante (reçue via MQTT)
 void actuators_updateTime(int h, int m);
 

@@ -15,7 +15,6 @@
 // Capteurs
 #define PIN_DHT          4
 #define PIN_MQ135        34
-#define PIN_MQ135_DO     35
 #define PIN_WATER_LEVEL  32
 
 // Moteur porte
@@ -43,4 +42,4 @@
 #define DEFAULT_TEMP_MAX         30.0f
 #define DEFAULT_WATER_MIN        25.0f
 #define DEFAULT_WATER_HYSTERESIS 10.0f
-#define DEFAULT_CO2_MAX          1000.0f
+#define DEFAULT_AIR_QUALITY_MIN 30.0f 

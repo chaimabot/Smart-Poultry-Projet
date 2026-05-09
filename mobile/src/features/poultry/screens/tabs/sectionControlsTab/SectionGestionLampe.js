@@ -3,33 +3,72 @@ import { View, Text, TouchableOpacity, Alert, StyleSheet } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
 import { controlLamp } from "../../../../../services/lampeService";
 
-const SectionGestionLampe = ({ poultryId, data, onUpdate }) => {
+/**
+ * SectionGestionLampe
+ *
+ * Props:
+ *  - poultryId   : string
+ *  - data        : { lampOn: bool, lampAuto: bool }
+ *  - onUpdate    : () => void   — rafraîchit l'état parent après une action
+ *  - onToggleAuto: () => Promise<void>  — délègue le toggle AUTO au hook
+ *                  (optionnel : si absent, appel direct à controlLamp)
+ *  - lampAutoReason : string — raison affichée quand la lampe est en mode AUTO
+ */
+const SectionGestionLampe = ({
+  poultryId,
+  data,
+  onUpdate,
+  onToggleAuto,
+  lampAutoReason,
+}) => {
   const [lampOn, setLampOn] = React.useState(data.lampOn);
   const [lampAuto, setLampAuto] = React.useState(data.lampAuto);
+  // Verrou anti double-appel : empêche deux commandes simultanées
+  const isSubmitting = React.useRef(false);
 
-  // Sync si data change depuis le parent
+  // Sync si data change depuis le parent (ex: mise à jour MQTT)
+  // On ne sync QUE si on n'est pas en train d'envoyer une commande,
+  // pour éviter que le retour MQTT écrase un état local optimiste.
   React.useEffect(() => {
-    setLampOn(data.lampOn);
-    setLampAuto(data.lampAuto);
+    if (!isSubmitting.current) {
+      setLampOn(data.lampOn);
+      setLampAuto(data.lampAuto);
+    }
   }, [data.lampOn, data.lampAuto]);
 
+  // ── Toggle AUTO / MANUEL ──────────────────────────────────────────────────
   const handleToggleAuto = async () => {
+    if (isSubmitting.current) return;
+    isSubmitting.current = true;
+
+    // ✅ Mise à jour optimiste immédiate — l'UI bascule sans attendre MQTT
+    const newAuto = !lampAuto;
+    setLampAuto(newAuto);
+
     try {
-      const newMode = lampAuto ? "manual" : "auto";
-      const currentAction = lampOn ? "on" : "off";
-      await controlLamp(poultryId, newMode, currentAction);
-      setLampAuto(!lampAuto);
-      if (onUpdate) onUpdate();
+      if (onToggleAuto) {
+        await onToggleAuto();
+      } else {
+        const newMode = newAuto ? "auto" : "manual";
+        const currentAction = lampOn ? "on" : "off";
+        await controlLamp(poultryId, newMode, currentAction);
+        if (onUpdate) onUpdate();
+      }
     } catch (error) {
+      // Rollback si l'API échoue
+      setLampAuto(!newAuto);
       const errorMsg =
         error.error ||
         error.message ||
         "Impossible de changer le mode de la lampe.";
-      console.error("[SectionGestionLampe] Error:", error);
+      console.error("[SectionGestionLampe] handleToggleAuto error:", error);
       Alert.alert("Erreur", errorMsg);
+    } finally {
+      isSubmitting.current = false;
     }
   };
 
+  // ── Commande manuelle ON / OFF ────────────────────────────────────────────
   const handleToggleStatus = async (action) => {
     if (lampAuto) {
       Alert.alert(
@@ -38,6 +77,11 @@ const SectionGestionLampe = ({ poultryId, data, onUpdate }) => {
       );
       return;
     }
+    if (isSubmitting.current) return; // anti double-tap
+    isSubmitting.current = true;
+
+    // Mise à jour optimiste immédiate de l'UI
+    setLampOn(action === "on");
 
     try {
       console.log("[SectionGestionLampe] Envoi commande lampe:", {
@@ -47,13 +91,16 @@ const SectionGestionLampe = ({ poultryId, data, onUpdate }) => {
       });
       const response = await controlLamp(poultryId, "manual", action);
       console.log("[SectionGestionLampe] Réponse API:", response);
-      setLampOn(action === "on"); // ← mise à jour immédiate locale
-      if (onUpdate) onUpdate();
-      Alert.alert("Succès", `Lampe ${action === "on" ? "allumée" : "éteinte"}`);
+      // Ne PAS appeler onUpdate/onRefresh ici :
+      // le retour MQTT /status de l'ESP32 synchronise l'UI automatiquement.
+      // Appeler onRefresh déclencherait fetchPoultryInfo → réécriture de
+      // lampAutoRef depuis la DB (potentiellement stale) → boucle de commandes.
     } catch (error) {
+      // Rollback de la mise à jour optimiste en cas d'erreur
+      setLampOn(action !== "on");
       const errorMsg =
         error.error || error.message || "La commande de la lampe a échoué.";
-      console.error("[SectionGestionLampe] Error:", error);
+      console.error("[SectionGestionLampe] handleToggleStatus error:", error);
       if (errorMsg.includes("Accès non autorisé")) {
         Alert.alert(
           "Authentification requise",
@@ -62,13 +109,15 @@ const SectionGestionLampe = ({ poultryId, data, onUpdate }) => {
       } else {
         Alert.alert("Erreur", errorMsg);
       }
+    } finally {
+      isSubmitting.current = false;
     }
   };
 
   return (
     <View style={[styles.container, styles.card]}>
-      {/* En-tête */}
-      <View style={[styles.row, { marginBottom: lampAuto ? 0 : 14 }]}>
+      {/* ── En-tête ── */}
+      <View style={[styles.row, { marginBottom: lampAuto ? 4 : 14 }]}>
         <View style={styles.iconBox}>
           <MaterialIcons name="lightbulb" size={22} color="#F59E0B" />
         </View>
@@ -88,7 +137,15 @@ const SectionGestionLampe = ({ poultryId, data, onUpdate }) => {
         </TouchableOpacity>
       </View>
 
-      {/* Boutons de contrôle manuel */}
+      {/* ── Raison du mode automatique ── */}
+      {lampAuto && lampAutoReason ? (
+        <View style={styles.autoReasonBox}>
+          <MaterialIcons name="info-outline" size={13} color="#F59E0B" />
+          <Text style={styles.autoReasonText}>{lampAutoReason}</Text>
+        </View>
+      ) : null}
+
+      {/* ── Boutons de contrôle manuel ── */}
       {!lampAuto && (
         <View style={{ flexDirection: "row", gap: 8 }}>
           {/* Bouton Allumer */}
@@ -160,7 +217,7 @@ const SectionGestionLampe = ({ poultryId, data, onUpdate }) => {
   );
 };
 
-// Micro-composant Segment
+// ── Micro-composant Segment ───────────────────────────────────────────────────
 function Segment({ options, selected }) {
   return (
     <View
@@ -228,6 +285,24 @@ const styles = StyleSheet.create({
   segmentWrapper: {
     overflow: "hidden",
     borderRadius: 100,
+  },
+  autoReasonBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "#FFFBEB",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#FDE68A",
+  },
+  autoReasonText: {
+    fontSize: 11,
+    color: "#92400E",
+    fontWeight: "500",
+    flex: 1,
   },
 });
 

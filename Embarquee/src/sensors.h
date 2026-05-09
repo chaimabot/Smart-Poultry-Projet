@@ -6,10 +6,7 @@
 struct SensorData {
   float temperature;
   float humidity;
-  float co2;
-  float nh3;
   float airQualityPercent;
-  bool  nh3DigitalAlert;
   float waterLevel;
 };
 

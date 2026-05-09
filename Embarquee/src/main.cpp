@@ -69,16 +69,15 @@ void loop() {
     SensorData data = sensors_read();
 
     // Planning horaire + automatismes relais (lampe, ventilo, pompe)
-    actuators_tick(data.temperature, data.waterLevel, data.co2);
-
+actuators_tick(data.temperature, data.waterLevel, data.airQualityPercent);
     // Publier mesures et état actionneurs vers HiveMQ
     mqtt_publishMeasures(mqttClient, data);
     mqtt_publishStatus(mqttClient, _state);
 
     // Log Serial
     Serial.printf("--- Log %lus ---\n", millis() / 1000);
-    Serial.printf("Temp: %.1fC | Eau: %.1f%% | CO2: %.0fppm\n",
-                  data.temperature, data.waterLevel, data.co2);
+Serial.printf("Temp: %.1fC | Eau: %.1f%% | Air: %.0f%%\n",
+              data.temperature, data.waterLevel, data.airQualityPercent);
     Serial.printf("Porte: %s | Lampe: %s | Pompe: %s | Ventilo: %s\n",
                   actuators_doorStateName(_state.doorState),
                   _state.lampOn ? "ON" : "OFF",

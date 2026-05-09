@@ -12,6 +12,10 @@ import AlertSettingsScreen from "../features/poultry/screens/AlertSettingsScreen
 import ArchivedPoultriesScreen from "../features/poultry/screens/Archivedpoultriesscreen";
 import HistoryScreen from "../features/poultry/screens/HistoryScreen";
 import Notification from "../features/poultry/screens/Notification";
+import AIAnalysisScreen from "../features/poultry/screens/tabs/AIAnalysisScreen";
+import AIDetailScreen from "../features/IA/AIDetailScreen";
+import AIChatScreen from "../features/IA/AIChatScreen";
+import AIHistoryScreen from "../features/IA/AIHistoryScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -28,6 +32,10 @@ export default function AppNavigator() {
         <Stack.Screen name="AddPoultry" component={AddPoultryScreen} />
         <Stack.Screen name="Profile" component={ProfileScreen} />
         <Stack.Screen name="PoultryDetail" component={PoultryDetailScreen} />
+        <Stack.Screen name="AIAnalysis" component={AIAnalysisScreen} />
+        <Stack.Screen name="AIDetail" component={AIDetailScreen} />
+        <Stack.Screen name="AIChat" component={AIChatScreen} />
+        <Stack.Screen name="AIHistory" component={AIHistoryScreen} />
         <Stack.Screen
           name="AlertSettingsScreen"
           component={AlertSettingsScreen}

@@ -91,8 +91,8 @@ const AlertSettingsScreen = ({ route, navigation }) => {
   const unreadCount = stats?.unread ?? alerts.filter((a) => !a.read).length;
 
   // ── Input helper ────────────────────────────────────────────────────────────
-  const renderInput = (label, value, key, unit) => (
-    <View style={styles.inputContainer}>
+  const renderInput = (label, value, key, unit, fullWidth = false) => (
+    <View style={[styles.inputContainer, fullWidth && { width: "100%" }]}>
       <Text style={[styles.inputLabel, { color: subCol }]}>{label}</Text>
       <View
         style={[
@@ -336,8 +336,12 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               ]}
             >
               <View style={styles.row}>
-                {renderInput("CO₂ Max", thresholds.co2Max, "co2Max", "ppm")}
-                {renderInput("NH₃ Max", thresholds.nh3Max, "nh3Max", "ppm")}
+                {renderInput(
+                  "Seuil min",
+                  thresholds.airQualityMin, // ← était airQualityMax
+                  "airQualityMin", // ← était airQualityMax
+                  "%", // ← était "ppm"
+                )}
               </View>
             </View>
 
