@@ -32,12 +32,18 @@ async function checkAccess(poulaillerId, userId) {
 
 // ============================================================
 // HELPER — Attend l'image d'un poulailler (usage interne)
+//
+// FIX #1 — pendingImages.delete() garanti dans TOUS les chemins
+//   (succès, timeout, exception interne).
+// FIX #3 — clearInterval() garanti : try/catch dans le callback
+//   pour éviter un interval orphelin en cas d'erreur synchrone.
 // ============================================================
 
 function waitForImage(poulaillerId, timeoutMs = 35000) {
   const id = poulaillerId.toString().trim();
 
   return new Promise((resolve, reject) => {
+    // Vérification synchrone avant de créer l'interval
     const existing = pendingImages.get(id);
     if (existing?.image) {
       pendingImages.delete(id);
@@ -45,16 +51,27 @@ function waitForImage(poulaillerId, timeoutMs = 35000) {
     }
 
     const startTime = Date.now();
+
     const interval = setInterval(() => {
-      const current = pendingImages.get(id);
-      if (current?.image) {
+      try {
+        const current = pendingImages.get(id);
+
+        if (current?.image) {
+          clearInterval(interval);
+          pendingImages.delete(id); // FIX #1 : nettoyage sur succès
+          return resolve({ image: current.image });
+        }
+
+        if (Date.now() - startTime > timeoutMs) {
+          clearInterval(interval);
+          pendingImages.delete(id); // FIX #1 : nettoyage sur timeout
+          reject(new Error(`Timeout image pour poulailler ${id}`));
+        }
+      } catch (err) {
+        // FIX #3 : interval orphelin évité en cas d'erreur synchrone
         clearInterval(interval);
         pendingImages.delete(id);
-        return resolve({ image: current.image });
-      }
-      if (Date.now() - startTime > timeoutMs) {
-        clearInterval(interval);
-        reject(new Error(`Timeout image pour poulailler ${id}`));
+        reject(err);
       }
     }, 500);
   });
@@ -104,6 +121,7 @@ async function receiveImageFromESP(req, res) {
     pendingImages.set(id, { image: cleanBase64, receivedAt: Date.now() });
 
     // Expiration automatique après 60 secondes
+    // (filet de sécurité — waitForImage fait déjà son propre delete)
     setTimeout(() => {
       if (pendingImages.has(id)) {
         pendingImages.delete(id);
@@ -260,13 +278,11 @@ async function getLatestAnalysis(req, res) {
     }).sort({ createdAt: -1 });
 
     if (!analysis) {
-      return res
-        .status(200)
-        .json({
-          success: true,
-          data: null,
-          message: "Aucune analyse disponible",
-        });
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "Aucune analyse disponible",
+      });
     }
 
     return res.status(200).json({ success: true, data: analysis });
@@ -298,13 +314,11 @@ async function getAnalysisStats(req, res) {
       .select("result.healthScore result.urgencyLevel createdAt");
 
     if (analyses.length === 0) {
-      return res
-        .status(200)
-        .json({
-          success: true,
-          data: null,
-          message: "Aucune donnée disponible",
-        });
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "Aucune donnée disponible",
+      });
     }
 
     const scores = analyses.map((a) => a.result.healthScore);
@@ -357,21 +371,17 @@ async function chatWithVet(req, res) {
   }
 
   if (question.trim().length < 3) {
-    return res
-      .status(400)
-      .json({
-        success: false,
-        error: "Question trop courte (minimum 3 caractères)",
-      });
+    return res.status(400).json({
+      success: false,
+      error: "Question trop courte (minimum 3 caractères)",
+    });
   }
 
   if (question.length > 500) {
-    return res
-      .status(400)
-      .json({
-        success: false,
-        error: "Question trop longue (maximum 500 caractères)",
-      });
+    return res.status(400).json({
+      success: false,
+      error: "Question trop longue (maximum 500 caractères)",
+    });
   }
 
   const { error, status, poulailler } = await checkAccess(
@@ -400,7 +410,6 @@ async function chatWithVet(req, res) {
       waterLevel: poulailler.lastMonitoring?.waterLevel ?? null,
     };
 
-    // Appel au vrai modèle IA (Gemma 3 via Cloudflare)
     const answer = await chatWithGemma(question, context);
 
     return res.status(200).json({

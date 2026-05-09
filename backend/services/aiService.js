@@ -111,34 +111,43 @@ function getImageSizeKb(base64) {
 
 // ============================================================
 // COMPRESSION IMAGE AUTOMATIQUE
+// FIX: boucle réécrite pour ne conserver aucune référence
+//      intermédiaire — chaque Buffer est libérable par le GC
+//      dès la prochaine itération.
 // ============================================================
 
 async function compressImage(base64) {
   const buffer = Buffer.from(base64, "base64");
 
-  let quality = 50;
-  let width = 320;
-  let compressed;
+  let lastCompressed = null;
 
   for (let i = 0; i < 5; i++) {
-    compressed = await sharp(buffer)
+    const quality = Math.max(10, 50 - i * 10);
+    const width = Math.max(120, 320 - i * 40);
+
+    // FIX: variable locale à chaque itération → référence intermédiaire
+    //      non retenue, GC peut collecter dès la fin du bloc
+    const compressed = await sharp(buffer)
       .resize({ width })
       .jpeg({ quality, mozjpeg: true })
       .toBuffer();
 
     const kb = compressed.length / 1024;
+    console.log(
+      `[AI] Compression tentative ${i + 1} : ${Math.round(kb)} Ko (qualité ${quality}, largeur ${width})`,
+    );
 
     if (kb <= LLAVA_MAX_KB) {
-      console.log(`[AI] Image compressée : ${Math.round(kb)} Ko`);
+      console.log(`[AI] Image compressée OK : ${Math.round(kb)} Ko`);
       return compressed.toString("base64");
     }
 
-    quality -= 10;
-    width -= 40;
+    // Garde uniquement le dernier pour le retour de secours
+    lastCompressed = compressed;
   }
 
   console.warn("[AI] Limite de compression atteinte");
-  return compressed.toString("base64");
+  return lastCompressed.toString("base64");
 }
 
 // ============================================================

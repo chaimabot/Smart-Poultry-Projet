@@ -10,7 +10,8 @@ const Alert = require("../models/Alert");
 const { pendingImages } = require("../controllers/aiController");
 const {
   publishCaptureTrigger,
-  analyzeWithGemini,
+  analyzeWithCloudflareAI, // FIX #5 : était "analyzeWithGemini" (inexistant)
+  INTER_ANALYSIS_DELAY_MS, // FIX #5 : délai centralisé depuis aiService
 } = require("../services/aiService");
 
 function startAiCronJob() {
@@ -44,13 +45,21 @@ function startAiCronJob() {
         await publishCaptureTrigger(id);
         console.log(`[CRON IA] Trigger → ${poulailler.name}`);
 
+        // FIX #1 + #3 : waitForCronImage utilise le même pattern robuste
+        //               (clearInterval + delete garantis dans tous les chemins)
         const image = await waitForCronImage(id, 30000);
 
         if (!image) {
           console.warn(
             `[CRON IA] Pas d'image pour ${poulailler.name} — analyse capteurs uniquement`,
           );
-          const aiResult = await analyzeWithGemini("", sensorData, thresholds);
+
+          // FIX #5 : analyzeWithCloudflareAI gère déjà le cas image vide/null
+          const aiResult = await analyzeWithCloudflareAI(
+            "",
+            sensorData,
+            thresholds,
+          );
 
           await AiAnalysis.create({
             poulaillerId: id,
@@ -62,7 +71,12 @@ function startAiCronJob() {
           continue;
         }
 
-        const aiResult = await analyzeWithGemini(image, sensorData, thresholds);
+        // FIX #5 : nom de fonction corrigé
+        const aiResult = await analyzeWithCloudflareAI(
+          image,
+          sensorData,
+          thresholds,
+        );
 
         await AiAnalysis.create({
           poulaillerId: id,
@@ -98,7 +112,8 @@ function startAiCronJob() {
         console.error(`[CRON IA] ✗ ${poulailler.name} :`, err.message);
       }
 
-      await new Promise((r) => setTimeout(r, 5000));
+      // FIX #5 : délai centralisé depuis aiService (n'était pas utilisé)
+      await new Promise((r) => setTimeout(r, INTER_ANALYSIS_DELAY_MS));
     }
 
     console.log("[CRON IA] Cycle terminé.");
@@ -107,20 +122,47 @@ function startAiCronJob() {
   console.log("[CRON IA] Planificateur démarré (toutes les 2 heures)");
 }
 
+// ============================================================
+// FIX #1 + #3 : waitForCronImage
+// - pendingImages.delete() garanti dans TOUS les chemins
+// - try/catch dans le setInterval pour éviter un interval orphelin
+// ============================================================
+
 async function waitForCronImage(poulaillerId, timeoutMs) {
   const id = poulaillerId.toString().trim();
   const start = Date.now();
 
-  while (Date.now() - start < timeoutMs) {
-    const entry = pendingImages.get(id);
-    if (entry?.image) {
-      const img = entry.image;
-      pendingImages.delete(id);
-      return img;
+  return new Promise((resolve) => {
+    // Vérification synchrone avant de créer l'interval
+    const existing = pendingImages.get(id);
+    if (existing?.image) {
+      pendingImages.delete(id); // FIX #1
+      return resolve(existing.image);
     }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  return null;
+
+    const interval = setInterval(() => {
+      try {
+        const entry = pendingImages.get(id);
+
+        if (entry?.image) {
+          clearInterval(interval);
+          pendingImages.delete(id); // FIX #1 : nettoyage sur succès
+          return resolve(entry.image);
+        }
+
+        if (Date.now() - start >= timeoutMs) {
+          clearInterval(interval);
+          pendingImages.delete(id); // FIX #1 : nettoyage sur timeout
+          resolve(null); // Le cron continue sans image
+        }
+      } catch (err) {
+        // FIX #3 : interval orphelin évité en cas d'erreur synchrone
+        clearInterval(interval);
+        pendingImages.delete(id);
+        resolve(null);
+      }
+    }, 500);
+  });
 }
 
 module.exports = { startAiCronJob };
