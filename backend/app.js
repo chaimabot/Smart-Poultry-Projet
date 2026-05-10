@@ -56,7 +56,7 @@ const corsOptions = {
       "http://127.0.0.1:19000",
       "http://192.168.1.100:19000",
       "http://localhost:5500",
-      "smart-poultry-reset-euax40yfp-chaimabots-projects.vercel.app",
+      "https://smart-poultry-reset-euax40yfp-chaimabots-projects.vercel.app",
       process.env.MOBILE_APP_URL,
       "https://platfomsmartpoultry.netlify.app",
       "https://platform-jksv2jf2r-chaimabots-projects.vercel.app",
