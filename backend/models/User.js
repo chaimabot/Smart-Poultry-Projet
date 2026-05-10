@@ -43,6 +43,14 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    inviteToken: {
+  type: String,
+  default: null,
+},
+inviteTokenExpires: {
+  type: Date,
+  default: null,
+},
   },
   {
     timestamps: true,

@@ -56,6 +56,7 @@ const corsOptions = {
       "http://127.0.0.1:19000",
       "http://192.168.1.100:19000",
       "http://localhost:5500",
+      "https://project-72quf-mekfdkp56-chaimabots-projects.vercel.app",
       process.env.MOBILE_APP_URL,
       "https://platfomsmartpoultry.netlify.app",
       "https://platform-jksv2jf2r-chaimabots-projects.vercel.app",
@@ -176,6 +177,13 @@ try {
   console.log("[ROUTES] ✓ ia chargé");
 } catch (e) {
   console.error("[ROUTES] ia fail:", e.message);
+}
+try {
+  const inviteRoutes = require("./routes/invite");
+  app.use("/api/invite", inviteRoutes);
+  console.log("[ROUTES] ✓ invite chargé");
+} catch (e) {
+  console.error("[ROUTES] invite fail:", e.message);
 }
 if (lampeRoutes) {
   console.log("[ROUTES] Mounting /api/lampe ✓");
