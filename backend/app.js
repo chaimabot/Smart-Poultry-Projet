@@ -51,16 +51,16 @@ const corsOptions = {
       return callback(null, true);
     }
     const allowedOrigins = [
-      "http://localhost:19000", // Expo dev
-      "http://localhost:8081", // React Native debugger
+      "http://localhost:19000",
+      "http://localhost:8081",
       "http://127.0.0.1:19000",
       "http://192.168.1.100:19000",
       "http://localhost:5500",
-      "https://smart-poultry-reset-24n6e2h7f-chaimabots-projects.vercel.app",
       process.env.MOBILE_APP_URL,
       "https://platfomsmartpoultry.netlify.app",
       "https://platform-jksv2jf2r-chaimabots-projects.vercel.app",
       "https://smartpoultrychaima.vercel.app",
+      "https://smart-poultry-reset.vercel.app", // ← AJOUTER
     ].filter(Boolean);
 
     if (allowedOrigins.includes(origin)) {
