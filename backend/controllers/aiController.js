@@ -1,7 +1,6 @@
 // controllers/aiController.js
 // ============================================================
 // Contrôleur IA — Smart Poultry
-// Gère : analyse manuelle, réception ESP32, historique, stats, chatbot
 // ============================================================
 
 const Poulailler = require("../models/Poulailler");
@@ -13,8 +12,6 @@ const {
   chatWithGemma,
 } = require("../services/aiService");
 
-// NOTE: analysisLocks et pendingImages sont en mémoire.
-// En production multi-instance, remplacer par Redis (ex: ioredis).
 const analysisLocks = new Set();
 const pendingImages = new Map();
 
@@ -31,19 +28,13 @@ async function checkAccess(poulaillerId, userId) {
 }
 
 // ============================================================
-// HELPER — Attend l'image d'un poulailler (usage interne)
-//
-// FIX #1 — pendingImages.delete() garanti dans TOUS les chemins
-//   (succès, timeout, exception interne).
-// FIX #3 — clearInterval() garanti : try/catch dans le callback
-//   pour éviter un interval orphelin en cas d'erreur synchrone.
+// HELPER — Attend l'image d'un poulailler
 // ============================================================
 
 function waitForImage(poulaillerId, timeoutMs = 35000) {
   const id = poulaillerId.toString().trim();
 
   return new Promise((resolve, reject) => {
-    // Vérification synchrone avant de créer l'interval
     const existing = pendingImages.get(id);
     if (existing?.image) {
       pendingImages.delete(id);
@@ -58,17 +49,16 @@ function waitForImage(poulaillerId, timeoutMs = 35000) {
 
         if (current?.image) {
           clearInterval(interval);
-          pendingImages.delete(id); // FIX #1 : nettoyage sur succès
+          pendingImages.delete(id);
           return resolve({ image: current.image });
         }
 
         if (Date.now() - startTime > timeoutMs) {
           clearInterval(interval);
-          pendingImages.delete(id); // FIX #1 : nettoyage sur timeout
+          pendingImages.delete(id);
           reject(new Error(`Timeout image pour poulailler ${id}`));
         }
       } catch (err) {
-        // FIX #3 : interval orphelin évité en cas d'erreur synchrone
         clearInterval(interval);
         pendingImages.delete(id);
         reject(err);
@@ -81,28 +71,41 @@ function waitForImage(poulaillerId, timeoutMs = 35000) {
 // @desc    L'ESP32 envoie l'image capturée
 // @route   POST /api/ai/receive-image
 // @access  Public (ESP32, sans JWT)
+//
+// L'ESP32CAM envoie son adresse MAC comme deviceId.
+// Le backend résout la MAC → poulaillerId MongoDB.
+// MODE TEST : si MAC inconnue, fallback sur ID hardcodé.
 // ============================================================
 
 async function receiveImageFromESP(req, res) {
   try {
-    const poulaillerId = req.body?.poulaillerId || req.body?.deviceId;
+    const deviceId = req.body?.deviceId; // MAC address ESP32CAM
     const image = req.body?.image || req.body?.imageBase64;
 
-    if (!poulaillerId) {
-      return res
-        .status(400)
-        .json({ success: false, error: "poulaillerId requis" });
+    if (!deviceId) {
+      return res.status(400).json({ success: false, error: "deviceId requis" });
     }
     if (!image) {
       return res.status(400).json({ success: false, error: "image requise" });
     }
 
-    const id = poulaillerId.toString().trim();
+    // ── Résolution MAC → poulaillerId ──────────────────────
+    let poulaillerId;
+    const poulailler = await Poulailler.findOne({ macAddressCam: deviceId });
 
-    // Supprime le data URI si présent
+    if (poulailler) {
+      poulaillerId = poulailler._id.toString().trim();
+      console.log(`[AI] MAC ${deviceId} → poulailler ${poulaillerId}`);
+    } else {
+      // ⚠️ MODE TEST — fallback hardcodé
+      poulaillerId = "69f27e9b62b5f08c9bf125f9";
+      console.warn(
+        `[AI] MAC ${deviceId} inconnue → FALLBACK TEST poulailler ${poulaillerId}`,
+      );
+    }
+
+    // ── Validation image ───────────────────────────────────
     const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
-
-    // Calcul précis de la taille réelle
     const base64Length = cleanBase64.length;
     const padding = (cleanBase64.match(/=/g) || []).length;
     const imageSizeKb = Math.round(((base64Length * 3) / 4 - padding) / 1024);
@@ -115,17 +118,19 @@ async function receiveImageFromESP(req, res) {
     }
 
     console.log(
-      `[AI] Image ESP32 reçue — poulailler ${id} (${imageSizeKb} Ko)`,
+      `[AI] Image reçue — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
     );
 
-    pendingImages.set(id, { image: cleanBase64, receivedAt: Date.now() });
+    // ── Stockage en attente d'analyse ──────────────────────
+    pendingImages.set(poulaillerId, {
+      image: cleanBase64,
+      receivedAt: Date.now(),
+    });
 
-    // Expiration automatique après 60 secondes
-    // (filet de sécurité — waitForImage fait déjà son propre delete)
     setTimeout(() => {
-      if (pendingImages.has(id)) {
-        pendingImages.delete(id);
-        console.warn(`[AI] Image expirée pour le poulailler ${id}`);
+      if (pendingImages.has(poulaillerId)) {
+        pendingImages.delete(poulaillerId);
+        console.warn(`[AI] Image expirée pour le poulailler ${poulaillerId}`);
       }
     }, 60_000);
 
@@ -198,7 +203,6 @@ async function analyzePoultry(req, res) {
       `[AI] Analyse sauvegardée — ID: ${analysis._id} | Score: ${aiResult.healthScore}`,
     );
 
-    // Création d'une alerte si niveau critique ou mortalité détectée
     if (
       aiResult.urgencyLevel === "critique" ||
       aiResult.detections?.mortalityDetected ||
@@ -355,7 +359,7 @@ async function getAnalysisStats(req, res) {
 }
 
 // ============================================================
-// @desc    Chatbot vétérinaire (Gemma 3 via Cloudflare AI)
+// @desc    Chatbot vétérinaire
 // @route   POST /api/ai/chat
 // @access  Private
 // ============================================================
@@ -369,14 +373,12 @@ async function chatWithVet(req, res) {
       error: "Les champs question et poulaillerId sont requis",
     });
   }
-
   if (question.trim().length < 3) {
     return res.status(400).json({
       success: false,
       error: "Question trop courte (minimum 3 caractères)",
     });
   }
-
   if (question.length > 500) {
     return res.status(400).json({
       success: false,
@@ -395,7 +397,6 @@ async function chatWithVet(req, res) {
       createdAt: -1,
     });
 
-    // Contexte enrichi transmis au modèle Gemma
     const context = {
       poulaillerName: poulailler.name,
       animalCount: poulailler.animalCount,
@@ -440,5 +441,5 @@ module.exports = {
   getLatestAnalysis,
   getAnalysisStats,
   chatWithVet,
-  pendingImages, // Partagé avec aiCronJob
+  pendingImages,
 };
