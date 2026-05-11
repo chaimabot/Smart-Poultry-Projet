@@ -68,6 +68,10 @@ const aiAnalysisSchema = new mongoose.Schema(
         default: "good",
       },
     },
+    imageBase64: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true },
 );

@@ -204,6 +204,7 @@ async function analyzePoultry(req, res) {
       sensors: sensorData,
       result: aiResult,
       imageQuality: aiResult.imageQuality,
+      imageBase64: image,
     });
 
     console.log(
@@ -240,7 +241,39 @@ async function analyzePoultry(req, res) {
     analysisLocks.delete(poulaillerId);
   }
 }
+async function awaitCameraImage(req, res) {
+  const { poulaillerId } = req.params;
 
+  const { error, status } = await checkAccess(poulaillerId, req.user.id);
+  if (error) return res.status(status).json({ success: false, error });
+
+  try {
+    console.log(`[AI] Déclenchement capture MQTT — poulailler ${poulaillerId}`);
+
+    // 1. Publie la commande MQTT → ESP32CAM prend la photo
+    await publishCaptureTrigger(poulaillerId);
+    console.log("[AI] Commande MQTT envoyée → attente image...");
+
+    // 2. Attend que l'ESP32 envoie l'image (POST /api/ai/receive-image)
+    const { image } = await waitForImage(poulaillerId, 35_000);
+    console.log("[AI] Image reçue — envoi au client");
+
+    // 3. Retourne l'image base64 au client mobile
+    return res.status(200).json({
+      success: true,
+      data: {
+        imageBase64: image, // base64 pur, sans préfixe data:
+        sizeKb: Math.round((image.length * 3) / 4 / 1024),
+      },
+    });
+  } catch (err) {
+    console.error("[AI] Erreur awaitCameraImage :", err.message);
+    return res.status(504).json({
+      success: false,
+      error: "Timeout ou erreur lors de la capture : " + err.message,
+    });
+  }
+}
 // ============================================================
 // @desc    Historique des analyses IA
 // @route   GET /api/ai/history/:poulaillerId
@@ -449,4 +482,5 @@ module.exports = {
   getAnalysisStats,
   chatWithVet,
   pendingImages,
+  awaitCameraImage,
 };

@@ -24,5 +24,6 @@ router.get("/history/:poulaillerId", protect, getAnalysisHistory);
 router.get("/latest/:poulaillerId", protect, getLatestAnalysis);
 router.get("/stats/:poulaillerId", protect, getAnalysisStats);
 router.post("/chat", protect, chatWithVet);
+router.post("/capture/:poulaillerId", protect, awaitCameraImage);
 
 module.exports = router;
