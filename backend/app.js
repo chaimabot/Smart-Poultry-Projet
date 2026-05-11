@@ -173,7 +173,7 @@ if (devicesRoutes) app.use("/api/devices", devicesRoutes);
 // Route IA Vision
 try {
   const aiRoutes = require("./routes/aiRoutes");
-  app.use("/api/ia", aiRoutes); // ← /api/ia au lieu de /api/ai
+  app.use("/api/ai", aiRoutes); // ← /api/ia au lieu de /api/ai
   console.log("[ROUTES] ✓ ia chargé");
 } catch (e) {
   console.error("[ROUTES] ia fail:", e.message);
