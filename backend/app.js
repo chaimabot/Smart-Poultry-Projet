@@ -192,7 +192,6 @@ if (lampeRoutes) {
   console.error("[ROUTES] ❌ SKIPPING /api/lampe mount - routes undefined!");
 }
 if (ventilateurRoutes) app.use("/api/ventilateur", ventilateurRoutes);
-if (devicesRoutes) app.use("/api/devices", devicesRoutes);
 
 // Route de base
 app.get("/", (req, res) => {
