@@ -1,3 +1,8 @@
+// services/mqttService.js
+// ============================================================
+// Service MQTT Backend — Smart Poultry
+// ============================================================
+
 const mqtt = require("mqtt");
 const mongoose = require("mongoose");
 const Poulailler = require("../models/Poulailler");
@@ -19,13 +24,20 @@ let doorClockIntervalId = null;
 
 // ============================================================================
 // HELPER : résoudre poulailler depuis adresse MAC
-// L'ESP32 publie sur poulailler/{MAC}/... — le topicParts[1] est la MAC
 // ============================================================================
 const resolvePoulaillerByMac = async (macAddress) => {
-  // La MAC n'est pas un ObjectId MongoDB — on cherche via le modèle Module
   const device = await Module.findOne({ macAddress });
   if (!device || !device.poulailler) return null;
   return await Poulailler.findById(device.poulailler);
+};
+
+// ============================================================================
+// ✅ NOUVEAU : Résoudre MAC depuis poulaillerId
+// ============================================================================
+const resolveMacByPoulaillerId = async (poulaillerId) => {
+  const device = await Module.findOne({ poulailler: poulaillerId });
+  if (!device || !device.macAddress) return null;
+  return device.macAddress;
 };
 
 // ============================================================================
@@ -78,6 +90,7 @@ const connectMqtt = () => {
     const topics = [
       "poulailler/+/measures", // mesures capteurs ESP32
       "poulailler/+/status", // état actionneurs ESP32
+      "poulailler/+/camera/image", // ✅ NOUVEAU : images caméra
       "smartpoultry/discovery",
       "smartpoultry/heartbeat",
     ];
@@ -156,8 +169,14 @@ const handleMqttMessage = async (topic, message) => {
     try {
       data = JSON.parse(payload);
     } catch (e) {
-      if (process.env.DEBUG_MQTT) console.debug("[MQTT] non-JSON skip:", topic);
-      return;
+      // ✅ Pour les images, c'est du base64 brut, pas du JSON
+      if (topic.includes("/camera/image")) {
+        data = { imageBase64: payload };
+      } else {
+        if (process.env.DEBUG_MQTT)
+          console.debug("[MQTT] non-JSON skip:", topic);
+        return;
+      }
     }
 
     // ── 1. DISCOVERY / HEARTBEAT ─────────────────────────────────────────────
@@ -165,13 +184,10 @@ const handleMqttMessage = async (topic, message) => {
       topic === "smartpoultry/discovery" ||
       topic === "smartpoultry/heartbeat"
     ) {
-      // Un ESP32 annonce sa présence avec sa MAC
       const mac = data.mac || data.macAddress || data.deviceId;
       if (!mac) return;
 
       console.log(`[MQTT] Discovery/Heartbeat — MAC: ${mac}`);
-
-      // Mettre à jour lastPing du device
       await Module.findOneAndUpdate(
         { macAddress: mac },
         { lastPing: new Date() },
@@ -179,11 +195,49 @@ const handleMqttMessage = async (topic, message) => {
       return;
     }
 
+    // ── 2. CAMERA IMAGE ──────────────────────────────────────────────────────
+    // ✅ NOUVEAU : Traiter les images reçues depuis ESP32CAM
+    if (topic.includes("/camera/image") && topicParts.length >= 3) {
+      const macAddress = topicParts[1];
+
+      console.log(`[MQTT] 📷 Image reçue depuis MAC: ${macAddress}`);
+
+      // Résoudre poulailler
+      const poulailler = await resolvePoulaillerByMac(macAddress);
+      if (!poulailler) {
+        console.warn(
+          `[MQTT] Aucun poulailler trouvé pour MAC caméra: ${macAddress}`,
+        );
+        return;
+      }
+
+      // Extraire l'image base64
+      const imageBase64 = data.imageBase64 || payload;
+
+      if (!imageBase64 || imageBase64.length < 100) {
+        console.warn(
+          `[MQTT] Image invalide ou trop petite (${imageBase64.length} bytes)`,
+        );
+        return;
+      }
+
+      // ✅ Notifier le controller AI via l'event emitter
+      const { handleCameraImage } = require("./aiService");
+      await handleCameraImage(
+        poulailler._id.toString(),
+        macAddress,
+        imageBase64,
+      );
+
+      console.log(
+        `[MQTT] ✅ Image traitée — poulailler: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
+      );
+      return;
+    }
+
     // Pour les topics poulailler/+/measures et poulailler/+/status
     if (topicParts[0] !== "poulailler" || topicParts.length < 3) return;
 
-    // ✅ topicParts[1] est maintenant la MAC (ex: "142B2FC7D704")
-    // PAS un ObjectId MongoDB
     const macAddress = topicParts[1];
     const messageType = topicParts[2]; // "measures" ou "status"
 
@@ -196,13 +250,12 @@ const handleMqttMessage = async (topic, message) => {
 
     const poulaillerId = poulailler._id.toString();
 
-    // ── 2. MESURES CAPTEURS ───────────────────────────────────────────────────
+    // ── 3. MESURES CAPTEURS ───────────────────────────────────────────────────
     if (messageType === "measures") {
       console.log(
         `[MQTT] Mesures reçues — MAC: ${macAddress} | poulailler: ${poulaillerId}`,
       );
 
-      // Sauvegarder la mesure en base
       await Measure.create({
         poulailler: poulailler._id,
         temperature: data.temperature ?? null,
@@ -213,7 +266,6 @@ const handleMqttMessage = async (topic, message) => {
         timestamp: new Date(),
       });
 
-      // Mettre à jour lastMonitoring sur le poulailler
       poulailler.lastMonitoring = {
         temperature: data.temperature ?? poulailler.lastMonitoring?.temperature,
         humidity: data.humidity ?? poulailler.lastMonitoring?.humidity,
@@ -223,22 +275,17 @@ const handleMqttMessage = async (topic, message) => {
         timestamp: new Date(),
       };
 
-      // Mettre à jour le status du device (lastPing)
       await Module.findOneAndUpdate(
         { macAddress },
         { lastPing: new Date(), status: "associated" },
       );
 
-      // Mettre à jour le statut du poulailler
       if (poulailler.status !== "connecte") {
         poulailler.status = "connecte";
       }
       await poulailler.save();
 
-      // Vérifier les seuils et créer des alertes si nécessaire
       await checkSensorThresholds(poulaillerId, data, poulailler.thresholds);
-
-      // Résoudre les alertes pour les valeurs revenues à la normale
       await resolveNormalValues(poulaillerId, data, poulailler.thresholds);
 
       console.log(
@@ -247,16 +294,11 @@ const handleMqttMessage = async (topic, message) => {
       return;
     }
 
-    // ── 3. STATUS ACTIONNEURS ─────────────────────────────────────────────────
+    // ── 4. STATUS ACTIONNEURS ─────────────────────────────────────────────────
     if (messageType === "status") {
       console.log(
         `[MQTT] Status reçu — MAC: ${macAddress} | poulailler: ${poulaillerId}`,
       );
-      console.log(`[MQTT] Payload status:`, data);
-
-      // Mettre à jour les états actionneurs depuis l'ESP32
-      // ⚠️ On met à jour SEULEMENT le status (on/off), PAS le mode (auto/manual)
-      // Le mode est la source de vérité de la BD — l'ESP32 ne doit pas l'écraser
 
       if (data.fanOn !== undefined) {
         poulailler.actuatorStates.ventilation.status = data.fanOn
@@ -270,11 +312,9 @@ const handleMqttMessage = async (topic, message) => {
         poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
       }
 
-      // ✅ Envoyer la config (modes) à l'ESP32 à chaque status reçu
-      // Comme ça si l'ESP32 redémarre, il récupère les bons modes depuis la BD
       publishConfig(macAddress, poulailler);
 
-      // Traitement spécial pour la porte (état riche)
+      // Traitement porte
       if (data.doorState !== undefined) {
         const doorStateMap = {
           OPEN: "open",
@@ -289,7 +329,6 @@ const handleMqttMessage = async (topic, message) => {
 
         poulailler.actuatorStates.door.status = newDoorStatus;
 
-        // Créer un DoorEvent si l'état a changé
         if (prevDoorStatus !== newDoorStatus) {
           try {
             await DoorEvent.create({
@@ -307,7 +346,6 @@ const handleMqttMessage = async (topic, message) => {
           }
         }
 
-        // Vérifier le timeout porte via doorController
         if (data.doorState === "BLOCKED") {
           try {
             const doorController = require("../controllers/doorController");
@@ -331,24 +369,9 @@ const handleMqttMessage = async (topic, message) => {
 // ACTIONS SORTANTES
 // ============================================================================
 
-// ✅ Envoie la config complète (modes + seuils) à l'ESP32
-// Appelé à chaque réception de status pour resynchroniser l'ESP32
-// Dans mqttService.js — remplacer publishConfig par ceci :
-
 const publishConfig = (macAddress, poulailler) => {
   if (!client || !client.connected) return;
 
-  // ✅ On n'envoie QUE les seuils dans la config automatique.
-  // Les modes (fanMode, lampMode, pumpMode) ne sont PAS envoyés ici.
-  //
-  // Pourquoi ? Parce que publishConfig est appelé à chaque /status reçu
-  // de l'ESP32. Si on envoie lampMode:"auto" → l'ESP32 active le mode auto
-  // → publie /status {lampAuto:true} → backend re-publie config → boucle infinie.
-  //
-  // Les modes sont envoyés UNIQUEMENT par les routes dédiées :
-  //   - PATCH /lampe/:id/control       → cmd/lamp  {mode, on}
-  //   - PATCH /ventilateur/:id/control → cmd/fan   {mode, on}
-  //   - PATCH /pompe/:id/control       → cmd/pump  {mode, on}
   const config = {
     tempMin: poulailler.thresholds.temperatureMin,
     tempMax: poulailler.thresholds.temperatureMax,
@@ -363,7 +386,31 @@ const publishConfig = (macAddress, poulailler) => {
   );
 };
 
-// Publie une commande générique (usage interne)
+// ✅ NOUVEAU : Publier commande caméra
+const publishCameraCommand = async (poulaillerId) => {
+  if (!client || !client.connected) {
+    console.error("[MQTT] Publication impossible : client déconnecté.");
+    return false;
+  }
+
+  // Résoudre poulaillerId → MAC
+  const macAddress = await resolveMacByPoulaillerId(poulaillerId);
+  if (!macAddress) {
+    console.error(`[MQTT] Aucune MAC trouvée pour poulailler ${poulaillerId}`);
+    return false;
+  }
+
+  const topic = `poulailler/${macAddress}/cmd/camera`;
+  const payload = JSON.stringify({
+    action: "capture",
+    timestamp: new Date().toISOString(),
+  });
+
+  client.publish(topic, payload, { qos: 1 });
+  console.log(`[MQTT] 📷 Commande caméra envoyée sur ${topic}`);
+  return true;
+};
+
 const publishCommand = (macAddressOrId, command, value) => {
   if (!client || !client.connected) {
     console.error("[MQTT] Publication impossible : client déconnecté.");
@@ -423,8 +470,6 @@ const startDoorClockSync = () => {
     try {
       const { syncDoorClock } = require("./porteService");
 
-      // ✅ On itère sur les devices (Module) qui ont une MAC associée à un poulailler
-      // pour passer la MAC à syncDoorClock
       const devices = await Module.find({
         macAddress: { $exists: true, $ne: null },
         poulailler: { $exists: true, $ne: null },
@@ -433,10 +478,7 @@ const startDoorClockSync = () => {
 
       for (const device of devices) {
         if (device.macAddress && device.poulailler) {
-          await syncDoorClock(
-            device.poulailler.toString(),
-            device.macAddress, // ✅ passer la MAC
-          );
+          await syncDoorClock(device.poulailler.toString(), device.macAddress);
         }
       }
     } catch (error) {
@@ -470,6 +512,8 @@ module.exports = {
   connectMqtt,
   publishCommand,
   publishConfig,
+  publishCameraCommand, // ✅ NOUVEAU
+  resolveMacByPoulaillerId, // ✅ NOUVEAU
   disconnectMqtt,
   getMqttClient: () => client,
   startDoorMonitoring,

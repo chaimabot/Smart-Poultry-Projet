@@ -16,6 +16,7 @@ const sharp = require("sharp");
 // ============================================================
 // CONFIG
 // ============================================================
+const { pendingImages } = require("../controllers/aiController");
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -639,6 +640,58 @@ function buildFallbackAnswer(question, context) {
 
   return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${context.lastScore}/100. ${context.lastDiagnostic}. Posez-moi une question sur la santé, les alertes ou les conseils.`;
 }
+// services/aiService.js
+// Ajouter cette fonction pour gérer les images reçues
+
+// ✅ NOUVEAU : Handler appelé par MQTT quand une image arrive
+async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
+  try {
+    const cleanBase64 = imageBase64.includes(",")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const base64Length = cleanBase64.length;
+    const padding = (cleanBase64.match(/=/g) || []).length;
+    const imageSizeKb = Math.round(((base64Length * 3) / 4 - padding) / 1024);
+
+    if (imageSizeKb < 3) {
+      console.warn(`[AI] Image trop petite (${imageSizeKb} Ko) — rejetée`);
+      return;
+    }
+
+    console.log(
+      `[AI] Image stockée — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
+    );
+
+    // Stocker dans pendingImages pour que awaitCameraImage() la récupère
+    pendingImages.set(poulaillerId.toString().trim(), {
+      image: cleanBase64,
+      receivedAt: Date.now(),
+    });
+
+    // Auto-expiration après 60 secondes
+    setTimeout(() => {
+      if (pendingImages.has(poulaillerId.toString().trim())) {
+        pendingImages.delete(poulaillerId.toString().trim());
+        console.warn(`[AI] Image expirée pour le poulailler ${poulaillerId}`);
+      }
+    }, 60_000);
+  } catch (err) {
+    console.error("[AI] Erreur handleCameraImage:", err.message);
+  }
+}
+
+// ✅ Publier commande capture MQTT
+async function publishCaptureTrigger(poulaillerId) {
+  const { publishCameraCommand } = require("./mqttService");
+
+  const success = await publishCameraCommand(poulaillerId);
+  if (!success) {
+    throw new Error("Échec envoi commande MQTT caméra");
+  }
+
+  return true;
+}
 
 // ============================================================
 // EXPORTS
@@ -649,4 +702,5 @@ module.exports = {
   chatWithGemma,
   publishCaptureTrigger,
   INTER_ANALYSIS_DELAY_MS,
+  handleCameraImage,
 };
