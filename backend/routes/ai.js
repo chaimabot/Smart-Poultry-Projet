@@ -13,7 +13,7 @@ const {
   getAnalysisStats,
   chatWithVet,
 } = require("../controllers/aiController");
-const { protect } = require("../middleware/authMiddleware");
+const { protect } = require("../middlewares/auth");
 
 // ── Public (ESP32 + mobile envoient l'image sans JWT) ────────────────────────
 router.post("/receive-image", receiveImageFromESP);
