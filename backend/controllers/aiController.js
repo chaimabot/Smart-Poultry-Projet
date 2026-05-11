@@ -98,10 +98,17 @@ async function receiveImageFromESP(req, res) {
       console.log(`[AI] MAC ${deviceId} → poulailler ${poulaillerId}`);
     } else {
       // ⚠️ MODE TEST — fallback hardcodé
-      poulaillerId = "69f27e9b62b5f08c9bf125f9";
-      console.warn(
-        `[AI] MAC ${deviceId} inconnue → FALLBACK TEST poulailler ${poulaillerId}`,
-      );
+      // ⚠️ MODE TEST — MAC hardcodée
+      if (deviceId === "70:4B:CA:23:E5:44") {
+        poulaillerId = "69f27e9b62b5f08c9bf125f9";
+        console.warn(
+          `[AI] MODE TEST — MAC ${deviceId} → poulailler ${poulaillerId}`,
+        );
+      } else {
+        return res
+          .status(404)
+          .json({ success: false, error: `MAC inconnue : ${deviceId}` });
+      }
     }
 
     // ── Validation image ───────────────────────────────────
