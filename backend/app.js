@@ -172,7 +172,7 @@ if (pompeRoutes) app.use("/api/pompe", pompeRoutes);
 if (devicesRoutes) app.use("/api/devices", devicesRoutes);
 // Route IA Vision
 try {
-  const aiRoutes = require("./routes/aiRoutes");
+  const aiRoutes = require("./routes/ai");
   app.use("/api/ai", aiRoutes); // ← /api/ia au lieu de /api/ai
   console.log("[ROUTES] ✓ ia chargé");
 } catch (e) {
