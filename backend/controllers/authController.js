@@ -34,9 +34,7 @@ const loginSchema = Joi.object({
   password: Joi.string().required(),
 });
 
-// ─────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────
+
 
 const generateToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "30d" });
@@ -83,9 +81,7 @@ exports.register = async (req, res) => {
 
     const motDePasseTemporaire = genererMotDePasseTemporaire();
 
-    // ✅ FIX 1: Suppression de status:"pending" — champ absent du userSchema
-    // Le compte reste inactif via isActive:true (valeur par défaut),
-    // la logique "pending" est gérée côté dossier (status:"EN_ATTENTE")
+ 
     const user = await User.create({
       firstName,
       lastName,
@@ -96,9 +92,7 @@ exports.register = async (req, res) => {
       isActive: false, // inactif jusqu'à validation admin
     });
 
-    // ✅ FIX 2: Utilisation des champs corrects du poulaillerSchema
-    // Suppression de "location" et "description" (inexistants)
-    // Ajout de "surface", "densite", "address", "remarque"
+
     const poulaillersDocs = await Promise.all(
       poulaillers.map((p) => {
         const densiteCalc = parseFloat((p.nb_volailles / p.surface).toFixed(2));
@@ -124,8 +118,7 @@ exports.register = async (req, res) => {
     const randomHex = crypto.randomBytes(2).toString("hex").toUpperCase();
     const autoContractNumber = `SP-${year}-${randomHex}`;
 
-    // ✅ FIX 3: Suppression de motDePasseTemporaire — champ absent du dossierSchema
-    // Le mot de passe temporaire est retourné dans la réponse pour usage admin
+
     const dossier = await Dossier.create({
       eleveur: user._id,
       poulailler: poulaillersDocs[0]._id,
@@ -152,7 +145,6 @@ exports.register = async (req, res) => {
         nbPoulaillers: poulaillersDocs.length,
         dossierId: dossier._id,
         contractNumber: autoContractNumber,
-        // Exposé ici pour que l'admin puisse le noter/envoyer manuellement
         motDePasseTemporaire,
       },
     });
@@ -190,8 +182,6 @@ exports.login = async (req, res) => {
         .json({ success: false, error: "Identifiants invalides" });
     }
 
-    // ✅ FIX 4: Remplacement de status:"pending" par isActive:false
-    // car userSchema n'a pas de champ "status", il a "isActive" (Boolean)
     if (!user.isActive) {
       return res.status(403).json({
         success: false,
@@ -218,11 +208,7 @@ exports.login = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-// @desc    Validation du dossier par l'admin
-// @route   PATCH /api/dossiers/:id/valider
-// @access  Admin
-// ─────────────────────────────────────────────────────────────
+
 exports.validerDossier = async (req, res) => {
   try {
     const dossier = await Dossier.findById(req.params.id)
@@ -242,9 +228,7 @@ exports.validerDossier = async (req, res) => {
 
     const user = dossier.eleveur;
 
-    // ✅ FIX 5: motDePasseTemporaire n'existe plus dans le dossier
-    // Il doit être passé dans le body par l'admin (récupéré depuis la réponse register)
-    // OU regénéré ici et sauvegardé sur le user
+
     const motDePasse = req.body.motDePasseTemporaire;
     if (!motDePasse) {
       return res.status(400).json({
@@ -256,7 +240,6 @@ exports.validerDossier = async (req, res) => {
 
     const tousPoulaillers = await Poulailler.find({ owner: user._id });
 
-    // ✅ FIX 6: Activation via isActive:true (pas status:"active")
     user.isActive = true;
     await user.save();
 
@@ -265,8 +248,7 @@ exports.validerDossier = async (req, res) => {
     dossier.validatedBy = req.user?._id || null;
     await dossier.save();
 
-    // ✅ FIX 7: Colonne email — utilise "address" au lieu de "description"
-    // car poulaillerSchema n'a pas de champ "description"
+
     try {
       const nodemailer = require("nodemailer");
       const transporter = nodemailer.createTransport({
@@ -345,11 +327,7 @@ exports.validerDossier = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-// @desc    Récupérer tous les poulaillers d'un éleveur
-// @route   GET /api/auth/me/poulaillers
-// @access  Privé (éleveur connecté)
-// ─────────────────────────────────────────────────────────────
+
 exports.getMesPoulaillers = async (req, res) => {
   try {
     const poulaillers = await Poulailler.find({ owner: req.user.id }).sort({
@@ -365,11 +343,6 @@ exports.getMesPoulaillers = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-// @desc    Ajouter un poulailler à un éleveur existant
-// @route   POST /api/auth/me/poulaillers
-// @access  Privé (éleveur connecté)
-// ─────────────────────────────────────────────────────────────
 exports.ajouterPoulailler = async (req, res) => {
   const { error, value } = poulaillerSchema.validate(req.body, {
     abortEarly: false,
@@ -397,7 +370,6 @@ exports.ajouterPoulailler = async (req, res) => {
       (value.nb_volailles / value.surface).toFixed(2),
     );
 
-    // ✅ FIX 8: Même correction que register — champs corrects du poulaillerSchema
     const poulailler = await Poulailler.create({
       owner: req.user.id,
       name: value.nom,
@@ -418,9 +390,7 @@ exports.ajouterPoulailler = async (req, res) => {
   }
 };
 
-// ─────────────────────────────────────────────────────────────
-// AUTRES ROUTES
-// ─────────────────────────────────────────────────────────────
+
 
 exports.getMe = async (req, res) => {
   try {

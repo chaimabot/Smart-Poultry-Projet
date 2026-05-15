@@ -1,6 +1,5 @@
 const User = require("../models/User");
 
-// @route GET /api/invite/verify?token=xxx
 exports.verifyInvite = async (req, res) => {
   const { token } = req.query;
   if (!token)

@@ -1,8 +1,3 @@
-// controllers/aiController.js
-// ============================================================
-// Contrôleur IA — Smart Poultry
-// ============================================================
-
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
 const Alert = require("../models/Alert");
@@ -15,10 +10,6 @@ const {
 const analysisLocks = new Set();
 const pendingImages = new Map();
 
-// ============================================================
-// HELPER — Vérifie l'accès au poulailler
-// ============================================================
-
 async function checkAccess(poulaillerId, userId) {
   const poulailler = await Poulailler.findById(poulaillerId);
   if (!poulailler) return { error: "Poulailler non trouvé", status: 404 };
@@ -26,10 +17,6 @@ async function checkAccess(poulaillerId, userId) {
     return { error: "Accès non autorisé", status: 403 };
   return { poulailler };
 }
-
-// ============================================================
-// HELPER — Attend l'image d'un poulailler
-// ============================================================
 
 function waitForImage(poulaillerId, timeoutMs = 35000) {
   const id = poulaillerId.toString().trim();
@@ -67,16 +54,6 @@ function waitForImage(poulaillerId, timeoutMs = 35000) {
   });
 }
 
-// ============================================================
-// @desc    L'ESP32 envoie l'image capturée
-// @route   POST /api/ai/receive-image
-// @access  Public (ESP32, sans JWT)
-//
-// L'ESP32CAM envoie son adresse MAC comme deviceId.
-// Le backend résout la MAC → poulaillerId MongoDB.
-// MODE TEST : si MAC inconnue, fallback sur ID hardcodé.
-// ============================================================
-
 async function receiveImageFromESP(req, res) {
   try {
     const deviceId = req.body?.deviceId; // MAC address ESP32CAM
@@ -97,8 +74,6 @@ async function receiveImageFromESP(req, res) {
       poulaillerId = poulailler._id.toString().trim();
       console.log(`[AI] MAC ${deviceId} → poulailler ${poulaillerId}`);
     } else {
-      // ⚠️ MODE TEST — fallback hardcodé
-      // ⚠️ MODE TEST — MAC hardcodée
       if (deviceId === "70:4B:CA:23:E5:44") {
         poulaillerId = "69f27e9b62b5f08c9bf125f9";
         console.warn(
@@ -111,7 +86,6 @@ async function receiveImageFromESP(req, res) {
       }
     }
 
-    // ── Validation image ───────────────────────────────────
     const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
     const base64Length = cleanBase64.length;
     const padding = (cleanBase64.match(/=/g) || []).length;
@@ -147,12 +121,6 @@ async function receiveImageFromESP(req, res) {
     return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
-
-// ============================================================
-// @desc    Déclenche une analyse IA manuelle
-// @route   POST /api/ai/analyze/:poulaillerId
-// @access  Private (JWT)
-// ============================================================
 
 async function analyzePoultry(req, res) {
   const { poulaillerId } = req.params;
@@ -274,11 +242,6 @@ async function awaitCameraImage(req, res) {
     });
   }
 }
-// ============================================================
-// @desc    Historique des analyses IA
-// @route   GET /api/ai/history/:poulaillerId
-// @access  Private
-// ============================================================
 
 async function getAnalysisHistory(req, res) {
   const { error, status } = await checkAccess(
@@ -302,12 +265,6 @@ async function getAnalysisHistory(req, res) {
     return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
-
-// ============================================================
-// @desc    Dernière analyse IA
-// @route   GET /api/ai/latest/:poulaillerId
-// @access  Private
-// ============================================================
 
 async function getLatestAnalysis(req, res) {
   const { error, status } = await checkAccess(
@@ -335,12 +292,6 @@ async function getLatestAnalysis(req, res) {
     return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
-
-// ============================================================
-// @desc    Statistiques des analyses IA
-// @route   GET /api/ai/stats/:poulaillerId
-// @access  Private
-// ============================================================
 
 async function getAnalysisStats(req, res) {
   const { error, status } = await checkAccess(
@@ -397,12 +348,6 @@ async function getAnalysisStats(req, res) {
     return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
-
-// ============================================================
-// @desc    Chatbot vétérinaire
-// @route   POST /api/ai/chat
-// @access  Private
-// ============================================================
 
 async function chatWithVet(req, res) {
   const { question, poulaillerId } = req.body;
@@ -469,10 +414,6 @@ async function chatWithVet(req, res) {
     return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
-
-// ============================================================
-// EXPORTS
-// ============================================================
 
 module.exports = {
   receiveImageFromESP,

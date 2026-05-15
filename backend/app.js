@@ -14,7 +14,6 @@ const logger = require("./utils/logger");
 const requestLogger = require("./middlewares/requestLogger");
 
 const { connectMqtt } = require("./services/mqttService");
-// Rate limiting - évite authLimiter comme demandé
 const {
   perUserLimiter,
   criticalLimiter,
@@ -31,22 +30,16 @@ connectMqtt();
 
 const app = express();
 
-// Logger Simple
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
   next();
 });
 
-// ✅ NEW: Winston request logging (replaces console.log)
 app.use(requestLogger);
-
-// Sécurité : En-têtes HTTP
 app.use(helmet());
 
-// Sécurité : CORS - Whitelist origins
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin || origin === "null") {
       return callback(null, true);
     }
@@ -60,7 +53,7 @@ const corsOptions = {
       "https://platfomsmartpoultry.netlify.app",
       "https://platform-jksv2jf2r-chaimabots-projects.vercel.app",
       "https://smartpoultrychaima.vercel.app",
-      "https://smart-poultry-reset.vercel.app", // ← AJOUTER
+      "https://smart-poultry-reset.vercel.app",
     ].filter(Boolean);
 
     if (allowedOrigins.includes(origin)) {
@@ -77,10 +70,9 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Sécurité : Rate Limiting
 const limiter = rateLimit({
-  windowMs: 10 * 60 * 10, // 10 minutes
-  max: 10000, // Limite chaque IP à 100 requêtes par fenêtre
+  windowMs: 10 * 60 * 10,
+  max: 10000,
   message:
     "Trop de requêtes créées à partir de cette IP, veuillez réessayer après 10 minutes",
 });
@@ -89,7 +81,9 @@ app.use(limiter);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// Routes - SAFE LOAD
+// ============================================================
+// CHARGEMENT DES ROUTES
+// ============================================================
 let authRoutes,
   poulaillerRoutes,
   alertRoutes,
@@ -99,7 +93,9 @@ let authRoutes,
   lampeRoutes,
   ventilateurRoutes,
   porteRoutes,
-  devicesRoutes;
+  devicesRoutes,
+  wifiRoutes; // ← nouveau
+
 try {
   authRoutes = require("./routes/auth");
 } catch (e) {
@@ -130,12 +126,7 @@ try {
 try {
   console.log("[ROUTES] Attempting to load lampe routes...");
   lampeRoutes = require("./routes/lampe");
-  console.log(
-    "[ROUTES] ✓ lampeRoutes loaded successfully:",
-    lampeRoutes.stack
-      ? "controller object"
-      : Object.keys(lampeRoutes._router ? "router" : lampeRoutes),
-  );
+  console.log("[ROUTES] ✓ lampeRoutes loaded successfully");
 } catch (e) {
   console.error("[ROUTES] ✗ lampe fail - FULL ERROR:", e);
   console.error("[ROUTES] Stack:", e.stack);
@@ -154,7 +145,16 @@ try {
 } catch (e) {
   console.error("[ROUTES] devices fail:", e.message);
 }
-// ==================== CHARGEMENT ROUTE PORTE ====================
+
+// ── Wifi ──────────────────────────────────────────────────
+try {
+  wifiRoutes = require("./routes/wifi");
+  console.log("[ROUTES] ✓ wifi chargé");
+} catch (e) {
+  console.error("[ROUTES] wifi fail:", e.message);
+}
+
+// ── Porte ─────────────────────────────────────────────────
 try {
   porteRoutes = require("./routes/porte");
   console.log("[ROUTES] ✓ porte chargé avec succès");
@@ -163,6 +163,10 @@ try {
   console.error("[ROUTES] ✗ porte échoué :", e.message);
   console.error("[ROUTES] Vérifiez que le fichier existe : ./routes/porte.js");
 }
+
+// ============================================================
+// MONTAGE DES ROUTES
+// ============================================================
 if (authRoutes) app.use("/api/auth", authRoutes);
 if (poulaillerRoutes) app.use("/api/poulaillers", poulaillerRoutes);
 if (alertRoutes) app.use("/api/alerts", alertRoutes);
@@ -170,10 +174,19 @@ if (systemConfigRoutes) app.use("/api/system-config", systemConfigRoutes);
 if (modulesRoutes) app.use("/api/modules", modulesRoutes);
 if (pompeRoutes) app.use("/api/pompe", pompeRoutes);
 if (devicesRoutes) app.use("/api/devices", devicesRoutes);
-// Route IA Vision
+if (wifiRoutes) app.use("/api/wifi", wifiRoutes); // ← nouveau
+if (ventilateurRoutes) app.use("/api/ventilateur", ventilateurRoutes);
+
+if (lampeRoutes) {
+  console.log("[ROUTES] Mounting /api/lampe ✓");
+  app.use("/api/lampe", lampeRoutes);
+} else {
+  console.error("[ROUTES] ❌ SKIPPING /api/lampe mount - routes undefined!");
+}
+
 try {
   const aiRoutes = require("./routes/ai");
-  app.use("/api/ai", aiRoutes); // ← /api/ia au lieu de /api/ai
+  app.use("/api/ai", aiRoutes);
   console.log("[ROUTES] ✓ ia chargé");
 } catch (e) {
   console.error("[ROUTES] ia fail:", e.message);
@@ -185,31 +198,25 @@ try {
 } catch (e) {
   console.error("[ROUTES] invite fail:", e.message);
 }
-if (lampeRoutes) {
-  console.log("[ROUTES] Mounting /api/lampe ✓");
-  app.use("/api/lampe", lampeRoutes);
-} else {
-  console.error("[ROUTES] ❌ SKIPPING /api/lampe mount - routes undefined!");
-}
-if (ventilateurRoutes) app.use("/api/ventilateur", ventilateurRoutes);
 
-// Route de base
+// ============================================================
+// ROUTES DE BASE
+// ============================================================
 app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
 });
 
-// Test endpoint upload image (debug)
 app.post("/api/upload-image", (req, res) => {
   console.log("IMAGE RECUE");
   res.json({ success: true });
 });
 
-// Gestion des erreurs 404
+// 404
 app.use((req, res, next) => {
   res.status(404).json({ success: false, error: "Route non trouvée" });
 });
 
-// Middleware Global d'Erreur
+// Erreur globale
 app.use((err, req, res, next) => {
   console.error("Erreur Globale:", err);
   res.status(err.status || 500).json({
@@ -218,13 +225,12 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Port d'écoute
+// ============================================================
+// SERVEUR HTTP + SOCKET.IO
+// ============================================================
 const PORT = process.env.PORT || 5000;
-
-// Create HTTP server for Socket.IO
 const server = http.createServer(app);
 
-// Initialize Socket.IO with CORS
 const io = new SocketIOServer(server, {
   cors: {
     origin: [
@@ -232,7 +238,6 @@ const io = new SocketIOServer(server, {
       "http://localhost:8081",
       "http://127.0.0.1:19000",
       "http://192.168.1.100:19000",
-
       process.env.MOBILE_APP_URL,
       "https://platfomsmartpoultry.netlify.app",
     ].filter(Boolean),
@@ -240,21 +245,17 @@ const io = new SocketIOServer(server, {
   },
 });
 
-// Socket.IO authentication middleware
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
     return next(new Error("Authentication token required"));
   }
-  // Token validation can be added here
   next();
 });
 
-// Socket.IO connection handler
 io.on("connection", (socket) => {
   console.log(`[SOCKET] Client connected: ${socket.id}`);
 
-  // Join poulailler room
   socket.on("joinPoulailler", (poulaillerId) => {
     socket.join(`poulailler:${poulaillerId}`);
     console.log(
@@ -262,7 +263,6 @@ io.on("connection", (socket) => {
     );
   });
 
-  // Leave poulailler room
   socket.on("leavePoulailler", (poulaillerId) => {
     socket.leave(`poulailler:${poulaillerId}`);
     console.log(
@@ -270,19 +270,15 @@ io.on("connection", (socket) => {
     );
   });
 
-  // Handle commands
   socket.on("command", (data) => {
     console.log(`[SOCKET] Command received:`, data);
-    // Command handling can be implemented here
   });
 
-  // Disconnect handler
   socket.on("disconnect", () => {
     console.log(`[SOCKET] Client disconnected: ${socket.id}`);
   });
 });
 
-// Export io for use in other modules
 module.exports.io = io;
 
 server.listen(PORT, () => {
@@ -294,7 +290,6 @@ server.on("error", (err) => {
   process.exit(1);
 });
 
-// Gestion des rejets de promesse non gérés
 process.on("unhandledRejection", (err, promise) => {
   console.log(`Erreur: ${err.message}`);
   server.close(() => process.exit(1));

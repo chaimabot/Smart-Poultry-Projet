@@ -1,8 +1,5 @@
 // services/aiService.js
-// ============================================================
-// Service IA — Smart Poultry
 // Cloudflare AI (Gemma 3 + LLaVA) + MQTT
-// ============================================================
 
 const path = require("path");
 require("dotenv").config({
@@ -13,9 +10,6 @@ const axios = require("axios");
 const mqtt = require("mqtt");
 const sharp = require("sharp");
 
-// ============================================================
-// CONFIG
-// ============================================================
 const { pendingImages } = require("../controllers/aiController");
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -27,12 +21,11 @@ const PRIMARY_MODEL = "@cf/google/gemma-3-12b-it";
 const FALLBACK_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
 
 const GEMMA_TIMEOUT = 12000; // ms — analyse image
-const CHAT_TIMEOUT = 20000; // ms — chatbot (délai plus souple)
+const CHAT_TIMEOUT = 20000; // ms — chatbot
 const LLAVA_TIMEOUT = 10000; // ms — fallback image
 
 const LLAVA_MAX_KB = 24; // Taille max acceptée par LLaVA
 
-// Délai entre poulaillers dans le cron (évite de saturer MQTT + Cloudflare AI)
 const INTER_ANALYSIS_DELAY_MS = 5000;
 
 // Mots-clés liés à la mortalité à détecter dans le diagnostic et les conseils
@@ -53,13 +46,7 @@ const DEATH_KEYWORDS = [
   "deceased",
 ];
 
-// NOTE: pendingImages est stocké en mémoire.
-// En production multi-instance, remplacer par Redis (ex: ioredis).
 let mqttClient = null;
-
-// ============================================================
-// MQTT
-// ============================================================
 
 function getMqttClient() {
   if (mqttClient?.connected) return mqttClient;
@@ -97,10 +84,6 @@ async function publishCaptureTrigger(poulaillerId) {
   });
 }
 
-// ============================================================
-// IMAGE HELPERS
-// ============================================================
-
 function cleanBase64(base64) {
   if (!base64) return null;
   return base64.includes(",") ? base64.split(",")[1] : base64;
@@ -109,13 +92,6 @@ function cleanBase64(base64) {
 function getImageSizeKb(base64) {
   return Math.round((base64.length * 3) / 4 / 1024);
 }
-
-// ============================================================
-// COMPRESSION IMAGE AUTOMATIQUE
-// FIX: boucle réécrite pour ne conserver aucune référence
-//      intermédiaire — chaque Buffer est libérable par le GC
-//      dès la prochaine itération.
-// ============================================================
 
 async function compressImage(base64) {
   const buffer = Buffer.from(base64, "base64");
@@ -126,8 +102,6 @@ async function compressImage(base64) {
     const quality = Math.max(10, 50 - i * 10);
     const width = Math.max(120, 320 - i * 40);
 
-    // FIX: variable locale à chaque itération → référence intermédiaire
-    //      non retenue, GC peut collecter dès la fin du bloc
     const compressed = await sharp(buffer)
       .resize({ width })
       .jpeg({ quality, mozjpeg: true })
@@ -143,17 +117,12 @@ async function compressImage(base64) {
       return compressed.toString("base64");
     }
 
-    // Garde uniquement le dernier pour le retour de secours
     lastCompressed = compressed;
   }
 
   console.warn("[AI] Limite de compression atteinte");
   return lastCompressed.toString("base64");
 }
-
-// ============================================================
-// FALLBACK CAPTEURS UNIQUEMENT (sans image)
-// ============================================================
 
 function analyzeWithSensorsOnly(sensorData = {}) {
   let score = 85;
@@ -210,10 +179,6 @@ function analyzeWithSensorsOnly(sensorData = {}) {
     imageQuality: { sizeKb: 0, status: "poor" },
   };
 }
-
-// ============================================================
-// PROMPT ANALYSE IMAGE
-// ============================================================
 
 function buildAnalysisPrompt(sensorData = {}) {
   return `
@@ -280,10 +245,6 @@ Réponds uniquement en texte simple, sans JSON, sans markdown, sans listes à pu
 `.trim();
 }
 
-// ============================================================
-// APPEL API CLOUDFLARE
-// ============================================================
-
 async function callCloudflare(model, payload, timeout) {
   const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${model}`;
 
@@ -298,10 +259,6 @@ async function callCloudflare(model, payload, timeout) {
   return response.data.result.response;
 }
 
-// ============================================================
-// NORMALISATION URGENCE
-// ============================================================
-
 function normalizeUrgency(value) {
   if (!value) return "normal";
   const v = value.toString().toLowerCase();
@@ -312,19 +269,11 @@ function normalizeUrgency(value) {
   return "normal";
 }
 
-// ============================================================
-// DÉTECTION MOTS-CLÉS MORTALITÉ
-// ============================================================
-
 function mentionsDeath(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
   return DEATH_KEYWORDS.some((kw) => lower.includes(kw));
 }
-
-// ============================================================
-// PARSER RÉPONSE IA
-// ============================================================
 
 function parseAIResponse(text, sensorData = {}) {
   try {
@@ -333,15 +282,12 @@ function parseAIResponse(text, sensorData = {}) {
 
     const parsed = JSON.parse(match[0]);
 
-    // --- Score de santé ---
     let healthScore =
       typeof parsed.healthScore === "number" ? parsed.healthScore : 70;
     healthScore = Math.max(0, Math.min(100, healthScore));
 
-    // --- Urgence ---
     let urgencyLevel = normalizeUrgency(parsed.urgencyLevel);
 
-    // --- Données capteurs ---
     const temperature = sensorData.temperature ?? 25;
     const airQuality = sensorData.airQualityPercent ?? 60;
     const waterLevel = sensorData.waterLevel ?? 60;
@@ -356,11 +302,9 @@ function parseAIResponse(text, sensorData = {}) {
     const warningSensors =
       temperature < 15 || temperature > 31 || waterLevel < 20;
 
-    // --- Détections ---
     let mortalityDetected = parsed?.detections?.mortalityDetected === true;
     let behaviorNormal = parsed?.detections?.behaviorNormal ?? true;
 
-    // --- Correction fausse détection mortalité ---
     if (mortalityDetected && !criticalSensors) {
       console.warn("[AI] Fausse détection de mortalité corrigée");
       mortalityDetected = false;
@@ -439,9 +383,7 @@ function parseAIResponse(text, sensorData = {}) {
   }
 }
 
-// ============================================================
 // APPEL GEMMA (modèle principal)
-// ============================================================
 
 async function callGemma(imageBase64, sensorData) {
   const response = await callCloudflare(
@@ -466,9 +408,7 @@ async function callGemma(imageBase64, sensorData) {
   return parseAIResponse(response, sensorData);
 }
 
-// ============================================================
 // APPEL LLAVA (modèle de secours)
-// ============================================================
 
 async function callLlava(imageBase64, sensorData) {
   const response = await callCloudflare(
@@ -484,9 +424,7 @@ async function callLlava(imageBase64, sensorData) {
   return parseAIResponse(response, sensorData);
 }
 
-// ============================================================
 // ANALYSE PRINCIPALE — Cloudflare AI (Gemma 3 → LLaVA → Capteurs)
-// ============================================================
 
 async function analyzeWithCloudflareAI(
   imageBase64,
@@ -547,9 +485,7 @@ async function analyzeWithCloudflareAI(
   }
 }
 
-// ============================================================
 // CHATBOT VÉTÉRINAIRE — Gemma 3
-// ============================================================
 
 async function chatWithGemma(question, context) {
   try {
@@ -584,9 +520,7 @@ async function chatWithGemma(question, context) {
   }
 }
 
-// ============================================================
 // RÉPONSE FALLBACK CHATBOT (si Cloudflare indisponible)
-// ============================================================
 
 function buildFallbackAnswer(question, context) {
   const q = question.toLowerCase();
@@ -640,10 +574,7 @@ function buildFallbackAnswer(question, context) {
 
   return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${context.lastScore}/100. ${context.lastDiagnostic}. Posez-moi une question sur la santé, les alertes ou les conseils.`;
 }
-// services/aiService.js
-// Ajouter cette fonction pour gérer les images reçues
 
-// ✅ NOUVEAU : Handler appelé par MQTT quand une image arrive
 async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   try {
     const cleanBase64 = imageBase64.includes(",")
@@ -681,7 +612,7 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// ✅ Publier commande capture MQTT
+//  Publier commande capture MQTT
 async function publishCaptureTrigger(poulaillerId) {
   const { publishCameraCommand } = require("./mqttService");
 
@@ -692,10 +623,6 @@ async function publishCaptureTrigger(poulaillerId) {
 
   return true;
 }
-
-// ============================================================
-// EXPORTS
-// ============================================================
 
 module.exports = {
   analyzeWithCloudflareAI,
