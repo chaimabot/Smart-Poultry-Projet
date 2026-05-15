@@ -43,16 +43,26 @@ exports.updateWifi = async (req, res) => {
   try {
     const { ssid, password } = req.body;
 
+    // ── Debug : vérifier ce que reçoit le serveur ────────────
+    console.log("[WIFI] Body reçu :", req.body);
+    console.log("[WIFI] ssid :", ssid);
+    console.log("[WIFI] password :", password);
+
     // ── Validation ──────────────────────────────────────────
     if (!ssid || typeof ssid !== "string" || ssid.trim().length === 0) {
       return res
         .status(400)
         .json({ success: false, error: "Le champ ssid est requis" });
     }
+
+    // password peut être une chaîne vide (réseau ouvert) mais pas undefined
     if (password === undefined || password === null) {
       return res
         .status(400)
-        .json({ success: false, error: "Le champ password est requis" });
+        .json({
+          success: false,
+          error: "Le champ password est requis (chaîne vide si réseau ouvert)",
+        });
     }
 
     // ── Récupération device ──────────────────────────────────
@@ -89,10 +99,18 @@ exports.updateWifi = async (req, res) => {
     await device.save();
 
     // ── Publication MQTT vers l'ESP32 ────────────────────────
+    // IMPORTANT : la clé doit être "password" (pas "pass")
+    // car l'ESP32 lit doc["password"] dans onMessage()
     const topic = `poulailler/${device.macAddress}/cmd/wifi`;
-    const payload = JSON.stringify({ ssid: ssid.trim(), password });
+    const payload = JSON.stringify({
+      ssid: ssid.trim(),
+      password: String(password), // forcer string même si envoyé vide
+    });
 
-    mqttClient.publish(topic, payload, { qos: 1 }, (err) => {
+    console.log(`[WIFI] Publication MQTT → topic: ${topic}`);
+    console.log(`[WIFI] Payload: ${payload}`);
+
+    mqttClient.publish(topic, payload, { qos: 1, retain: false }, (err) => {
       if (err) {
         console.error(`[WIFI] Erreur publication MQTT: ${err.message}`);
       } else {
