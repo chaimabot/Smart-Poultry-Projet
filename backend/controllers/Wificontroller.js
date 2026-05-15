@@ -33,9 +33,6 @@ exports.getWifi = async (req, res) => {
 
 // ============================================================
 // @desc    Mettre à jour le WiFi de l'ESP32
-//          1. Valide ssid + password
-//          2. Sauvegarde le SSID en base (jamais le mot de passe)
-//          3. Publie ssid + password via MQTT → ESP32 sauvegarde en NVS et redémarre
 // @route   PUT /api/wifi/:poulaillerId
 // @access  Private
 // ============================================================
@@ -43,26 +40,20 @@ exports.updateWifi = async (req, res) => {
   try {
     const { ssid, password } = req.body;
 
-    // ── Debug : vérifier ce que reçoit le serveur ────────────
     console.log("[WIFI] Body reçu :", req.body);
-    console.log("[WIFI] ssid :", ssid);
-    console.log("[WIFI] password :", password);
 
-    // ── Validation ──────────────────────────────────────────
+    // ── Validation ───────────────────────────────────────────
     if (!ssid || typeof ssid !== "string" || ssid.trim().length === 0) {
       return res
         .status(400)
         .json({ success: false, error: "Le champ ssid est requis" });
     }
 
-    // password peut être une chaîne vide (réseau ouvert) mais pas undefined
     if (password === undefined || password === null) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: "Le champ password est requis (chaîne vide si réseau ouvert)",
-        });
+      return res.status(400).json({
+        success: false,
+        error: "Le champ password est requis (chaîne vide si réseau ouvert)",
+      });
     }
 
     // ── Récupération device ──────────────────────────────────
@@ -85,7 +76,12 @@ exports.updateWifi = async (req, res) => {
     }
 
     // ── Vérification MQTT ────────────────────────────────────
+    // La lib "mqtt" npm expose client.connected (boolean)
     const mqttClient = mqttService.getMqttClient();
+
+    console.log("[WIFI] mqttClient:", mqttClient ? "existe" : "null");
+    console.log("[WIFI] mqttClient.connected:", mqttClient?.connected);
+
     if (!mqttClient || !mqttClient.connected) {
       return res.status(502).json({
         success: false,
@@ -99,28 +95,21 @@ exports.updateWifi = async (req, res) => {
     await device.save();
 
     // ── Publication MQTT vers l'ESP32 ────────────────────────
-    // IMPORTANT : la clé doit être "password" (pas "pass")
-    // car l'ESP32 lit doc["password"] dans onMessage()
     const topic = `poulailler/${device.macAddress}/cmd/wifi`;
     const payload = JSON.stringify({
       ssid: ssid.trim(),
-      password: String(password), // forcer string même si envoyé vide
+      password: String(password),
     });
 
-    console.log(`[WIFI] Publication MQTT → topic: ${topic}`);
+    console.log(`[WIFI] Publication → topic: ${topic}`);
     console.log(`[WIFI] Payload: ${payload}`);
 
-    mqttClient.publish(topic, payload, { qos: 1, retain: false }, (err) => {
-      if (err) {
-        console.error(`[WIFI] Erreur publication MQTT: ${err.message}`);
-      } else {
-        console.log(
-          `[WIFI] Commande envoyée → ${topic} | SSID: ${ssid.trim()}`,
-        );
-      }
-    });
+    // ✅ Sans callback (comme publishConfig et publishCommand dans mqttService)
+    mqttClient.publish(topic, payload, { qos: 1, retain: false });
 
-    res.status(200).json({
+    console.log(`[WIFI] ✅ Commande envoyée → ${topic} | SSID: ${ssid.trim()}`);
+
+    return res.status(200).json({
       success: true,
       message: "Commande WiFi envoyée — l'ESP32 va redémarrer",
       data: {
@@ -130,6 +119,7 @@ exports.updateWifi = async (req, res) => {
     });
   } catch (err) {
     console.error("[WIFI] updateWifi error:", err.message);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    console.error("[WIFI] Stack:", err.stack);
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 };
