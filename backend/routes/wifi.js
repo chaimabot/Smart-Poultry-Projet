@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getWifi, updateWifi } = require("../controllers/Wificontroller");
-const protect = require("../middleware/auth"); // ton middleware d'auth existant
+const { protect } = require("../middlewares/auth");
 
 // GET  /api/wifi/:poulaillerId  — SSID actuel enregistré pour ce poulailler
 router.get("/:poulaillerId", protect, getWifi);
