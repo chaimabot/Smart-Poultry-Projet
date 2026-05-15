@@ -51,6 +51,14 @@ const moduleSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    wifiSsid: {
+      type: String,
+      default: null,
+    },
+    wifiUpdatedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );

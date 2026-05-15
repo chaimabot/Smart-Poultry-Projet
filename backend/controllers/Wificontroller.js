@@ -1,4 +1,4 @@
-const Device = require("../models/Device");
+const Device = require("../models/Module");
 const mqttService = require("../services/mqttService");
 
 // ============================================================
