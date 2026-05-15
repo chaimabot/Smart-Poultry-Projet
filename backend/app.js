@@ -94,7 +94,7 @@ let authRoutes,
   ventilateurRoutes,
   porteRoutes,
   devicesRoutes,
-  wifiRoutes; // ← nouveau
+  wifi; // ← nouveau
 
 try {
   authRoutes = require("./routes/auth");
@@ -148,7 +148,7 @@ try {
 
 // ── Wifi ──────────────────────────────────────────────────
 try {
-  wifiRoutes = require("./routes/wifi");
+  wifi = require("./routes/wifi");
   console.log("[ROUTES] ✓ wifi chargé");
 } catch (e) {
   console.error("[ROUTES] wifi fail:", e.message);
@@ -174,7 +174,7 @@ if (systemConfigRoutes) app.use("/api/system-config", systemConfigRoutes);
 if (modulesRoutes) app.use("/api/modules", modulesRoutes);
 if (pompeRoutes) app.use("/api/pompe", pompeRoutes);
 if (devicesRoutes) app.use("/api/devices", devicesRoutes);
-if (wifiRoutes) app.use("/api/wifi", wifiRoutes); // ← nouveau
+if (wifi) app.use("/api/wifi", wifi); // ← nouveau
 if (ventilateurRoutes) app.use("/api/ventilateur", ventilateurRoutes);
 
 if (lampeRoutes) {
