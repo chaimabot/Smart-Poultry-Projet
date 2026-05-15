@@ -42,7 +42,6 @@ exports.updateWifi = async (req, res) => {
 
     console.log("[WIFI] Body reçu :", req.body);
 
-    // ── Validation ───────────────────────────────────────────
     if (!ssid || typeof ssid !== "string" || ssid.trim().length === 0) {
       return res
         .status(400)
@@ -56,18 +55,18 @@ exports.updateWifi = async (req, res) => {
       });
     }
 
-    // ── Récupération device ──────────────────────────────────
-    const device = await Device.findOne({
+    // ── Vérification MAC avant update ────────────────────────
+    const existing = await Device.findOne({
       poulailler: req.params.poulaillerId,
     });
 
-    if (!device) {
+    if (!existing) {
       return res
         .status(404)
         .json({ success: false, error: "Device non trouvé" });
     }
 
-    if (!device.macAddress) {
+    if (!existing.macAddress) {
       return res.status(400).json({
         success: false,
         error:
@@ -76,7 +75,6 @@ exports.updateWifi = async (req, res) => {
     }
 
     // ── Vérification MQTT ────────────────────────────────────
-    // La lib "mqtt" npm expose client.connected (boolean)
     const mqttClient = mqttService.getMqttClient();
 
     console.log("[WIFI] mqttClient:", mqttClient ? "existe" : "null");
@@ -89,12 +87,14 @@ exports.updateWifi = async (req, res) => {
       });
     }
 
-    // ── Sauvegarde SSID en base (jamais le mot de passe) ────
-    device.wifiSsid = ssid.trim();
-    device.wifiUpdatedAt = new Date();
-    await device.save();
+    // ── Sauvegarde sans hook pre-save ────────────────────────
+    const device = await Device.findOneAndUpdate(
+      { poulailler: req.params.poulaillerId },
+      { wifiSsid: ssid.trim(), wifiUpdatedAt: new Date() },
+      { new: true },
+    );
 
-    // ── Publication MQTT vers l'ESP32 ────────────────────────
+    // ── Publication MQTT ─────────────────────────────────────
     const topic = `poulailler/${device.macAddress}/cmd/wifi`;
     const payload = JSON.stringify({
       ssid: ssid.trim(),
@@ -102,20 +102,13 @@ exports.updateWifi = async (req, res) => {
     });
 
     console.log(`[WIFI] Publication → topic: ${topic}`);
-    console.log(`[WIFI] Payload: ${payload}`);
-
-    // ✅ Sans callback (comme publishConfig et publishCommand dans mqttService)
     mqttClient.publish(topic, payload, { qos: 1, retain: false });
-
     console.log(`[WIFI] ✅ Commande envoyée → ${topic} | SSID: ${ssid.trim()}`);
 
     return res.status(200).json({
       success: true,
       message: "Commande WiFi envoyée — l'ESP32 va redémarrer",
-      data: {
-        ssid: device.wifiSsid,
-        updatedAt: device.wifiUpdatedAt,
-      },
+      data: { ssid: device.wifiSsid, updatedAt: device.wifiUpdatedAt },
     });
   } catch (err) {
     console.error("[WIFI] updateWifi error:", err.message);
