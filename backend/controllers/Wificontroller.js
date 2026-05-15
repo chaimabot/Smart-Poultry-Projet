@@ -10,7 +10,7 @@ exports.getWifi = async (req, res) => {
   try {
     const device = await Device.findOne({
       poulailler: req.params.poulaillerId,
-    });
+    }).populate("poulailler");
 
     if (!device) {
       return res
