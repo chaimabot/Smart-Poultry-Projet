@@ -350,27 +350,29 @@ async function getAnalysisStats(req, res) {
 }
 
 async function chatWithVet(req, res) {
-  const { question, poulaillerId } = req.body;
+  const { question, poulaillerId, history = [] } = req.body;
 
-  if (!question || !poulaillerId) {
+  // Validation
+  if (!question?.trim() || !poulaillerId) {
     return res.status(400).json({
       success: false,
-      error: "Les champs question et poulaillerId sont requis",
+      error: "Question et poulaillerId sont requis",
     });
   }
   if (question.trim().length < 3) {
     return res.status(400).json({
       success: false,
-      error: "Question trop courte (minimum 3 caractères)",
+      error: "Question trop courte",
     });
   }
   if (question.length > 500) {
     return res.status(400).json({
       success: false,
-      error: "Question trop longue (maximum 500 caractères)",
+      error: "Question trop longue (max 500 caractères)",
     });
   }
 
+  // Vérification accès
   const { error, status, poulailler } = await checkAccess(
     poulaillerId,
     req.user.id,
@@ -378,25 +380,28 @@ async function chatWithVet(req, res) {
   if (error) return res.status(status).json({ success: false, error });
 
   try {
-    const lastAnalysis = await AiAnalysis.findOne({ poulaillerId }).sort({
-      createdAt: -1,
-    });
+    // Récupérer le dernier diagnostic
+    const lastAnalysis = await AiAnalysis.findOne({ poulaillerId })
+      .sort({ createdAt: -1 })
+      .select("result sensors createdAt");
 
+    // Contexte du poulailler
     const context = {
       poulaillerName: poulailler.name,
       animalCount: poulailler.animalCount,
-      lastScore: lastAnalysis?.result?.healthScore ?? "N/A",
-      lastUrgency: lastAnalysis?.result?.urgencyLevel ?? "N/A",
-      lastDiagnostic:
-        lastAnalysis?.result?.diagnostic ?? "Aucune analyse disponible",
-      lastAdvices: lastAnalysis?.result?.advices?.join(". ") ?? null,
       temperature: poulailler.lastMonitoring?.temperature ?? null,
       humidity: poulailler.lastMonitoring?.humidity ?? null,
       airQuality: poulailler.lastMonitoring?.airQualityPercent ?? null,
       waterLevel: poulailler.lastMonitoring?.waterLevel ?? null,
+      lastScore: lastAnalysis?.result?.healthScore ?? null,
+      lastUrgency: lastAnalysis?.result?.urgencyLevel ?? null,
+      lastDiagnostic: lastAnalysis?.result?.diagnostic ?? null,
+      lastAdvices: lastAnalysis?.result?.advices?.join(". ") ?? null,
+      lastAnalysisDate: lastAnalysis?.createdAt ?? null,
     };
 
-    const answer = await chatWithGemma(question, context);
+    // Appel Gemma avec historique
+    const answer = await chatWithGemma(question, context, history);
 
     return res.status(200).json({
       success: true,
@@ -405,16 +410,18 @@ async function chatWithVet(req, res) {
         context: {
           lastHealthScore: context.lastScore,
           lastUrgency: context.lastUrgency,
-          lastAnalysisDate: lastAnalysis?.createdAt ?? null,
+          lastAnalysisDate: context.lastAnalysisDate,
         },
       },
     });
   } catch (err) {
     console.error("[AI] Erreur chatWithVet :", err.message);
-    return res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({
+      success: false,
+      error: "Erreur serveur",
+    });
   }
 }
-
 module.exports = {
   receiveImageFromESP,
   analyzePoultry,

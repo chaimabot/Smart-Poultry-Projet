@@ -487,19 +487,34 @@ async function analyzeWithCloudflareAI(
 
 // CHATBOT VÉTÉRINAIRE — Gemma 3
 
-async function chatWithGemma(question, context) {
+async function chatWithGemma(question, context, history = []) {
   try {
     if (!USE_CLOUDFLARE) {
       return buildFallbackAnswer(question, context);
     }
 
+    // Construire les messages avec historique
+    const messages = [
+      // Message système — rôle de l'assistant
+      {
+        role: "system",
+        content: buildSystemPrompt(context),
+      },
+      // Historique de la conversation (max 6 derniers messages)
+      ...history.slice(-6).map((msg) => ({
+        role: msg.role, // "user" ou "assistant"
+        content: msg.content,
+      })),
+      // Question actuelle
+      {
+        role: "user",
+        content: question,
+      },
+    ];
+
     const response = await callCloudflare(
       PRIMARY_MODEL,
-      {
-        messages: [
-          { role: "user", content: buildChatPrompt(question, context) },
-        ],
-      },
+      { messages },
       CHAT_TIMEOUT,
     );
 
@@ -507,7 +522,7 @@ async function chatWithGemma(question, context) {
       return buildFallbackAnswer(question, context);
     }
 
-    // Nettoyage des blocs JSON ou markdown résiduels
+    // Nettoyer la réponse (enlever markdown, JSON résiduel)
     const cleaned = response
       .replace(/```[\s\S]*?```/g, "")
       .replace(/\{[\s\S]*?\}/g, "")
@@ -622,6 +637,33 @@ async function publishCaptureTrigger(poulaillerId) {
   }
 
   return true;
+}
+
+function buildSystemPrompt(context) {
+  const sensors = [
+    context.temperature != null
+      ? `Température : ${context.temperature}°C`
+      : null,
+    context.humidity != null ? `Humidité : ${context.humidity}%` : null,
+    context.airQuality != null ? `Qualité air : ${context.airQuality}%` : null,
+    context.waterLevel != null ? `Niveau eau : ${context.waterLevel}%` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  return `
+Tu es un assistant vétérinaire expert en élevage de volailles.
+Réponds en français, de manière claire et concise (maximum 3 phrases).
+Réponds directement sans te présenter.
+Ne génère jamais de JSON ni de markdown.
+
+POULAILLER : ${context.poulaillerName} — ${context.animalCount} volailles
+CAPTEURS : ${sensors || "Aucune donnée disponible"}
+SCORE SANTÉ : ${context.lastScore != null ? `${context.lastScore}/100` : "Non disponible"}
+URGENCE : ${context.lastUrgency ?? "Non disponible"}
+DIAGNOSTIC : ${context.lastDiagnostic ?? "Aucune analyse disponible"}
+CONSEILS : ${context.lastAdvices ?? "Aucun conseil disponible"}
+`.trim();
 }
 
 module.exports = {
