@@ -1,5 +1,6 @@
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
+const ChatHistory = require("../models/ChatHistory");
 const Alert = require("../models/Alert");
 const {
   publishCaptureTrigger,
@@ -56,7 +57,7 @@ function waitForImage(poulaillerId, timeoutMs = 35000) {
 
 async function receiveImageFromESP(req, res) {
   try {
-    const deviceId = req.body?.deviceId; // MAC address ESP32CAM
+    const deviceId = req.body?.deviceId;
     const image = req.body?.image || req.body?.imageBase64;
 
     if (!deviceId) {
@@ -66,7 +67,6 @@ async function receiveImageFromESP(req, res) {
       return res.status(400).json({ success: false, error: "image requise" });
     }
 
-    // ── Résolution MAC → poulaillerId ──────────────────────
     let poulaillerId;
     const poulailler = await Poulailler.findOne({ macAddressCam: deviceId });
 
@@ -102,7 +102,6 @@ async function receiveImageFromESP(req, res) {
       `[AI] Image reçue — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
     );
 
-    // ── Stockage en attente d'analyse ──────────────────────
     pendingImages.set(poulaillerId, {
       image: cleanBase64,
       receivedAt: Date.now(),
@@ -209,6 +208,7 @@ async function analyzePoultry(req, res) {
     analysisLocks.delete(poulaillerId);
   }
 }
+
 async function awaitCameraImage(req, res) {
   const { poulaillerId } = req.params;
 
@@ -218,19 +218,16 @@ async function awaitCameraImage(req, res) {
   try {
     console.log(`[AI] Déclenchement capture MQTT — poulailler ${poulaillerId}`);
 
-    // 1. Publie la commande MQTT → ESP32CAM prend la photo
     await publishCaptureTrigger(poulaillerId);
     console.log("[AI] Commande MQTT envoyée → attente image...");
 
-    // 2. Attend que l'ESP32 envoie l'image (POST /api/ai/receive-image)
     const { image } = await waitForImage(poulaillerId, 35_000);
     console.log("[AI] Image reçue — envoi au client");
 
-    // 3. Retourne l'image base64 au client mobile
     return res.status(200).json({
       success: true,
       data: {
-        imageBase64: image, // base64 pur, sans préfixe data:
+        imageBase64: image,
         sizeKb: Math.round((image.length * 3) / 4 / 1024),
       },
     });
@@ -279,11 +276,13 @@ async function getLatestAnalysis(req, res) {
     }).sort({ createdAt: -1 });
 
     if (!analysis) {
-      return res.status(200).json({
-        success: true,
-        data: null,
-        message: "Aucune analyse disponible",
-      });
+      return res
+        .status(200)
+        .json({
+          success: true,
+          data: null,
+          message: "Aucune analyse disponible",
+        });
     }
 
     return res.status(200).json({ success: true, data: analysis });
@@ -309,11 +308,13 @@ async function getAnalysisStats(req, res) {
       .select("result.healthScore result.urgencyLevel createdAt");
 
     if (analyses.length === 0) {
-      return res.status(200).json({
-        success: true,
-        data: null,
-        message: "Aucune donnée disponible",
-      });
+      return res
+        .status(200)
+        .json({
+          success: true,
+          data: null,
+          message: "Aucune donnée disponible",
+        });
     }
 
     const scores = analyses.map((a) => a.result.healthScore);
@@ -352,27 +353,12 @@ async function getAnalysisStats(req, res) {
 async function chatWithVet(req, res) {
   const { question, poulaillerId, history = [] } = req.body;
 
-  // Validation
   if (!question?.trim() || !poulaillerId) {
-    return res.status(400).json({
-      success: false,
-      error: "Question et poulaillerId sont requis",
-    });
-  }
-  if (question.trim().length < 1) {
-    return res.status(400).json({
-      success: false,
-      error: "Question trop courte",
-    });
-  }
-  if (question.length > 500) {
-    return res.status(400).json({
-      success: false,
-      error: "Question trop longue (max 500 caractères)",
-    });
+    return res
+      .status(400)
+      .json({ success: false, error: "Question et poulaillerId sont requis" });
   }
 
-  // Vérification accès
   const { error, status, poulailler } = await checkAccess(
     poulaillerId,
     req.user.id,
@@ -380,12 +366,10 @@ async function chatWithVet(req, res) {
   if (error) return res.status(status).json({ success: false, error });
 
   try {
-    // Récupérer le dernier diagnostic
     const lastAnalysis = await AiAnalysis.findOne({ poulaillerId })
       .sort({ createdAt: -1 })
       .select("result sensors createdAt");
 
-    // Contexte du poulailler
     const context = {
       poulaillerName: poulailler.name,
       animalCount: poulailler.animalCount,
@@ -400,8 +384,23 @@ async function chatWithVet(req, res) {
       lastAnalysisDate: lastAnalysis?.createdAt ?? null,
     };
 
-    // Appel Gemma avec historique
     const answer = await chatWithGemma(question, context, history);
+
+    // ── Sauvegarder dans MongoDB ──────────────────────────
+    await ChatHistory.findOneAndUpdate(
+      { poulaillerId, userId: req.user.id },
+      {
+        $push: {
+          messages: {
+            $each: [
+              { role: "user", content: question },
+              { role: "assistant", content: answer },
+            ],
+          },
+        },
+      },
+      { upsert: true, new: true },
+    );
 
     return res.status(200).json({
       success: true,
@@ -415,13 +414,49 @@ async function chatWithVet(req, res) {
       },
     });
   } catch (err) {
-    console.error("[AI] Erreur chatWithVet :", err.message);
-    return res.status(500).json({
-      success: false,
-      error: "Erreur serveur",
-    });
+    console.error("[AI] Erreur chatWithVet:", err.message);
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
+
+async function getChatHistory(req, res) {
+  const { poulaillerId } = req.params;
+
+  const { error, status } = await checkAccess(poulaillerId, req.user.id);
+  if (error) return res.status(status).json({ success: false, error });
+
+  try {
+    const history = await ChatHistory.findOne({
+      poulaillerId,
+      userId: req.user.id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: history?.messages || [],
+    });
+  } catch (err) {
+    console.error("[Chat] Erreur getChatHistory:", err.message);
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
+}
+
+async function clearChatHistory(req, res) {
+  const { poulaillerId } = req.params;
+
+  const { error, status } = await checkAccess(poulaillerId, req.user.id);
+  if (error) return res.status(status).json({ success: false, error });
+
+  try {
+    await ChatHistory.findOneAndDelete({ poulaillerId, userId: req.user.id });
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("[Chat] Erreur clearChatHistory:", err.message);
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
+  }
+}
+
 module.exports = {
   receiveImageFromESP,
   analyzePoultry,
@@ -429,6 +464,8 @@ module.exports = {
   getLatestAnalysis,
   getAnalysisStats,
   chatWithVet,
+  getChatHistory,
+  clearChatHistory,
   pendingImages,
   awaitCameraImage,
 };
