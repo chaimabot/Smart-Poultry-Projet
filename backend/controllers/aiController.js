@@ -1,7 +1,12 @@
+// controllers/aiController.js
+// MODIFIÉ : Cloudinary intégré, bugs corrigés
+
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
 const ChatHistory = require("../models/ChatHistory");
 const Alert = require("../models/Alert");
+const cloudinary = require("../services/cloudinaryService"); // ✅ NOUVEAU
+
 const {
   publishCaptureTrigger,
   analyzeWithCloudflareAI,
@@ -67,24 +72,16 @@ async function receiveImageFromESP(req, res) {
       return res.status(400).json({ success: false, error: "image requise" });
     }
 
-    let poulaillerId;
+    // ✅ CORRECTION : Trouve le poulailler et assigne poulaillerId
     const poulailler = await Poulailler.findOne({ macAddressCam: deviceId });
-
-    if (poulailler) {
-      poulaillerId = poulailler._id.toString().trim();
-      console.log(`[AI] MAC ${deviceId} → poulailler ${poulaillerId}`);
-    } else {
-      if (deviceId === "70:4B:CA:23:E5:44") {
-        poulaillerId = "69f27e9b62b5f08c9bf125f9";
-        console.warn(
-          `[AI] MODE TEST — MAC ${deviceId} → poulailler ${poulaillerId}`,
-        );
-      } else {
-        return res
-          .status(404)
-          .json({ success: false, error: `MAC inconnue : ${deviceId}` });
-      }
+    if (!poulailler) {
+      return res.status(404).json({
+        success: false,
+        error: "Poulailler non trouvé pour ce deviceId",
+      });
     }
+
+    const poulaillerId = poulailler._id.toString(); // ✅ CORRECTION BUG
 
     const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
     const base64Length = cleanBase64.length;
@@ -153,25 +150,46 @@ async function analyzePoultry(req, res) {
 
     const thresholds = poulailler.thresholds;
 
-    await publishCaptureTrigger(poulaillerId);
-    console.log("[AI] Trigger MQTT envoyé — attente de l'image...");
+    // ✅ CORRECTION : Vérifie si image envoyée par le client
+    let imageBase64 = req.body?.imageBase64;
 
-    const { image } = await waitForImage(poulaillerId, 35000);
+    if (!imageBase64) {
+      // Si pas d'image, déclenche capture ESP32
+      await publishCaptureTrigger(poulaillerId);
+      console.log("[AI] Trigger MQTT envoyé — attente de l'image...");
+
+      const { image } = await waitForImage(poulaillerId, 35000);
+      imageBase64 = image;
+    }
+
     console.log("[AI] Image reçue — lancement de l'analyse...");
 
     const aiResult = await analyzeWithCloudflareAI(
-      image,
+      imageBase64,
       sensorData,
       thresholds,
     );
 
+    // ✅ NOUVEAU : Upload image sur Cloudinary (GRATUIT)
+    console.log("[AI] Upload Cloudinary...");
+    const cloudImage = await cloudinary.uploadImage(imageBase64, poulaillerId);
+
+    // ✅ NOUVEAU : Sauvegarde dans MongoDB avec URL (pas base64)
     const analysis = await AiAnalysis.create({
       poulaillerId,
       triggeredBy: req.body.triggeredBy ?? "manual",
       sensors: sensorData,
       result: aiResult,
       imageQuality: aiResult.imageQuality,
-      imageBase64: image,
+      image: {
+        url: cloudImage.url,
+        thumbnailUrl: cloudImage.thumbnailUrl,
+        publicId: cloudImage.publicId,
+        width: cloudImage.width,
+        height: cloudImage.height,
+        bytes: cloudImage.bytes,
+      },
+      // ❌ SUPPRIMÉ : imageBase64: image,
     });
 
     console.log(
@@ -200,7 +218,17 @@ async function analyzePoultry(req, res) {
       );
     }
 
-    return res.status(200).json({ success: true, data: analysis });
+    // ✅ NOUVEAU : Renvoie URL image à l'app
+    return res.status(200).json({
+      success: true,
+      data: {
+        _id: analysis._id,
+        result: aiResult,
+        imageUrl: cloudImage.url,
+        thumbnailUrl: cloudImage.thumbnailUrl,
+        createdAt: analysis.createdAt,
+      },
+    });
   } catch (err) {
     console.error("[AI] Erreur analyse :", err.message);
     return res.status(500).json({ success: false, error: err.message });
@@ -276,13 +304,11 @@ async function getLatestAnalysis(req, res) {
     }).sort({ createdAt: -1 });
 
     if (!analysis) {
-      return res
-        .status(200)
-        .json({
-          success: true,
-          data: null,
-          message: "Aucune analyse disponible",
-        });
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "Aucune analyse disponible",
+      });
     }
 
     return res.status(200).json({ success: true, data: analysis });
@@ -308,13 +334,11 @@ async function getAnalysisStats(req, res) {
       .select("result.healthScore result.urgencyLevel createdAt");
 
     if (analyses.length === 0) {
-      return res
-        .status(200)
-        .json({
-          success: true,
-          data: null,
-          message: "Aucune donnée disponible",
-        });
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "Aucune donnée disponible",
+      });
     }
 
     const scores = analyses.map((a) => a.result.healthScore);
@@ -386,7 +410,6 @@ async function chatWithVet(req, res) {
 
     const answer = await chatWithGemma(question, context, history);
 
-    // ── Sauvegarder dans MongoDB ──────────────────────────
     await ChatHistory.findOneAndUpdate(
       { poulaillerId, userId: req.user.id },
       {

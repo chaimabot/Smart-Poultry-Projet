@@ -1,4 +1,6 @@
 // models/AiAnalysis.js
+// MODIFIÉ : imageBase64 remplacé par image URL Cloudinary
+
 const mongoose = require("mongoose");
 
 const aiAnalysisSchema = new mongoose.Schema(
@@ -68,10 +70,18 @@ const aiAnalysisSchema = new mongoose.Schema(
         default: "good",
       },
     },
-    imageBase64: {
-      type: String,
-      default: null,
+
+    // ✅ NOUVEAU : Image sur Cloudinary (pas base64!)
+    image: {
+      url: { type: String, required: true }, // URL complète HTTPS
+      thumbnailUrl: { type: String }, // URL miniature
+      publicId: { type: String, required: true }, // ID Cloudinary
+      width: { type: Number },
+      height: { type: Number },
+      bytes: { type: Number }, // Taille en bytes
     },
+
+    // ❌ SUPPRIMÉ : imageBase64 (trop gros pour MongoDB)
   },
   { timestamps: true },
 );

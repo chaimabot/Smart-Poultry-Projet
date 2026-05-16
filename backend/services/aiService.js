@@ -72,18 +72,6 @@ function getMqttClient() {
   return mqttClient;
 }
 
-async function publishCaptureTrigger(poulaillerId) {
-  return new Promise((resolve, reject) => {
-    const client = getMqttClient();
-    client.publish(
-      "poulailler/capture",
-      JSON.stringify({ command: "capture", poulaillerId }),
-      { qos: 1, retain: false },
-      (err) => (err ? reject(err) : resolve()),
-    );
-  });
-}
-
 function cleanBase64(base64) {
   if (!base64) return null;
   return base64.includes(",") ? base64.split(",")[1] : base64;
