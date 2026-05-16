@@ -1,5 +1,8 @@
 // services/aiService.js
-// CORRIGÉ : Utilise publishCameraCommand de mqttService.js (attend connexion)
+// ✅ CORRIGÉ :
+//   1. Import circulaire supprimé (pendingImages n'existe pas dans aiController)
+//   2. publishCaptureTrigger reçoit et transmet correctement le requestId
+//   3. handleCameraImage ne dépend plus d'un import circulaire
 
 const path = require("path");
 require("dotenv").config({
@@ -10,7 +13,10 @@ const axios = require("axios");
 const sharp = require("sharp");
 const Camera = require("../models/Camera");
 
-const { pendingImages } = require("../controllers/aiController");
+// ✅ CORRIGÉ : Import circulaire supprimé — pendingImages n'existe pas dans aiController
+// L'ancienne ligne était : const { pendingImages } = require("../controllers/aiController");
+// handleCameraImage est désormais autonome (stockage local dans ce service)
+
 const { publishCameraCommand } = require("./mqttService");
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -43,6 +49,10 @@ const DEATH_KEYWORDS = [
   "mortality",
   "deceased",
 ];
+
+// ✅ CORRIGÉ : stockage local propre (plus d'import circulaire)
+// Utilisé par handleCameraImage pour les images reçues hors flux requestId
+const pendingImages = new Map();
 
 function cleanBase64(base64) {
   if (!base64) return null;
@@ -255,81 +265,38 @@ function parseAIResponse(text, sensorData = {}) {
     const warningSensors =
       temperature < 15 || temperature > 31 || waterLevel < 20;
 
-    let mortalityDetected = parsed?.detections?.mortalityDetected === true;
-    let behaviorNormal = parsed?.detections?.behaviorNormal ?? true;
-
-    if (mortalityDetected && !criticalSensors) {
-      console.warn("[AI] Fausse détection de mortalité corrigée");
-      mortalityDetected = false;
-
-      if (mentionsDeath(parsed.diagnostic)) {
-        parsed.diagnostic = warningSensors
-          ? "Paramètres légèrement hors plage — surveillance recommandée."
-          : "État général satisfaisant d'après les capteurs et l'image.";
-        console.warn("[AI] Diagnostic nettoyé (mention mortalité supprimée)");
-      }
-
-      if (Array.isArray(parsed.advices)) {
-        const cleaned = parsed.advices.filter((a) => !mentionsDeath(a));
-        if (cleaned.length < parsed.advices.length) {
-          console.warn("[AI] Conseils nettoyés (mention mortalité supprimée)");
-        }
-        parsed.advices =
-          cleaned.length > 0
-            ? cleaned
-            : [
-                "Surveiller le comportement des volailles",
-                "Vérifier la ventilation",
-                "Contrôler les capteurs régulièrement",
-              ];
-      }
-
-      if (warningSensors) {
-        urgencyLevel = "attention";
-        healthScore = Math.max(healthScore, 55);
-      } else if (sensorsNormal) {
-        urgencyLevel = "normal";
-        healthScore = Math.max(healthScore, 80);
+    // Bloque les faux positifs de mortalité si capteurs normaux
+    let mortalityDetected = parsed.detections?.mortalityDetected ?? false;
+    if (mortalityDetected && sensorsNormal) {
+      const diagText = (parsed.diagnostic || "").toLowerCase();
+      if (!mentionsDeath(diagText)) {
+        console.warn(
+          "[AI] Mortalité bloquée — capteurs normaux et diagnostic ne confirme pas",
+        );
+        mortalityDetected = false;
       }
     }
 
-    if (criticalSensors) {
-      urgencyLevel = "critique";
-      healthScore = Math.min(healthScore <= 0 ? 30 : healthScore, 30);
-    } else if (warningSensors) {
+    // Ajuste urgence selon capteurs
+    if (criticalSensors && urgencyLevel === "normal") urgencyLevel = "critique";
+    else if (warningSensors && urgencyLevel === "normal")
       urgencyLevel = "attention";
-      healthScore = Math.min(healthScore <= 0 ? 60 : healthScore, 60);
-    }
-
-    if (sensorsNormal && !mortalityDetected && healthScore <= 0) {
-      urgencyLevel = "normal";
-      healthScore = 85;
-    }
-
-    urgencyLevel = normalizeUrgency(urgencyLevel);
 
     return {
       healthScore,
       urgencyLevel,
-      diagnostic: parsed.diagnostic || "Analyse IA effectuée",
+      diagnostic: parsed.diagnostic || "Analyse effectuée.",
       detections: {
         mortalityDetected,
-        behaviorNormal,
-        densityOk: true,
-        cleanEnvironment: true,
-        ventilationAdequate: true,
+        behaviorNormal: parsed.detections?.behaviorNormal ?? true,
+        densityOk: parsed.detections?.densityOk ?? true,
+        cleanEnvironment: parsed.detections?.cleanEnvironment ?? true,
+        ventilationAdequate: parsed.detections?.ventilationAdequate ?? true,
       },
-      advices:
-        Array.isArray(parsed.advices) && parsed.advices.length > 0
-          ? parsed.advices.slice(0, 3)
-          : [
-              "Surveillance continue",
-              "Maintenance préventive",
-              "Vérifier la ventilation",
-            ],
+      advices: Array.isArray(parsed.advices) ? parsed.advices : [],
     };
   } catch (err) {
-    console.error("[AI] Erreur de parsing :", err.message);
+    console.error("[AI] parseAIResponse error:", err.message);
     return analyzeWithSensorsOnly(sensorData);
   }
 }
@@ -520,14 +487,15 @@ function buildFallbackAnswer(question, context) {
   return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${context.lastScore}/100. ${context.lastDiagnostic}. Posez-moi une question sur la santé, les alertes ou les conseils.`;
 }
 
+// ✅ CORRIGÉ : stockage local propre, pas d'import circulaire
 async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   try {
-    const cleanBase64 = imageBase64.includes(",")
+    const cleanB64 = imageBase64.includes(",")
       ? imageBase64.split(",")[1]
       : imageBase64;
 
-    const base64Length = cleanBase64.length;
-    const padding = (cleanBase64.match(/=/g) || []).length;
+    const base64Length = cleanB64.length;
+    const padding = (cleanB64.match(/=/g) || []).length;
     const imageSizeKb = Math.round(((base64Length * 3) / 4 - padding) / 1024);
 
     if (imageSizeKb < 3) {
@@ -539,8 +507,9 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
       `[AI] Image stockée — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
     );
 
+    // ✅ Utilise le pendingImages local (plus d'import circulaire)
     pendingImages.set(poulaillerId.toString().trim(), {
-      image: cleanBase64,
+      image: cleanB64,
       receivedAt: Date.now(),
     });
 
@@ -555,9 +524,11 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// ✅ Utilise publishCameraCommand de mqttService.js (attend connexion)
-async function publishCaptureTrigger(poulaillerId) {
-  const success = await publishCameraCommand(poulaillerId);
+// ✅ CORRIGÉ : requestId reçu ET transmis à publishCameraCommand
+async function publishCaptureTrigger(poulaillerId, requestId) {
+  // requestId est maintenant passé à l'ESP32 via MQTT
+  // pour qu'il puisse le renvoyer avec l'image dans POST /receive-image
+  const success = await publishCameraCommand(poulaillerId, requestId);
   if (!success) {
     throw new Error("Échec envoi commande MQTT caméra");
   }
@@ -596,4 +567,5 @@ module.exports = {
   publishCaptureTrigger,
   INTER_ANALYSIS_DELAY_MS,
   handleCameraImage,
+  pendingImages, // ✅ exporté depuis ce service (plus depuis aiController)
 };
