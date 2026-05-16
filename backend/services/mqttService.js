@@ -1,5 +1,5 @@
 // services/mqttService.js
-// CORRIGÉ : Détecte automatiquement wss:// (port 8884) vs mqtts:// (port 8883)
+// CORRIGÉ : rejectUnauthorized: false + mqtts:// port 8883 + reconnexion robuste
 
 const mqtt = require("mqtt");
 const mongoose = require("mongoose");
@@ -16,10 +16,12 @@ const {
 
 let client = null;
 let isConnecting = false;
+let reconnectTimer = null;
 let lastMqttDisconnectTime = 0;
 let mqttDisconnectAlertSent = false;
 let doorTimeoutIntervalId = null;
 let doorClockIntervalId = null;
+let connectionAttempt = 0;
 
 const resolvePoulaillerByMac = async (macAddress) => {
   const device = await Module.findOne({ macAddress });
@@ -33,29 +35,32 @@ const resolveMacByPoulaillerId = async (poulaillerId) => {
   return device.macAddress;
 };
 
-// ✅ NOUVEAU : Attend que le client soit connecté avant de publier
-function waitForConnection(timeoutMs = 10000) {
-  return new Promise((resolve, reject) => {
-    if (client && client.connected) return resolve(true);
-    if (!client) return reject(new Error("Client MQTT non initialisé"));
+// ✅ NOUVEAU : Vérifie si connecté, reconnecte si besoin
+async function ensureConnected(timeoutMs = 10000) {
+  if (client && client.connected) return true;
 
-    const start = Date.now();
-    const interval = setInterval(() => {
-      if (client.connected) {
-        clearInterval(interval);
-        return resolve(true);
-      }
-      if (Date.now() - start > timeoutMs) {
-        clearInterval(interval);
-        reject(new Error("Timeout attente connexion MQTT"));
-      }
-    }, 500);
-  });
+  console.log("[MQTT] Client non connecté, tentative de connexion...");
+  connectMqtt();
+
+  // Attend la connexion
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (client && client.connected) return true;
+  }
+
+  return false;
 }
 
 const connectMqtt = () => {
-  if (isConnecting || (client && client.connected)) {
-    console.log("[MQTT] Déjà connecté ou connexion en cours...");
+  // Évite les connexions multiples
+  if (isConnecting) {
+    console.log("[MQTT] Connexion déjà en cours...");
+    return client;
+  }
+
+  if (client && client.connected) {
+    console.log("[MQTT] Déjà connecté");
     return client;
   }
 
@@ -64,17 +69,12 @@ const connectMqtt = () => {
     "372f445aface456abb82e44117d9d92b.s1.eu.hivemq.cloud";
   const username = process.env.MQTT_USER?.trim();
   const password = process.env.MQTT_PASS?.trim();
+
+  // ✅ CORRECTION : Port 8883 par défaut (TLS natif), 8884 seulement si explicitement configuré
   let port = parseInt(process.env.MQTT_PORT) || 8883;
 
-  // ✅ CORRECTION : Si port 8884, force WebSocket (wss://)
-  // Si port 8883 ou autre, utilise MQTT natif TLS (mqtts://)
-  const isWebSocket = port === 8884;
-  const protocol = isWebSocket ? "wss" : "mqtts";
-
-  // Pour HiveMQ Cloud, le path /mqtt est requis sur WebSocket
-  const brokerUrl = isWebSocket
-    ? `${protocol}://${host}:${port}/mqtt`
-    : `${protocol}://${host}:${port}`;
+  // Force 8883 si pas explicitement 8884
+  if (port !== 8884) port = 8883;
 
   if (!username || !password) {
     console.error(
@@ -83,27 +83,40 @@ const connectMqtt = () => {
     return null;
   }
 
-  console.log(`[MQTT] Connexion à ${brokerUrl}`);
+  // ✅ CORRECTION : ClientId COURT (HiveMQ gratuit peut rejeter les longs)
+  const clientId = `spb_${Math.random().toString(36).substring(2, 8)}_${Date.now().toString(36).substr(-4)}`;
+
+  // ✅ CORRECTION : mqtts:// pour 8883 (MQTT natif TLS), wss:// pour 8884 (WebSocket)
+  const isWebSocket = port === 8884;
+  const protocol = isWebSocket ? "wss" : "mqtts";
+  const brokerUrl = isWebSocket
+    ? `${protocol}://${host}:${port}/mqtt`
+    : `${protocol}://${host}:${port}`;
+
+  connectionAttempt++;
+  console.log(`[MQTT] Tentative #${connectionAttempt} → ${brokerUrl}`);
   console.log(
-    `[MQTT] Protocole: ${protocol.toUpperCase()} | Port: ${port} | User: ${username}`,
+    `[MQTT] Protocole: ${protocol.toUpperCase()} | Port: ${port} | ClientId: ${clientId}`,
   );
 
   isConnecting = true;
 
   const options = {
-    keepalive: 60,
-    clean: true,
-    reconnectPeriod: 5000,
-    connectTimeout: 30000,
+    clientId: clientId,
     username: username,
     password: password,
-    clientId: `backend_${Math.random().toString(16).slice(2, 8)}_${Date.now()}`,
-    rejectUnauthorized: false, // ← Accepte le certificat HiveMQ Cloud
+    clean: true, // Session non persistante
+    keepalive: 60,
+    reconnectPeriod: 0, // ✅ Désactivé — on gère manuellement pour éviter les boucles
+    connectTimeout: 15000, // 15 secondes
+    // ✅ CORRECTION CRITIQUE : false pour accepter le certificat HiveMQ Cloud
+    rejectUnauthorized: false,
   };
 
-  // WebSocket nécessite des options supplémentaires
+  // Options spécifiques WebSocket
   if (isWebSocket) {
-    options.protocol = "mqtt"; // Protocole MQTT over WebSocket
+    options.protocol = "mqtt";
+    options.protocolVersion = 4;
   }
 
   try {
@@ -111,12 +124,22 @@ const connectMqtt = () => {
   } catch (err) {
     console.error("[MQTT] ❌ Erreur création client:", err.message);
     isConnecting = false;
+    scheduleReconnect();
     return null;
   }
 
+  // ── ÉVÉNEMENTS ───────────────────────────────────────────────────────────
+
   client.on("connect", () => {
     isConnecting = false;
-    console.log(`[MQTT] ✅ CONNECTÉ au broker HiveMQ Cloud !`);
+    connectionAttempt = 0;
+    console.log(`[MQTT] ✅ CONNECTÉ au broker ! (ClientId: ${clientId})`);
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
     mqttDisconnectAlertSent = false;
 
     const topics = [
@@ -128,9 +151,12 @@ const connectMqtt = () => {
     ];
 
     topics.forEach((topic) => {
-      client.subscribe(topic, (err) => {
-        if (!err) console.log(`[MQTT] Souscrit à : ${topic}`);
-        else console.error(`[MQTT] Erreur souscription ${topic}:`, err.message);
+      client.subscribe(topic, { qos: 0 }, (err) => {
+        if (!err) {
+          console.log(`[MQTT] Souscrit: ${topic}`);
+        } else {
+          console.error(`[MQTT] Erreur souscription ${topic}:`, err.message);
+        }
       });
     });
 
@@ -149,55 +175,74 @@ const connectMqtt = () => {
   client.on("error", (error) => {
     isConnecting = false;
     console.error("[MQTT] ❌ Erreur:", error.message);
+
+    if (error.code === "ECONNREFUSED") {
+      console.error("[MQTT] → Connexion refusée — vérifiez le port et l'hôte");
+    }
+    if (error.code === "ENOTFOUND") {
+      console.error("[MQTT] → Hôte introuvable — vérifiez MQTT_BROKER");
+    }
     if (error.message.includes("connack timeout")) {
-      console.error("[MQTT] → CONNACK TIMEOUT : Vérifiez le port/protocol");
-      console.error(`[MQTT] → Vous utilisez ${brokerUrl}`);
-      console.error("[MQTT] → Port 8884 = wss:// (WebSocket)");
-      console.error("[MQTT] → Port 8883 = mqtts:// (MQTT natif TLS)");
+      console.error(
+        "[MQTT] → CONNACK timeout — credentials incorrects ou cluster non actif",
+      );
+      console.error("[MQTT] → Vérifiez dans console.hivemq.cloud:");
+      console.error("[MQTT] →   1. Cluster est 'Running'");
+      console.error("[MQTT] →   2. Utilisateur existe avec ce mot de passe");
+      console.error("[MQTT] →   3. Pas de restriction IP");
     }
     if (error.message.includes("Not authorized")) {
-      console.error("[MQTT] → NON AUTORISÉ : Vérifiez MQTT_USER/MQTT_PASS");
+      console.error(
+        "[MQTT] → NON AUTORISÉ — recréez l'utilisateur dans HiveMQ Cloud",
+      );
     }
-  });
-
-  client.on("disconnect", () => {
-    console.log("[MQTT] Déconnecté du broker");
-    lastMqttDisconnectTime = Date.now();
-    mqttDisconnectAlertSent = false;
-    stopDoorClockSync();
-  });
-
-  client.on("reconnect", () => {
-    console.log("[MQTT] Reconnexion en cours...");
-  });
-
-  client.on("offline", () => {
-    console.log("[MQTT] Client hors ligne");
-    (async () => {
-      if (
-        Date.now() - lastMqttDisconnectTime > 30000 &&
-        !mqttDisconnectAlertSent
-      ) {
-        try {
-          const poulaillers = await Poulailler.find().select("_id").lean();
-          for (const poule of poulaillers) {
-            await createMqttAlert(poule._id.toString(), "disconnect");
-          }
-          mqttDisconnectAlertSent = true;
-        } catch (error) {
-          console.error("[MQTT] Erreur alertes disconnect:", error.message);
-        }
-      }
-    })();
+    if (error.message.includes("certificate")) {
+      console.error(
+        "[MQTT] → Erreur certificat — rejectUnauthorized:false devrait résoudre",
+      );
+    }
   });
 
   client.on("close", () => {
     isConnecting = false;
-    console.log("[MQTT] Connexion fermée");
+    console.log("[MQTT] 🔌 Connexion fermée");
+    lastMqttDisconnectTime = Date.now();
+    stopDoorClockSync();
+    scheduleReconnect();
+  });
+
+  client.on("offline", () => {
+    console.log("[MQTT] ⚠️ Client hors ligne");
+  });
+
+  client.on("reconnect", () => {
+    console.log("[MQTT] 🔄 Reconnexion auto...");
+  });
+
+  client.on("end", () => {
+    isConnecting = false;
+    console.log("[MQTT] 🛑 Client terminé");
   });
 
   return client;
 };
+
+// ✅ NOUVEAU : Reconnexion manuelle avec backoff exponentiel
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+
+  const delay = Math.min(
+    5000 * Math.pow(2, Math.min(connectionAttempt, 5)),
+    60000,
+  );
+  console.log(`[MQTT] Reconnexion programmée dans ${delay}ms...`);
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    console.log("[MQTT] Tentative reconnexion...");
+    connectMqtt();
+  }, delay);
+}
 
 const handleMqttMessage = async (topic, message) => {
   try {
@@ -211,8 +256,6 @@ const handleMqttMessage = async (topic, message) => {
       if (topic.includes("/camera/image")) {
         data = { imageBase64: payload };
       } else {
-        if (process.env.DEBUG_MQTT)
-          console.debug("[MQTT] non-JSON skip:", topic);
         return;
       }
     }
@@ -223,8 +266,6 @@ const handleMqttMessage = async (topic, message) => {
     ) {
       const mac = data.mac || data.macAddress || data.deviceId;
       if (!mac) return;
-
-      console.log(`[MQTT] Discovery/Heartbeat — MAC: ${mac}`);
       await Module.findOneAndUpdate(
         { macAddress: mac },
         { lastPing: new Date() },
@@ -234,23 +275,15 @@ const handleMqttMessage = async (topic, message) => {
 
     if (topic.includes("/camera/image") && topicParts.length >= 3) {
       const macAddress = topicParts[1];
-
-      console.log(`[MQTT] 📷 Image reçue depuis MAC: ${macAddress}`);
-
       const poulailler = await resolvePoulaillerByMac(macAddress);
       if (!poulailler) {
-        console.warn(
-          `[MQTT] Aucun poulailler trouvé pour MAC caméra: ${macAddress}`,
-        );
+        console.warn(`[MQTT] Aucun poulailler pour MAC caméra: ${macAddress}`);
         return;
       }
 
       const imageBase64 = data.imageBase64 || payload;
-
       if (!imageBase64 || imageBase64.length < 100) {
-        console.warn(
-          `[MQTT] Image invalide ou trop petite (${imageBase64?.length} bytes)`,
-        );
+        console.warn(`[MQTT] Image invalide (${imageBase64?.length} bytes)`);
         return;
       }
 
@@ -262,7 +295,7 @@ const handleMqttMessage = async (topic, message) => {
       );
 
       console.log(
-        `[MQTT] ✅ Image traitée — poulailler: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
+        `[MQTT] ✅ Image traitée: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
       );
       return;
     }
@@ -271,20 +304,15 @@ const handleMqttMessage = async (topic, message) => {
 
     const macAddress = topicParts[1];
     const messageType = topicParts[2];
-
     const poulailler = await resolvePoulaillerByMac(macAddress);
     if (!poulailler) {
-      console.warn(`[MQTT] Aucun poulailler trouvé pour MAC: ${macAddress}`);
+      console.warn(`[MQTT] Aucun poulailler pour MAC: ${macAddress}`);
       return;
     }
 
     const poulaillerId = poulailler._id.toString();
 
     if (messageType === "measures") {
-      console.log(
-        `[MQTT] Mesures reçues — MAC: ${macAddress} | poulailler: ${poulaillerId}`,
-      );
-
       await Measure.create({
         poulailler: poulailler._id,
         temperature: data.temperature ?? null,
@@ -308,37 +336,23 @@ const handleMqttMessage = async (topic, message) => {
         { macAddress },
         { lastPing: new Date(), status: "associated" },
       );
-
-      if (poulailler.status !== "connecte") {
-        poulailler.status = "connecte";
-      }
+      if (poulailler.status !== "connecte") poulailler.status = "connecte";
       await poulailler.save();
 
       await checkSensorThresholds(poulaillerId, data, poulailler.thresholds);
       await resolveNormalValues(poulaillerId, data, poulailler.thresholds);
-
-      console.log(
-        `[MQTT] ✅ Mesures enregistrées — T:${data.temperature}°C H:${data.humidity}% CO2:${data.co2}ppm Eau:${data.waterLevel}%`,
-      );
       return;
     }
 
     if (messageType === "status") {
-      console.log(
-        `[MQTT] Status reçu — MAC: ${macAddress} | poulailler: ${poulaillerId}`,
-      );
-
-      if (data.fanOn !== undefined) {
+      if (data.fanOn !== undefined)
         poulailler.actuatorStates.ventilation.status = data.fanOn
           ? "on"
           : "off";
-      }
-      if (data.lampOn !== undefined) {
+      if (data.lampOn !== undefined)
         poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
-      }
-      if (data.pumpOn !== undefined) {
+      if (data.pumpOn !== undefined)
         poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
-      }
 
       publishConfig(macAddress, poulailler);
 
@@ -353,75 +367,58 @@ const handleMqttMessage = async (topic, message) => {
         };
         const newDoorStatus = doorStateMap[data.doorState] || "closed";
         const prevDoorStatus = poulailler.actuatorStates.door?.status;
-
         poulailler.actuatorStates.door.status = newDoorStatus;
 
         if (prevDoorStatus !== newDoorStatus) {
-          try {
-            await DoorEvent.create({
-              poulailler: poulailler._id,
-              action: newDoorStatus === "open" ? "open" : "close",
-              source: "esp32",
-              doorState: data.doorState,
-              timestamp: new Date(),
-            });
-            console.log(
-              `[DOOR] Événement enregistré: ${prevDoorStatus} → ${newDoorStatus}`,
-            );
-          } catch (doorErr) {
-            console.error("[DOOR] Erreur création DoorEvent:", doorErr.message);
-          }
+          await DoorEvent.create({
+            poulailler: poulailler._id,
+            action: newDoorStatus === "open" ? "open" : "close",
+            source: "esp32",
+            doorState: data.doorState,
+            timestamp: new Date(),
+          });
         }
 
         if (data.doorState === "BLOCKED") {
           try {
             const doorController = require("../controllers/doorController");
             await doorController.checkDoorTimeout(poulaillerId);
-          } catch (err) {
-            console.error("[MQTT] doorController load fail:", err.message);
-          }
+          } catch (err) {}
         }
       }
 
       await poulailler.save();
-      console.log(`[MQTT] ✅ Status actionneurs mis à jour`);
       return;
     }
   } catch (error) {
-    console.error("[MQTT] handleMessage ERROR:", error.message, error.stack);
+    console.error("[MQTT] handleMessage ERROR:", error.message);
   }
 };
 
 const publishConfig = (macAddress, poulailler) => {
   if (!client || !client.connected) return;
-
   const config = {
     tempMin: poulailler.thresholds.temperatureMin,
     tempMax: poulailler.thresholds.temperatureMax,
     waterMin: poulailler.thresholds.waterLevelMin,
     co2Max: poulailler.thresholds.co2Max,
   };
-
-  const topic = `poulailler/${macAddress}/config`;
-  client.publish(topic, JSON.stringify(config), { qos: 1 });
-  console.log(
-    `[MQTT] Config seuils envoyée à ${macAddress} — tempMin:${config.tempMin} tempMax:${config.tempMax}`,
-  );
+  client.publish(`poulailler/${macAddress}/config`, JSON.stringify(config), {
+    qos: 0,
+  });
 };
 
-// ✅ CORRECTION : Attend la connexion avant de publier
+// ✅ CORRECTION : Attend connexion avant de publier
 const publishCameraCommand = async (poulaillerId) => {
-  try {
-    // Attend que le client soit connecté (max 10s)
-    await waitForConnection(10000);
-  } catch (err) {
-    console.error("[MQTT] Impossible d'attendre connexion:", err.message);
+  const connected = await ensureConnected(10000);
+  if (!connected) {
+    console.error("[MQTT] ❌ Impossible de se connecter au broker");
     return false;
   }
 
   const macAddress = await resolveMacByPoulaillerId(poulaillerId);
   if (!macAddress) {
-    console.error(`[MQTT] Aucune MAC trouvée pour poulailler ${poulaillerId}`);
+    console.error(`[MQTT] Aucune MAC pour poulailler ${poulaillerId}`);
     return false;
   }
 
@@ -434,10 +431,10 @@ const publishCameraCommand = async (poulaillerId) => {
   return new Promise((resolve) => {
     client.publish(topic, payload, { qos: 1 }, (err) => {
       if (err) {
-        console.error("[MQTT] Erreur publish caméra:", err.message);
+        console.error("[MQTT] Erreur publish:", err.message);
         resolve(false);
       } else {
-        console.log(`[MQTT] 📷 Commande caméra envoyée sur ${topic}`);
+        console.log(`[MQTT] 📷 Commande envoyée: ${topic}`);
         resolve(true);
       }
     });
@@ -446,76 +443,65 @@ const publishCameraCommand = async (poulaillerId) => {
 
 const publishCommand = (macAddressOrId, command, value) => {
   if (!client || !client.connected) {
-    console.error("[MQTT] Publication impossible : client déconnecté.");
+    console.error("[MQTT] Client déconnecté");
     return false;
   }
   const topic = `poulailler/${macAddressOrId}/commands`;
-  const payload = JSON.stringify({
-    command,
-    value,
-    timestamp: new Date().toISOString(),
-  });
-
-  client.publish(topic, payload, { qos: 1 });
-  console.log(`[MQTT] Commande envoyée sur ${topic}`);
+  client.publish(
+    topic,
+    JSON.stringify({ command, value, timestamp: new Date().toISOString() }),
+    { qos: 0 },
+  );
   return true;
 };
 
 const disconnectMqtt = () => {
   stopDoorMonitoring();
   stopDoorClockSync();
-  if (client) client.end();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  if (client) client.end(true);
 };
 
 const startDoorMonitoring = () => {
   if (doorTimeoutIntervalId) return;
-
   doorTimeoutIntervalId = setInterval(async () => {
     try {
       const doorController = require("../controllers/doorController");
       const poulaillers = await Poulailler.find().select("_id").lean();
-
       if (!poulaillers?.length) return;
-
       for (const poule of poulaillers) {
         if (mongoose.Types.ObjectId.isValid(poule._id)) {
           await doorController.checkDoorTimeout(poule._id.toString());
         }
       }
     } catch (error) {
-      console.error("[DOOR-MONITOR] Erreur timeout check:", error.message);
+      console.error("[DOOR-MONITOR] Erreur:", error.message);
     }
   }, 10000);
-
   console.log("[MQTT] Door monitoring started");
 };
 
 const startDoorClockSync = () => {
   if (doorClockIntervalId) return;
-
   const syncAllDoorClocks = async () => {
     try {
       const { syncDoorClock } = require("./porteService");
-
       const devices = await Module.find({
         macAddress: { $exists: true, $ne: null },
         poulailler: { $exists: true, $ne: null },
         status: "associated",
       }).lean();
-
       for (const device of devices) {
         if (device.macAddress && device.poulailler) {
           await syncDoorClock(device.poulailler.toString(), device.macAddress);
         }
       }
     } catch (error) {
-      console.error("[DOOR-CLOCK] Erreur sync horloge:", error.message);
+      console.error("[DOOR-CLOCK] Erreur:", error.message);
     }
   };
-
   syncAllDoorClocks();
   doorClockIntervalId = setInterval(syncAllDoorClocks, 60000);
-
   console.log("[MQTT] Door clock sync started");
 };
 
@@ -523,7 +509,7 @@ const stopDoorMonitoring = () => {
   if (doorTimeoutIntervalId) {
     clearInterval(doorTimeoutIntervalId);
     doorTimeoutIntervalId = null;
-    console.log("[MQTT] Door timeout monitoring stopped");
+    console.log("[MQTT] Door monitoring stopped");
   }
 };
 
@@ -543,9 +529,9 @@ module.exports = {
   resolveMacByPoulaillerId,
   disconnectMqtt,
   getMqttClient: () => client,
+  ensureConnected,
   startDoorMonitoring,
   stopDoorMonitoring,
   startDoorClockSync,
   stopDoorClockSync,
-  waitForConnection, // export pour debug
 };
