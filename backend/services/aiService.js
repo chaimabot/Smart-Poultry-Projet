@@ -1,8 +1,3 @@
-// services/aiService.js
-// ✅ CORRIGÉ :
-//   1. Import circulaire supprimé (pendingImages n'existe pas dans aiController)
-//   2. publishCaptureTrigger reçoit et transmet correctement le requestId
-//   3. handleCameraImage ne dépend plus d'un import circulaire
 
 const path = require("path");
 require("dotenv").config({
@@ -524,17 +519,35 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// ✅ CORRIGÉ : requestId reçu ET transmis à publishCameraCommand
-async function publishCaptureTrigger(poulaillerId, requestId) {
-  // requestId est maintenant passé à l'ESP32 via MQTT
-  // pour qu'il puisse le renvoyer avec l'image dans POST /receive-image
-  const success = await publishCameraCommand(poulaillerId, requestId);
-  if (!success) {
-    throw new Error("Échec envoi commande MQTT caméra");
-  }
-  return true;
-}
+// services/aiService.js
+// CORRECTION : Passe requestId à publishCameraCommand
 
+async function publishCaptureTrigger(poulaillerId, requestId) {
+  // ✅ Vérifie que requestId est bien passé
+  if (!requestId) {
+    console.error("[AI] ERREUR : publishCaptureTrigger appelé sans requestId");
+    throw new Error("requestId requis");
+  }
+
+  const Camera = require("../models/Camera");
+
+  const camera = await Camera.findOne({
+    poulailler: poulaillerId,
+    status: { $nin: ["pending", "dissociated"] },
+  });
+
+  if (!camera) {
+    throw new Error("Aucune caméra active associée à ce poulailler");
+  }
+
+  // Utilise le client MQTT de mqttService.js
+  const { publishCameraCommand } = require("./mqttService");
+
+  // ✅ CORRECTION : Passe requestId explicitement
+  const success = await publishCameraCommand(poulaillerId, requestId);
+  
+  return success;
+}
 function buildSystemPrompt(context) {
   const sensors = [
     context.temperature != null

@@ -408,8 +408,14 @@ const publishConfig = (macAddress, poulailler) => {
   });
 };
 
-// ✅ CORRECTION : Attend connexion avant de publier
-const publishCameraCommand = async (poulaillerId) => {
+
+const publishCameraCommand = async (poulaillerId, requestId) => {
+  // ✅ Vérifie que requestId est passé
+  if (!requestId) {
+    console.error("[MQTT] ERREUR : publishCameraCommand appelé sans requestId");
+    return false;
+  }
+
   const connected = await ensureConnected(10000);
   if (!connected) {
     console.error("[MQTT] ❌ Impossible de se connecter au broker");
@@ -423,10 +429,17 @@ const publishCameraCommand = async (poulaillerId) => {
   }
 
   const topic = `poulailler/${macAddress}/cmd/camera`;
+  
+  // ✅ CORRECTION : Utilise le requestId passé en paramètre
   const payload = JSON.stringify({
     command: "capture_photo",
-    requestId: `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    requestId: requestId,  // ← Celui de aiController.js
+    timestamp: new Date().toISOString(),
   });
+
+  console.log(`[MQTT] 📷 Envoi commande:`);
+  console.log(`[MQTT]    Topic: ${topic}`);
+  console.log(`[MQTT]    requestId: ${requestId}`);
 
   return new Promise((resolve) => {
     client.publish(topic, payload, { qos: 1 }, (err) => {
@@ -434,7 +447,7 @@ const publishCameraCommand = async (poulaillerId) => {
         console.error("[MQTT] Erreur publish:", err.message);
         resolve(false);
       } else {
-        console.log(`[MQTT] 📷 Commande envoyée: ${topic}`);
+        console.log(`[MQTT] ✅ Commande envoyée (rid=${requestId})`);
         resolve(true);
       }
     });
