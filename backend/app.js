@@ -185,7 +185,7 @@ if (lampeRoutes) {
 }
 
 try {
-  const aiRoutes = require("./routes/ai");
+  const aiRoutes = require("./routes/aiRoute");
   app.use("/api/ai", aiRoutes);
   console.log("[ROUTES] ✓ ia chargé");
 } catch (e) {

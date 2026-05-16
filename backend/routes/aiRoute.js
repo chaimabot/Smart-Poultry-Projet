@@ -12,6 +12,7 @@ const {
   getLatestAnalysis,
   getAnalysisStats,
   chatWithVet,
+  awaitCameraImage,
 } = require("../controllers/aiController");
 const { protect } = require("../middlewares/auth");
 
