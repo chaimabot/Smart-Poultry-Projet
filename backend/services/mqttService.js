@@ -1,5 +1,5 @@
 // services/mqttService.js
-// CORRIGÉ : rejectUnauthorized: false + mqtts:// port 8883 + reconnexion robuste
+// CORRIGÉ : fallback Camera dans resolveMacByPoulaillerId + resolvePoulaillerByMac
 
 const mqtt = require("mqtt");
 const mongoose = require("mongoose");
@@ -23,26 +23,75 @@ let doorTimeoutIntervalId = null;
 let doorClockIntervalId = null;
 let connectionAttempt = 0;
 
+// ─── RÉSOLUTION MAC / POULAILLER ─────────────────────────────────────────────
+
+/**
+ * Résout le poulailler à partir d'une adresse MAC.
+ * Cherche d'abord dans Module (ESP32 principal), puis dans Camera (ESP32-CAM).
+ */
 const resolvePoulaillerByMac = async (macAddress) => {
+  // 1. Module (ESP32 capteurs/actionneurs)
   const device = await Module.findOne({ macAddress });
-  if (!device || !device.poulailler) return null;
-  return await Poulailler.findById(device.poulailler);
+  if (device?.poulailler) {
+    return await Poulailler.findById(device.poulailler);
+  }
+
+  // 2. Fallback : Camera (ESP32-CAM)
+  const Camera = require("../models/Camera");
+  const camera = await Camera.findOne({ macAddress });
+  if (camera?.poulailler) {
+    return await Poulailler.findById(camera.poulailler);
+  }
+
+  return null;
 };
 
+/**
+ * Résout l'adresse MAC à partir d'un poulaillerId.
+ * Cherche d'abord dans Module, puis dans Camera.
+ */
 const resolveMacByPoulaillerId = async (poulaillerId) => {
+  // 1. Module (ESP32 principal)
   const device = await Module.findOne({ poulailler: poulaillerId });
-  if (!device || !device.macAddress) return null;
-  return device.macAddress;
+  if (device?.macAddress) return device.macAddress;
+
+  // 2. Fallback : Camera (ESP32-CAM)
+  const Camera = require("../models/Camera");
+  const camera = await Camera.findOne({
+    poulailler: poulaillerId,
+    status: { $in: ["associated", "pending"] },
+  });
+  if (camera?.macAddress) return camera.macAddress;
+
+  return null;
 };
 
-// ✅ NOUVEAU : Vérifie si connecté, reconnecte si besoin
+/**
+ * Résout spécifiquement la MAC de la caméra pour un poulailler.
+ * Utilisé par publishCameraCommand pour cibler l'ESP32-CAM uniquement.
+ */
+const resolveCameraMacByPoulaillerId = async (poulaillerId) => {
+  const Camera = require("../models/Camera");
+  const camera = await Camera.findOne({
+    poulailler: poulaillerId,
+    status: { $in: ["associated", "pending"] },
+  });
+  if (camera?.macAddress) return camera.macAddress;
+
+  // Fallback sur Module si la caméra n'est pas trouvée
+  const device = await Module.findOne({ poulailler: poulaillerId });
+  return device?.macAddress || null;
+};
+
+// ─── CONNEXION MQTT ───────────────────────────────────────────────────────────
+
+// Vérifie si connecté, reconnecte si besoin
 async function ensureConnected(timeoutMs = 10000) {
   if (client && client.connected) return true;
 
   console.log("[MQTT] Client non connecté, tentative de connexion...");
   connectMqtt();
 
-  // Attend la connexion
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     await new Promise((r) => setTimeout(r, 500));
@@ -53,7 +102,6 @@ async function ensureConnected(timeoutMs = 10000) {
 }
 
 const connectMqtt = () => {
-  // Évite les connexions multiples
   if (isConnecting) {
     console.log("[MQTT] Connexion déjà en cours...");
     return client;
@@ -80,10 +128,8 @@ const connectMqtt = () => {
     return null;
   }
 
-  // ✅ CORRECTION : ClientId COURT (HiveMQ gratuit peut rejeter les longs)
   const clientId = `spb_${Math.random().toString(36).substring(2, 8)}_${Date.now().toString(36).substr(-4)}`;
 
-  // ✅ CORRECTION : mqtts:// pour 8883 (MQTT natif TLS), wss:// pour 8884 (WebSocket)
   const isWebSocket = port === 8884;
   const protocol = isWebSocket ? "wss" : "mqtts";
   const brokerUrl = isWebSocket
@@ -102,15 +148,13 @@ const connectMqtt = () => {
     clientId: clientId,
     username: username,
     password: password,
-    clean: true, // Session non persistante
+    clean: true,
     keepalive: 60,
-    reconnectPeriod: 0, // ✅ Désactivé — on gère manuellement pour éviter les boucles
-    connectTimeout: 15000, // 15 secondes
-    // ✅ CORRECTION CRITIQUE : false pour accepter le certificat HiveMQ Cloud
+    reconnectPeriod: 0, // Reconnexion manuelle
+    connectTimeout: 15000,
     rejectUnauthorized: false,
   };
 
-  // Options spécifiques WebSocket
   if (isWebSocket) {
     options.protocol = "mqtt";
     options.protocolVersion = 4;
@@ -224,7 +268,7 @@ const connectMqtt = () => {
   return client;
 };
 
-// ✅ NOUVEAU : Reconnexion manuelle avec backoff exponentiel
+// Reconnexion manuelle avec backoff exponentiel
 function scheduleReconnect() {
   if (reconnectTimer) return;
 
@@ -240,6 +284,8 @@ function scheduleReconnect() {
     connectMqtt();
   }, delay);
 }
+
+// ─── TRAITEMENT DES MESSAGES ──────────────────────────────────────────────────
 
 const handleMqttMessage = async (topic, message) => {
   try {
@@ -257,19 +303,31 @@ const handleMqttMessage = async (topic, message) => {
       }
     }
 
+    // ── Discovery / Heartbeat ─────────────────────────────────────────────
     if (
       topic === "smartpoultry/discovery" ||
       topic === "smartpoultry/heartbeat"
     ) {
       const mac = data.mac || data.macAddress || data.deviceId;
       if (!mac) return;
-      await Module.findOneAndUpdate(
+
+      // Tente de mettre à jour Module en premier, puis Camera
+      const updatedModule = await Module.findOneAndUpdate(
         { macAddress: mac },
         { lastPing: new Date() },
       );
+
+      if (!updatedModule) {
+        const Camera = require("../models/Camera");
+        await Camera.findOneAndUpdate(
+          { macAddress: mac },
+          { lastPing: new Date() },
+        );
+      }
       return;
     }
 
+    // ── Image caméra ──────────────────────────────────────────────────────
     if (topic.includes("/camera/image") && topicParts.length >= 3) {
       const macAddress = topicParts[1];
       const poulailler = await resolvePoulaillerByMac(macAddress);
@@ -277,6 +335,13 @@ const handleMqttMessage = async (topic, message) => {
         console.warn(`[MQTT] Aucun poulailler pour MAC caméra: ${macAddress}`);
         return;
       }
+
+      // Met à jour lastPing de la caméra
+      const Camera = require("../models/Camera");
+      await Camera.findOneAndUpdate(
+        { macAddress },
+        { lastPing: new Date(), status: "associated" },
+      );
 
       const imageBase64 = data.imageBase64 || payload;
       if (!imageBase64 || imageBase64.length < 100) {
@@ -309,6 +374,7 @@ const handleMqttMessage = async (topic, message) => {
 
     const poulaillerId = poulailler._id.toString();
 
+    // ── Mesures ───────────────────────────────────────────────────────────
     if (messageType === "measures") {
       await Measure.create({
         poulailler: poulailler._id,
@@ -341,6 +407,7 @@ const handleMqttMessage = async (topic, message) => {
       return;
     }
 
+    // ── Status ────────────────────────────────────────────────────────────
     if (messageType === "status") {
       if (data.fanOn !== undefined)
         poulailler.actuatorStates.ventilation.status = data.fanOn
@@ -392,6 +459,8 @@ const handleMqttMessage = async (topic, message) => {
   }
 };
 
+// ─── PUBLICATION ──────────────────────────────────────────────────────────────
+
 const publishConfig = (macAddress, poulailler) => {
   if (!client || !client.connected) return;
   const config = {
@@ -405,7 +474,10 @@ const publishConfig = (macAddress, poulailler) => {
   });
 };
 
-
+/**
+ * Envoie une commande de capture photo à l'ESP32-CAM du poulailler.
+ * Utilise resolveCameraMacByPoulaillerId pour cibler la caméra en priorité.
+ */
 const publishCameraCommand = async (poulaillerId, requestId) => {
   if (!requestId) {
     console.error("[MQTT] ERREUR : publishCameraCommand appelé sans requestId");
@@ -418,18 +490,18 @@ const publishCameraCommand = async (poulaillerId, requestId) => {
     return false;
   }
 
-  const macAddress = await resolveMacByPoulaillerId(poulaillerId);
+  // ✅ CORRECTION : cherche la MAC de la caméra en priorité
+  const macAddress = await resolveCameraMacByPoulaillerId(poulaillerId);
   if (!macAddress) {
-    console.error(`[MQTT] Aucune MAC pour poulailler ${poulaillerId}`);
+    console.error(`[MQTT] Aucune MAC caméra pour poulailler ${poulaillerId}`);
     return false;
   }
 
   const topic = `poulailler/${macAddress}/cmd/camera`;
-  
-  // ✅ CORRECTION : Utilise le requestId passé en paramètre
+
   const payload = JSON.stringify({
     command: "capture_photo",
-    requestId: requestId,  // ← Celui de aiController.js
+    requestId: requestId,
     timestamp: new Date().toISOString(),
   });
 
@@ -464,12 +536,16 @@ const publishCommand = (macAddressOrId, command, value) => {
   return true;
 };
 
+// ─── DÉCONNEXION ──────────────────────────────────────────────────────────────
+
 const disconnectMqtt = () => {
   stopDoorMonitoring();
   stopDoorClockSync();
   if (reconnectTimer) clearTimeout(reconnectTimer);
   if (client) client.end(true);
 };
+
+// ─── MONITORING PORTE ─────────────────────────────────────────────────────────
 
 const startDoorMonitoring = () => {
   if (doorTimeoutIntervalId) return;
@@ -530,12 +606,15 @@ const stopDoorClockSync = () => {
   }
 };
 
+// ─── EXPORTS ──────────────────────────────────────────────────────────────────
+
 module.exports = {
   connectMqtt,
   publishCommand,
   publishConfig,
   publishCameraCommand,
   resolveMacByPoulaillerId,
+  resolveCameraMacByPoulaillerId,
   disconnectMqtt,
   getMqttClient: () => client,
   ensureConnected,
