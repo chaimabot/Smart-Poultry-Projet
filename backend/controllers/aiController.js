@@ -1,40 +1,23 @@
 // controllers/aiController.js
-// CORRIGÉ : Architecture asynchrone avec polling, pas d'attente bloquante
+// CORRIGÉ : poulaillerId cohérent + captureRequestId lié + imageQuality sécurisé
 
 const Poulailler = require("../models/Poulailler");
 const Camera = require("../models/Camera");
 const AiAnalysis = require("../models/AiAnalysis");
 const ChatHistory = require("../models/ChatHistory");
 const Alert = require("../models/Alert");
+const CaptureRequest = require("../models/CaptureRequest");
 const cloudinary = require("../services/cloudinaryService");
 
 const {
-  publishCaptureTrigger,
   analyzeWithCloudflareAI,
   chatWithGemma,
 } = require("../services/aiService");
 
-// ============================================================================
-// STOCKAGE DES CAPTURES EN COURS (pour polling)
-// ============================================================================
-const pendingCaptures = new Map(); // requestId → { status, image, result, error }
+const { publishCameraCommand } = require("../services/mqttService");
+
 const analysisLocks = new Set();
 
-// Nettoyage auto après 2 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [requestId, capture] of pendingCaptures.entries()) {
-    if (now - capture.createdAt > 120000) {
-      // 2 min
-      pendingCaptures.delete(requestId);
-      console.log(`[AI] Capture expirée et nettoyée: ${requestId}`);
-    }
-  }
-}, 30000);
-
-// ============================================================================
-// HELPER : Vérifie accès utilisateur
-// ============================================================================
 async function checkAccess(poulaillerId, userId) {
   const poulailler = await Poulailler.findById(poulaillerId);
   if (!poulailler) return { error: "Poulailler non trouvé", status: 404 };
@@ -43,23 +26,20 @@ async function checkAccess(poulaillerId, userId) {
   return { poulailler };
 }
 
-// ============================================================================
-// HELPER : Vérifie caméra associée
-// ============================================================================
 async function verifyCameraLinked(poulaillerId) {
   const camera = await Camera.findOne({
     poulailler: poulaillerId,
-    status: { $nin: ["pending", "dissociated"] },
+    status: { $in: ["associated", "pending"] },
+    macAddress: { $exists: true, $ne: null },
   });
   if (!camera) {
-    throw new Error("Aucune caméra active associée à ce poulailler");
+    throw new Error("Aucune caméra associée à ce poulailler");
   }
   return camera;
 }
 
 // ============================================================================
 // ROUTE 1 : POST /api/ai/capture/:poulaillerId
-// Déclenche la capture, retourne immédiatement un requestId
 // ============================================================================
 async function triggerCapture(req, res) {
   const { poulaillerId } = req.params;
@@ -82,46 +62,60 @@ async function triggerCapture(req, res) {
   try {
     console.log(`[AI] Déclenchement capture — poulailler ${poulaillerId}`);
 
-    // Vérifie caméra
     const camera = await verifyCameraLinked(poulaillerId);
-    console.log(`[AI] Caméra trouvée: ${camera.macAddress}`);
+    console.log(`[AI] Caméra: ${camera.macAddress} (${camera.status})`);
 
-    // Génère requestId unique
     const requestId = `cap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    // Initialise le suivi
-    pendingCaptures.set(requestId, {
+    await CaptureRequest.create({
+      requestId,
       poulaillerId,
       status: "pending",
-      createdAt: Date.now(),
-      image: null,
-      result: null,
-      error: null,
     });
 
-    // Tente d'envoyer commande MQTT
     let mqttSent = false;
     try {
-      mqttSent = await publishCaptureTrigger(poulaillerId, requestId);
+      console.log(`[AI] Publication MQTT → requestId: ${requestId}`);
+      mqttSent = await publishCameraCommand(poulaillerId, requestId);
+      console.log(`[AI] MQTT envoyé: ${mqttSent}`);
     } catch (err) {
       console.error(`[AI] MQTT échoué: ${err.message}`);
     }
 
-    // ✅ RETOUR IMMÉDIAT — pas d'attente bloquante
-    res.status(200).json({
+    setTimeout(async () => {
+      try {
+        const doc = await CaptureRequest.findOne({ requestId });
+        if (doc && doc.status === "pending") {
+          console.warn(`[AI] ⏰ Timeout capture ${requestId} — ESP32-CAM muet`);
+          await CaptureRequest.findOneAndUpdate(
+            { requestId },
+            {
+              status: "failed",
+              error:
+                "L'ESP32-CAM n'a pas répondu dans les délais (90s). Vérifiez la connexion MQTT.",
+            },
+          );
+        }
+      } catch (e) {
+        console.error("[AI] Erreur timeout handler:", e.message);
+      }
+    }, 90000);
+
+    return res.status(200).json({
       success: true,
       data: {
         requestId,
         mqttSent,
+        cameraMac: camera.macAddress,
         message: mqttSent
           ? "Capture déclenchée. Polling requis pour le résultat."
-          : "MQTT indisponible. Utilisez le mode manuel (upload direct).",
+          : "MQTT indisponible — vérifiez la connexion au broker HiveMQ.",
         pollUrl: `/api/ai/capture-status/${requestId}`,
       },
     });
   } catch (err) {
     console.error("[AI] Erreur triggerCapture:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   } finally {
     analysisLocks.delete(poulaillerId);
   }
@@ -129,12 +123,12 @@ async function triggerCapture(req, res) {
 
 // ============================================================================
 // ROUTE 2 : GET /api/ai/capture-status/:requestId
-// Polling — retourne l'état actuel de la capture
 // ============================================================================
 async function getCaptureStatus(req, res) {
   const { requestId } = req.params;
 
-  const capture = pendingCaptures.get(requestId);
+  const capture = await CaptureRequest.findOne({ requestId });
+
   if (!capture) {
     return res.status(404).json({
       success: false,
@@ -142,9 +136,12 @@ async function getCaptureStatus(req, res) {
     });
   }
 
-  // Si terminée, on nettoie et retourne le résultat
   if (capture.status === "completed") {
-    const result = {
+    setTimeout(async () => {
+      await CaptureRequest.deleteOne({ requestId }).catch(() => {});
+    }, 30000);
+
+    return res.json({
       success: true,
       data: {
         status: "completed",
@@ -152,25 +149,21 @@ async function getCaptureStatus(req, res) {
         thumbnailUrl: capture.result?.thumbnailUrl,
         analysis: capture.result?.analysis,
       },
-    };
-    // Garde en mémoire encore 30s pour éviter race condition
-    setTimeout(() => pendingCaptures.delete(requestId), 30000);
-    return res.json(result);
+    });
   }
 
   if (capture.status === "failed") {
-    pendingCaptures.delete(requestId);
+    await CaptureRequest.deleteOne({ requestId }).catch(() => {});
     return res.status(500).json({
       success: false,
       error: capture.error || "Capture échouée",
     });
   }
 
-  // Toujours en cours
-  res.json({
+  return res.json({
     success: true,
     data: {
-      status: capture.status, // "pending" | "capturing" | "uploading" | "analyzing"
+      status: capture.status,
       message: "Capture en cours...",
     },
   });
@@ -178,7 +171,6 @@ async function getCaptureStatus(req, res) {
 
 // ============================================================================
 // ROUTE 3 : POST /api/ai/receive-image
-// L'ESP32 appelle cette route pour envoyer l'image
 // ============================================================================
 async function receiveImageFromESP(req, res) {
   try {
@@ -191,13 +183,11 @@ async function receiveImageFromESP(req, res) {
       return res.status(400).json({ success: false, error: "image requise" });
     }
 
-    // Normalise et trouve la caméra
     const normalizedMac = Camera.normalizeMac(deviceId);
     if (!normalizedMac) {
-      return res.status(400).json({
-        success: false,
-        error: "deviceId/MAC invalide",
-      });
+      return res
+        .status(400)
+        .json({ success: false, error: "deviceId/MAC invalide" });
     }
 
     const camera = await Camera.findOne({ macAddress: normalizedMac });
@@ -210,7 +200,6 @@ async function receiveImageFromESP(req, res) {
 
     const poulaillerId = camera.poulailler.toString();
 
-    // Vérifie taille image
     const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
     const base64Length = cleanBase64.length;
     const padding = (cleanBase64.match(/=/g) || []).length;
@@ -224,39 +213,68 @@ async function receiveImageFromESP(req, res) {
     }
 
     console.log(
-      `[AI] Image reçue — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
+      `[AI] Image reçue — ${poulaillerId} (${imageSizeKb} Ko) | requestId: ${requestId || "sans"}`,
     );
 
-    // Met à jour le pending si requestId fourni
-    if (requestId && pendingCaptures.has(requestId)) {
-      const capture = pendingCaptures.get(requestId);
-      capture.status = "uploading";
-      capture.image = cleanBase64;
+    await Camera.findByIdAndUpdate(camera._id, {
+      lastPing: new Date(),
+      status: "associated",
+    });
 
-      // Lance l'analyse en arrière-plan
-      processImageAsync(requestId, poulaillerId, cleanBase64, camera);
+    if (requestId) {
+      const captureDoc = await CaptureRequest.findOne({ requestId });
+
+      if (captureDoc) {
+        await CaptureRequest.findOneAndUpdate(
+          { requestId },
+          { status: "uploading" },
+        );
+        processImageAsync(requestId, poulaillerId, cleanBase64, camera);
+      } else {
+        console.warn(
+          `[AI] requestId ${requestId} introuvable — traitement orphelin`,
+        );
+        const orphanId = `orphan-${Date.now()}`;
+        await CaptureRequest.create({
+          requestId: orphanId,
+          poulaillerId,
+          status: "uploading",
+        });
+        processImageAsync(orphanId, poulaillerId, cleanBase64, camera);
+      }
+    } else {
+      const autoId = `auto-${Date.now()}`;
+      await CaptureRequest.create({
+        requestId: autoId,
+        poulaillerId,
+        status: "uploading",
+      });
+      processImageAsync(autoId, poulaillerId, cleanBase64, camera);
     }
 
-    // Répond immédiatement à l'ESP32
-    res.status(200).json({ success: true });
+    return res.status(200).json({ success: true });
   } catch (err) {
     console.error("[AI] Erreur receiveImageFromESP:", err.message);
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
 // ============================================================================
-// TRAITEMENT ASYNCHRONE DE L'IMAGE
+// TRAITEMENT ASYNCHRONE — CORRIGÉ
 // ============================================================================
 async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
   try {
-    const capture = pendingCaptures.get(requestId);
-    if (!capture) return;
+    // ✅ Vérifie que poulaillerId est valide avant toute création
+    if (!poulaillerId || !mongoose.isValidObjectId(poulaillerId)) {
+      throw new Error(`poulaillerId invalide: ${poulaillerId}`);
+    }
 
-    capture.status = "analyzing";
+    await CaptureRequest.findOneAndUpdate(
+      { requestId },
+      { status: "analyzing" },
+    );
     console.log(`[AI] Analyse en cours — requestId: ${requestId}`);
 
-    // Récupère les données capteurs
     const poulailler = await Poulailler.findById(poulaillerId);
     const sensorData = {
       temperature: poulailler?.lastMonitoring?.temperature ?? null,
@@ -267,78 +285,116 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       surface: poulailler?.surface,
     };
 
-    // Analyse IA
     const aiResult = await analyzeWithCloudflareAI(
       imageBase64,
       sensorData,
       poulailler?.thresholds,
     );
 
-    // Upload Cloudinary
     console.log("[AI] Upload Cloudinary...");
     const cloudImage = await cloudinary.uploadImage(imageBase64, poulaillerId);
 
-    // Sauvegarde
-    const analysis = await AiAnalysis.create({
-      poulaillerId,
+    // ✅ Construction sécurisée de l'analyse
+    const analysisPayload = {
+      poulaillerId: new mongoose.Types.ObjectId(poulaillerId),
       triggeredBy: "esp32-auto",
+      captureRequestId: new mongoose.Types.ObjectId(
+        mongoose.isValidObjectId(requestId)
+          ? requestId
+          : new mongoose.Types.ObjectId(),
+      ),
       sensors: sensorData,
-      result: aiResult,
-      imageQuality: aiResult.imageQuality,
+      result: {
+        healthScore: aiResult?.healthScore ?? null,
+        urgencyLevel: ["normal", "attention", "critique"].includes(
+          aiResult?.urgencyLevel,
+        )
+          ? aiResult.urgencyLevel
+          : "normal",
+        confidence: aiResult?.confidence ?? null,
+        diagnostic: aiResult?.diagnostic ?? "",
+        detections: {
+          behaviorNormal: aiResult?.detections?.behaviorNormal ?? true,
+          mortalityDetected: aiResult?.detections?.mortalityDetected ?? false,
+          densityOk: aiResult?.detections?.densityOk ?? true,
+          cleanEnvironment: aiResult?.detections?.cleanEnvironment ?? true,
+          ventilationAdequate:
+            aiResult?.detections?.ventilationAdequate ?? true,
+        },
+        advices: Array.isArray(aiResult?.advices) ? aiResult.advices : [],
+        sensors: sensorData,
+      },
+      imageQuality: aiResult?.imageQuality?.status
+        ? {
+            status: ["pending", "processing", "optimized", "failed"].includes(
+              aiResult.imageQuality.status,
+            )
+              ? aiResult.imageQuality.status
+              : "pending",
+            score: aiResult.imageQuality.score ?? null,
+            width: aiResult.imageQuality.width ?? null,
+            height: aiResult.imageQuality.height ?? null,
+            format: aiResult.imageQuality.format ?? null,
+            sizeBytes: aiResult.imageQuality.sizeBytes ?? null,
+          }
+        : { status: "pending" },
       image: {
-        url: cloudImage.url,
-        thumbnailUrl: cloudImage.thumbnailUrl,
-        publicId: cloudImage.publicId,
-        width: cloudImage.width,
-        height: cloudImage.height,
-        bytes: cloudImage.bytes,
+        url: cloudImage?.url ?? null,
+        thumbnailUrl: cloudImage?.thumbnailUrl ?? null,
+        publicId: cloudImage?.publicId ?? null,
       },
-    });
-
-    // Met à jour le résultat
-    capture.status = "completed";
-    capture.result = {
-      imageUrl: cloudImage.url,
-      thumbnailUrl: cloudImage.thumbnailUrl,
-      analysis: {
-        _id: analysis._id,
-        healthScore: aiResult.healthScore,
-        urgencyLevel: aiResult.urgencyLevel,
-        diagnostic: aiResult.diagnostic,
-        detections: aiResult.detections,
-        advices: aiResult.advices,
-      },
+      cameraMac: camera?.macAddress ?? null,
+      status: "completed",
     };
 
-    console.log(
-      `[AI] ✅ Analyse complète — requestId: ${requestId} | Score: ${aiResult.healthScore}`,
+    const analysis = await AiAnalysis.create(analysisPayload);
+
+    await CaptureRequest.findOneAndUpdate(
+      { requestId },
+      {
+        status: "completed",
+        result: {
+          imageUrl: cloudImage?.url,
+          thumbnailUrl: cloudImage?.thumbnailUrl,
+          analysis: {
+            _id: analysis._id,
+            healthScore: aiResult?.healthScore,
+            urgencyLevel: aiResult?.urgencyLevel,
+            diagnostic: aiResult?.diagnostic,
+            detections: aiResult?.detections,
+            advices: aiResult?.advices,
+          },
+        },
+      },
     );
 
-    // Alertes si critique
+    console.log(
+      `[AI] ✅ Analyse complète — requestId: ${requestId} | Score: ${aiResult?.healthScore ?? "?"}`,
+    );
+
     if (
-      aiResult.urgencyLevel === "critique" ||
-      aiResult.detections?.mortalityDetected
+      aiResult?.urgencyLevel === "critique" ||
+      aiResult?.detections?.mortalityDetected
     ) {
       await Alert.create({
         poulailler: poulaillerId,
         type: "ai",
         severity: "danger",
-        message: aiResult.diagnostic,
+        message: aiResult?.diagnostic || "Alerte IA déclenchée",
         icon: "alert-circle",
       });
     }
   } catch (err) {
     console.error(`[AI] Erreur traitement image ${requestId}:`, err.message);
-    const capture = pendingCaptures.get(requestId);
-    if (capture) {
-      capture.status = "failed";
-      capture.error = err.message;
-    }
+    await CaptureRequest.findOneAndUpdate(
+      { requestId },
+      { status: "failed", error: err.message },
+    ).catch(() => {});
   }
 }
 
 // ============================================================================
-// ROUTE 4 : POST /api/ai/capture/:id (ancienne — garde compatibilité)
+// ROUTE 4 : POST /api/ai/capture/:id (ancienne compatibilité)
 // ============================================================================
 async function analyzePoultry(req, res) {
   const { poulaillerId } = req.params;
@@ -350,22 +406,17 @@ async function analyzePoultry(req, res) {
     });
   }
 
-  const { error, status, poulailler } = await checkAccess(
-    poulaillerId,
-    req.user.id,
-  );
+  const { error, status } = await checkAccess(poulaillerId, req.user.id);
   if (error) return res.status(status).json({ success: false, error });
 
-  // Image fournie directement (mode manuel)
   if (req.body?.imageBase64) {
     analysisLocks.add(poulaillerId);
     try {
       const requestId = `manual-${Date.now()}`;
-      pendingCaptures.set(requestId, {
+      await CaptureRequest.create({
+        requestId,
         poulaillerId,
         status: "analyzing",
-        createdAt: Date.now(),
-        image: req.body.imageBase64,
       });
 
       const camera = await Camera.findOne({ poulailler: poulaillerId });
@@ -376,24 +427,23 @@ async function analyzePoultry(req, res) {
         camera,
       );
 
-      const capture = pendingCaptures.get(requestId);
+      const capture = await CaptureRequest.findOne({ requestId });
       if (capture?.status === "completed") {
-        return res.json({
-          success: true,
-          data: capture.result,
-        });
+        return res.json({ success: true, data: capture.result });
       }
+      return res
+        .status(500)
+        .json({ success: false, error: capture?.error || "Erreur inconnue" });
     } finally {
       analysisLocks.delete(poulaillerId);
     }
   }
 
-  // Sinon, redirige vers le nouveau flux asynchrone
   return triggerCapture(req, res);
 }
 
 // ============================================================================
-// ROUTES HISTORIQUE / CHAT (inchangées)
+// HISTORIQUE / CHAT / STATS
 // ============================================================================
 async function getAnalysisHistory(req, res) {
   const { error, status } = await checkAccess(
@@ -408,10 +458,9 @@ async function getAnalysisHistory(req, res) {
     })
       .sort({ createdAt: -1 })
       .limit(10);
-
     return res.json({ success: true, count: analyses.length, data: analyses });
   } catch (err) {
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
@@ -426,14 +475,12 @@ async function getLatestAnalysis(req, res) {
     const analysis = await AiAnalysis.findOne({
       poulaillerId: req.params.poulaillerId,
     }).sort({ createdAt: -1 });
-
     if (!analysis) {
       return res.json({ success: true, data: null, message: "Aucune analyse" });
     }
-
     return res.json({ success: true, data: analysis });
   } catch (err) {
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
@@ -484,7 +531,7 @@ async function getAnalysisStats(req, res) {
       },
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
@@ -550,7 +597,7 @@ async function chatWithVet(req, res) {
       },
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
@@ -568,7 +615,7 @@ async function getChatHistory(req, res) {
     });
     return res.json({ success: true, data: history?.messages || [] });
   } catch (err) {
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
@@ -586,23 +633,19 @@ async function clearChatHistory(req, res) {
     });
     return res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: "Erreur serveur" });
+    return res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 }
 
-// ============================================================================
-// EXPORTS
-// ============================================================================
 module.exports = {
-  triggerCapture, // ✅ NOUVEAU
-  getCaptureStatus, // ✅ NOUVEAU
-  receiveImageFromESP, // ✅ CORRIGÉ (asynchrone)
-  analyzePoultry, // Garde compatibilité
+  triggerCapture,
+  getCaptureStatus,
+  receiveImageFromESP,
+  analyzePoultry,
   getAnalysisHistory,
   getLatestAnalysis,
   getAnalysisStats,
   chatWithVet,
   getChatHistory,
   clearChatHistory,
-  pendingCaptures, // Export pour debug
 };
