@@ -1,5 +1,6 @@
 // services/aiService.js
-// CORRIGÉ : publishCaptureTrigger autonome, utilise Camera.findOne() + MQTT direct
+// CORRIGÉ : Utilise getMqttClient() et publishCameraCommand() de mqttService.js
+// Suppression du client MQTT interne qui entrait en conflit
 
 const path = require("path");
 require("dotenv").config({
@@ -7,11 +8,12 @@ require("dotenv").config({
 });
 
 const axios = require("axios");
-const mqtt = require("mqtt");
 const sharp = require("sharp");
-const Camera = require("../models/Camera"); // ✅ AJOUT
+const Camera = require("../models/Camera");
 
 const { pendingImages } = require("../controllers/aiController");
+// ✅ CORRECTION : Import depuis mqttService.js au lieu de créer un nouveau client
+const { getMqttClient, publishCameraCommand } = require("./mqttService");
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -44,31 +46,8 @@ const DEATH_KEYWORDS = [
   "deceased",
 ];
 
-let mqttClient = null;
-
-function getMqttClient() {
-  if (mqttClient?.connected) return mqttClient;
-
-  mqttClient = mqtt.connect(
-    `mqtts://${process.env.MQTT_BROKER}:${process.env.MQTT_PORT}`,
-    {
-      username: process.env.MQTT_USER,
-      password: process.env.MQTT_PASS,
-      reconnectPeriod: 3000,
-      rejectUnauthorized: false,
-      connectTimeout: 10000,
-      clean: true,
-    },
-  );
-
-  mqttClient.on("connect", () => console.log("[MQTT] Connecté"));
-  mqttClient.on("error", (err) =>
-    console.error("[MQTT] Erreur :", err.message),
-  );
-  mqttClient.on("offline", () => console.warn("[MQTT] Hors-ligne"));
-
-  return mqttClient;
-}
+// ✅ SUPPRIMÉ : let mqttClient = null;
+// ✅ SUPPRIMÉ : function getMqttClient() { ... }
 
 function cleanBase64(base64) {
   if (!base64) return null;
@@ -581,39 +560,13 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// ✅ CORRECTION : publishCaptureTrigger autonome, utilise Camera + MQTT direct
+// ✅ CORRECTION : Utilise publishCameraCommand de mqttService.js
 async function publishCaptureTrigger(poulaillerId) {
-  const camera = await Camera.findOne({
-    poulailler: poulaillerId,
-    status: { $nin: ["pending", "dissociated"] },
-  });
-
-  if (!camera) {
-    throw new Error("Aucune caméra active associée à ce poulailler");
+  const success = await publishCameraCommand(poulaillerId);
+  if (!success) {
+    throw new Error("Échec envoi commande MQTT caméra");
   }
-
-  const client = getMqttClient();
-  if (!client || !client.connected) {
-    throw new Error("Client MQTT non connecté");
-  }
-
-  const topic = `poulailler/${camera.macAddress}/cmd/camera`;
-  const payload = JSON.stringify({
-    command: "capture_photo",
-    requestId: `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-  });
-
-  return new Promise((resolve, reject) => {
-    client.publish(topic, payload, { qos: 1 }, (err) => {
-      if (err) {
-        console.error("[MQTT] Erreur publish:", err.message);
-        reject(new Error("Échec envoi commande MQTT caméra"));
-      } else {
-        console.log(`[MQTT] Commande capture publiée sur ${topic}`);
-        resolve(true);
-      }
-    });
-  });
+  return true;
 }
 
 function buildSystemPrompt(context) {
