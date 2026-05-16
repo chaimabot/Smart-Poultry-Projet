@@ -1,6 +1,5 @@
 // services/aiService.js
-// CORRIGÉ : Utilise getMqttClient() et publishCameraCommand() de mqttService.js
-// Suppression du client MQTT interne qui entrait en conflit
+// CORRIGÉ : Utilise publishCameraCommand de mqttService.js (attend connexion)
 
 const path = require("path");
 require("dotenv").config({
@@ -12,8 +11,7 @@ const sharp = require("sharp");
 const Camera = require("../models/Camera");
 
 const { pendingImages } = require("../controllers/aiController");
-// ✅ CORRECTION : Import depuis mqttService.js au lieu de créer un nouveau client
-const { getMqttClient, publishCameraCommand } = require("./mqttService");
+const { publishCameraCommand } = require("./mqttService");
 
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -45,9 +43,6 @@ const DEATH_KEYWORDS = [
   "mortality",
   "deceased",
 ];
-
-// ✅ SUPPRIMÉ : let mqttClient = null;
-// ✅ SUPPRIMÉ : function getMqttClient() { ... }
 
 function cleanBase64(base64) {
   if (!base64) return null;
@@ -560,7 +555,7 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// ✅ CORRECTION : Utilise publishCameraCommand de mqttService.js
+// ✅ Utilise publishCameraCommand de mqttService.js (attend connexion)
 async function publishCaptureTrigger(poulaillerId) {
   const success = await publishCameraCommand(poulaillerId);
   if (!success) {

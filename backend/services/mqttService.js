@@ -1,5 +1,5 @@
 // services/mqttService.js
-// CORRIGÉ : Port 8883 (TLS direct), rejectUnauthorized: false, config robuste
+// CORRIGÉ : Détecte automatiquement wss:// (port 8884) vs mqtts:// (port 8883)
 
 const mqtt = require("mqtt");
 const mongoose = require("mongoose");
@@ -15,6 +15,7 @@ const {
 } = require("./alertService");
 
 let client = null;
+let isConnecting = false;
 let lastMqttDisconnectTime = 0;
 let mqttDisconnectAlertSent = false;
 let doorTimeoutIntervalId = null;
@@ -32,27 +33,62 @@ const resolveMacByPoulaillerId = async (poulaillerId) => {
   return device.macAddress;
 };
 
+// ✅ NOUVEAU : Attend que le client soit connecté avant de publier
+function waitForConnection(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    if (client && client.connected) return resolve(true);
+    if (!client) return reject(new Error("Client MQTT non initialisé"));
+
+    const start = Date.now();
+    const interval = setInterval(() => {
+      if (client.connected) {
+        clearInterval(interval);
+        return resolve(true);
+      }
+      if (Date.now() - start > timeoutMs) {
+        clearInterval(interval);
+        reject(new Error("Timeout attente connexion MQTT"));
+      }
+    }, 500);
+  });
+}
+
 const connectMqtt = () => {
+  if (isConnecting || (client && client.connected)) {
+    console.log("[MQTT] Déjà connecté ou connexion en cours...");
+    return client;
+  }
+
   const host =
     process.env.MQTT_BROKER ||
     "372f445aface456abb82e44117d9d92b.s1.eu.hivemq.cloud";
   const username = process.env.MQTT_USER?.trim();
   const password = process.env.MQTT_PASS?.trim();
-  // ✅ CORRECTION : Port 8883 par défaut (TLS direct), pas 8884
-  const port = parseInt(process.env.MQTT_PORT) || 8883;
+  let port = parseInt(process.env.MQTT_PORT) || 8883;
+
+  // ✅ CORRECTION : Si port 8884, force WebSocket (wss://)
+  // Si port 8883 ou autre, utilise MQTT natif TLS (mqtts://)
+  const isWebSocket = port === 8884;
+  const protocol = isWebSocket ? "wss" : "mqtts";
+
+  // Pour HiveMQ Cloud, le path /mqtt est requis sur WebSocket
+  const brokerUrl = isWebSocket
+    ? `${protocol}://${host}:${port}/mqtt`
+    : `${protocol}://${host}:${port}`;
 
   if (!username || !password) {
     console.error(
-      "[MQTT] ❌ Erreur : MQTT_USER ou MQTT_PASS est vide dans le fichier .env",
+      "[MQTT] ❌ Credentials manquants (MQTT_USER ou MQTT_PASS vide)",
     );
     return null;
   }
 
-  // ✅ CORRECTION : URL mqtts:// pour TLS direct sur port 8883
-  const brokerUrl = `mqtts://${host}:${port}`;
+  console.log(`[MQTT] Connexion à ${brokerUrl}`);
+  console.log(
+    `[MQTT] Protocole: ${protocol.toUpperCase()} | Port: ${port} | User: ${username}`,
+  );
 
-  console.log(`[MQTT Backend] Connexion à ${brokerUrl}`);
-  console.log(`[MQTT Backend] User: ${username} | Port: ${port}`);
+  isConnecting = true;
 
   const options = {
     keepalive: 60,
@@ -61,14 +97,26 @@ const connectMqtt = () => {
     connectTimeout: 30000,
     username: username,
     password: password,
-    clientId: `backend_${Math.random().toString(16).slice(2, 10)}_${Date.now()}`,
-    rejectUnauthorized: false, // ✅ CRITIQUE : Accepte certificat HiveMQ Cloud
+    clientId: `backend_${Math.random().toString(16).slice(2, 8)}_${Date.now()}`,
+    rejectUnauthorized: false, // ← Accepte le certificat HiveMQ Cloud
   };
 
-  client = mqtt.connect(brokerUrl, options);
+  // WebSocket nécessite des options supplémentaires
+  if (isWebSocket) {
+    options.protocol = "mqtt"; // Protocole MQTT over WebSocket
+  }
+
+  try {
+    client = mqtt.connect(brokerUrl, options);
+  } catch (err) {
+    console.error("[MQTT] ❌ Erreur création client:", err.message);
+    isConnecting = false;
+    return null;
+  }
 
   client.on("connect", () => {
-    console.log(`[MQTT] ✅ Backend connecté avec succès au broker !`);
+    isConnecting = false;
+    console.log(`[MQTT] ✅ CONNECTÉ au broker HiveMQ Cloud !`);
     mqttDisconnectAlertSent = false;
 
     const topics = [
@@ -94,26 +142,26 @@ const connectMqtt = () => {
     try {
       await handleMqttMessage(topic, message);
     } catch (error) {
-      console.error(`[MQTT] Erreur de traitement sur ${topic}:`, error.message);
+      console.error(`[MQTT] Erreur traitement ${topic}:`, error.message);
     }
   });
 
   client.on("error", (error) => {
-    console.error("[MQTT] ❌ Erreur de connexion:", error.message);
-    if (error.message.includes("Not authorized")) {
-      console.log(
-        "👉 CONSEIL : Vérifiez que l'utilisateur MQTT existe dans la console HiveMQ.",
-      );
-    }
+    isConnecting = false;
+    console.error("[MQTT] ❌ Erreur:", error.message);
     if (error.message.includes("connack timeout")) {
-      console.log(
-        "👉 CONSEIL : Vérifiez le port (8883 pour TLS, 8884 pour WebSocket) et les credentials.",
-      );
+      console.error("[MQTT] → CONNACK TIMEOUT : Vérifiez le port/protocol");
+      console.error(`[MQTT] → Vous utilisez ${brokerUrl}`);
+      console.error("[MQTT] → Port 8884 = wss:// (WebSocket)");
+      console.error("[MQTT] → Port 8883 = mqtts:// (MQTT natif TLS)");
+    }
+    if (error.message.includes("Not authorized")) {
+      console.error("[MQTT] → NON AUTORISÉ : Vérifiez MQTT_USER/MQTT_PASS");
     }
   });
 
   client.on("disconnect", () => {
-    console.log("[MQTT] ❌ Déconnexion du broker MQTT");
+    console.log("[MQTT] Déconnecté du broker");
     lastMqttDisconnectTime = Date.now();
     mqttDisconnectAlertSent = false;
     stopDoorClockSync();
@@ -124,7 +172,7 @@ const connectMqtt = () => {
   });
 
   client.on("offline", () => {
-    console.log("[MQTT] Client hors ligne - tentative de reconnexion...");
+    console.log("[MQTT] Client hors ligne");
     (async () => {
       if (
         Date.now() - lastMqttDisconnectTime > 30000 &&
@@ -137,10 +185,15 @@ const connectMqtt = () => {
           }
           mqttDisconnectAlertSent = true;
         } catch (error) {
-          console.error("[MQTT] Error creating disconnect alerts:", error);
+          console.error("[MQTT] Erreur alertes disconnect:", error.message);
         }
       }
     })();
+  });
+
+  client.on("close", () => {
+    isConnecting = false;
+    console.log("[MQTT] Connexion fermée");
   });
 
   return client;
@@ -356,9 +409,13 @@ const publishConfig = (macAddress, poulailler) => {
   );
 };
 
+// ✅ CORRECTION : Attend la connexion avant de publier
 const publishCameraCommand = async (poulaillerId) => {
-  if (!client || !client.connected) {
-    console.error("[MQTT] Publication impossible : client déconnecté.");
+  try {
+    // Attend que le client soit connecté (max 10s)
+    await waitForConnection(10000);
+  } catch (err) {
+    console.error("[MQTT] Impossible d'attendre connexion:", err.message);
     return false;
   }
 
@@ -430,7 +487,7 @@ const startDoorMonitoring = () => {
     }
   }, 10000);
 
-  console.log("[MQTT] Door monitoring started (safe)");
+  console.log("[MQTT] Door monitoring started");
 };
 
 const startDoorClockSync = () => {
@@ -490,4 +547,5 @@ module.exports = {
   stopDoorMonitoring,
   startDoorClockSync,
   stopDoorClockSync,
+  waitForConnection, // export pour debug
 };
