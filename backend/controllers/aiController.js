@@ -1,11 +1,12 @@
 // controllers/aiController.js
-// MODIFIÉ : Cloudinary intégré, bugs corrigés
+// CORRIGÉ : Utilise Camera.normalizeMac() + Camera.findOne() au lieu de Poulailler.macAddressCam
 
 const Poulailler = require("../models/Poulailler");
+const Camera = require("../models/Camera"); // ✅ AJOUT
 const AiAnalysis = require("../models/AiAnalysis");
 const ChatHistory = require("../models/ChatHistory");
 const Alert = require("../models/Alert");
-const cloudinary = require("../services/cloudinaryService"); // ✅ NOUVEAU
+const cloudinary = require("../services/cloudinaryService");
 
 const {
   publishCaptureTrigger,
@@ -72,16 +73,24 @@ async function receiveImageFromESP(req, res) {
       return res.status(400).json({ success: false, error: "image requise" });
     }
 
-    // ✅ CORRECTION : Trouve le poulailler et assigne poulaillerId
-    const poulailler = await Poulailler.findOne({ macAddressCam: deviceId });
-    if (!poulailler) {
-      return res.status(404).json({
+    // ✅ CORRECTION : Normalise la MAC et cherche dans Camera
+    const normalizedMac = Camera.normalizeMac(deviceId);
+    if (!normalizedMac) {
+      return res.status(400).json({
         success: false,
-        error: "Poulailler non trouvé pour ce deviceId",
+        error: "deviceId/MAC invalide (format attendu : XX:XX:XX:XX:XX:XX)",
       });
     }
 
-    const poulaillerId = poulailler._id.toString(); // ✅ CORRECTION BUG
+    const camera = await Camera.findOne({ macAddress: normalizedMac });
+    if (!camera || !camera.poulailler) {
+      return res.status(404).json({
+        success: false,
+        error: "Caméra non enregistrée ou non associée à un poulailler",
+      });
+    }
+
+    const poulaillerId = camera.poulailler.toString(); // ✅ ID récupéré via Camera
 
     const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
     const base64Length = cleanBase64.length;
@@ -118,6 +127,18 @@ async function receiveImageFromESP(req, res) {
   }
 }
 
+// ✅ HELPER : Vérifie qu'une caméra active est associée
+async function verifyCameraLinked(poulaillerId) {
+  const camera = await Camera.findOne({
+    poulailler: poulaillerId,
+    status: { $nin: ["pending", "dissociated"] },
+  });
+  if (!camera) {
+    throw new Error("Aucune caméra active associée à ce poulailler");
+  }
+  return camera;
+}
+
 async function analyzePoultry(req, res) {
   const { poulaillerId } = req.params;
 
@@ -150,11 +171,12 @@ async function analyzePoultry(req, res) {
 
     const thresholds = poulailler.thresholds;
 
-    // ✅ CORRECTION : Vérifie si image envoyée par le client
     let imageBase64 = req.body?.imageBase64;
 
     if (!imageBase64) {
-      // Si pas d'image, déclenche capture ESP32
+      // ✅ Vérifie caméra avant de publier MQTT
+      await verifyCameraLinked(poulaillerId);
+
       await publishCaptureTrigger(poulaillerId);
       console.log("[AI] Trigger MQTT envoyé — attente de l'image...");
 
@@ -170,11 +192,9 @@ async function analyzePoultry(req, res) {
       thresholds,
     );
 
-    // ✅ NOUVEAU : Upload image sur Cloudinary (GRATUIT)
     console.log("[AI] Upload Cloudinary...");
     const cloudImage = await cloudinary.uploadImage(imageBase64, poulaillerId);
 
-    // ✅ NOUVEAU : Sauvegarde dans MongoDB avec URL (pas base64)
     const analysis = await AiAnalysis.create({
       poulaillerId,
       triggeredBy: req.body.triggeredBy ?? "manual",
@@ -189,7 +209,6 @@ async function analyzePoultry(req, res) {
         height: cloudImage.height,
         bytes: cloudImage.bytes,
       },
-      // ❌ SUPPRIMÉ : imageBase64: image,
     });
 
     console.log(
@@ -218,7 +237,6 @@ async function analyzePoultry(req, res) {
       );
     }
 
-    // ✅ NOUVEAU : Renvoie URL image à l'app
     return res.status(200).json({
       success: true,
       data: {
@@ -244,6 +262,9 @@ async function awaitCameraImage(req, res) {
   if (error) return res.status(status).json({ success: false, error });
 
   try {
+    // ✅ Vérifie caméra avant de publier MQTT
+    await verifyCameraLinked(poulaillerId);
+
     console.log(`[AI] Déclenchement capture MQTT — poulailler ${poulaillerId}`);
 
     await publishCaptureTrigger(poulaillerId);

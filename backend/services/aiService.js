@@ -1,5 +1,5 @@
 // services/aiService.js
-// Cloudflare AI (Gemma 3 + LLaVA) + MQTT
+// CORRIGÉ : publishCaptureTrigger autonome, utilise Camera.findOne() + MQTT direct
 
 const path = require("path");
 require("dotenv").config({
@@ -9,6 +9,7 @@ require("dotenv").config({
 const axios = require("axios");
 const mqtt = require("mqtt");
 const sharp = require("sharp");
+const Camera = require("../models/Camera"); // ✅ AJOUT
 
 const { pendingImages } = require("../controllers/aiController");
 
@@ -20,15 +21,12 @@ const USE_CLOUDFLARE = !!(CF_ACCOUNT_ID && CF_API_TOKEN);
 const PRIMARY_MODEL = "@cf/google/gemma-3-12b-it";
 const FALLBACK_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
 
-const GEMMA_TIMEOUT = 12000; // ms — analyse image
-const CHAT_TIMEOUT = 20000; // ms — chatbot
-const LLAVA_TIMEOUT = 10000; // ms — fallback image
-
-const LLAVA_MAX_KB = 24; // Taille max acceptée par LLaVA
-
+const GEMMA_TIMEOUT = 12000;
+const CHAT_TIMEOUT = 20000;
+const LLAVA_TIMEOUT = 10000;
+const LLAVA_MAX_KB = 24;
 const INTER_ANALYSIS_DELAY_MS = 5000;
 
-// Mots-clés liés à la mortalité à détecter dans le diagnostic et les conseils
 const DEATH_KEYWORDS = [
   "décédé",
   "décès",
@@ -83,7 +81,6 @@ function getImageSizeKb(base64) {
 
 async function compressImage(base64) {
   const buffer = Buffer.from(base64, "base64");
-
   let lastCompressed = null;
 
   for (let i = 0; i < 5; i++) {
@@ -169,8 +166,7 @@ function analyzeWithSensorsOnly(sensorData = {}) {
 }
 
 function buildAnalysisPrompt(sensorData = {}) {
-  return `
-Analyze this poultry farm image carefully.
+  return `Analyze this poultry farm image carefully.
 
 IMPORTANT RULES:
 - mortalityDetected=true ONLY with 90% visual certainty
@@ -205,13 +201,8 @@ Surface        = ${sensorData.surface ?? "N/A"} m²
 `.trim();
 }
 
-// ============================================================
-// PROMPT CHAT VÉTÉRINAIRE
-// ============================================================
-
 function buildChatPrompt(question, context) {
-  return `
-Tu es un assistant vétérinaire expert en élevage de volailles.
+  return `Tu es un assistant vétérinaire expert en élevage de volailles.
 Réponds en français, de manière claire et concise (3 phrases maximum).
 Réponds directement à la question sans te présenter.
 
@@ -328,7 +319,6 @@ function parseAIResponse(text, sensorData = {}) {
       }
     }
 
-    // --- Priorité capteurs ---
     if (criticalSensors) {
       urgencyLevel = "critique";
       healthScore = Math.min(healthScore <= 0 ? 30 : healthScore, 30);
@@ -337,7 +327,6 @@ function parseAIResponse(text, sensorData = {}) {
       healthScore = Math.min(healthScore <= 0 ? 60 : healthScore, 60);
     }
 
-    // --- Protection finale ---
     if (sensorsNormal && !mortalityDetected && healthScore <= 0) {
       urgencyLevel = "normal";
       healthScore = 85;
@@ -371,8 +360,6 @@ function parseAIResponse(text, sensorData = {}) {
   }
 }
 
-// APPEL GEMMA (modèle principal)
-
 async function callGemma(imageBase64, sensorData) {
   const response = await callCloudflare(
     PRIMARY_MODEL,
@@ -396,8 +383,6 @@ async function callGemma(imageBase64, sensorData) {
   return parseAIResponse(response, sensorData);
 }
 
-// APPEL LLAVA (modèle de secours)
-
 async function callLlava(imageBase64, sensorData) {
   const response = await callCloudflare(
     FALLBACK_MODEL,
@@ -411,8 +396,6 @@ async function callLlava(imageBase64, sensorData) {
 
   return parseAIResponse(response, sensorData);
 }
-
-// ANALYSE PRINCIPALE — Cloudflare AI (Gemma 3 → LLaVA → Capteurs)
 
 async function analyzeWithCloudflareAI(
   imageBase64,
@@ -436,7 +419,6 @@ async function analyzeWithCloudflareAI(
     const sizeKb = getImageSizeKb(compressed);
     console.log(`[AI] Taille image finale : ${sizeKb} Ko`);
 
-    // Tentative Gemma
     try {
       console.log("[AI] Tentative Gemma 3...");
       const result = await callGemma(compressed, sensorData);
@@ -449,7 +431,6 @@ async function analyzeWithCloudflareAI(
       console.warn("[AI] Gemma échoué :", err.message);
     }
 
-    // Tentative LLaVA
     if (sizeKb <= LLAVA_MAX_KB) {
       try {
         console.log("[AI] Tentative LLaVA...");
@@ -464,7 +445,6 @@ async function analyzeWithCloudflareAI(
       }
     }
 
-    // Fallback capteurs
     console.warn("[AI] Tous les modèles ont échoué — fallback capteurs");
     return analyzeWithSensorsOnly(sensorData);
   } catch (err) {
@@ -472,8 +452,6 @@ async function analyzeWithCloudflareAI(
     return analyzeWithSensorsOnly(sensorData);
   }
 }
-
-// CHATBOT VÉTÉRINAIRE — Gemma 3
 
 async function chatWithGemma(question, context, history = []) {
   try {
@@ -508,15 +486,12 @@ async function chatWithGemma(question, context, history = []) {
 
     return cleaned || buildFallbackAnswer(question, context);
   } catch (err) {
-    // ← Log détaillé pour diagnostiquer
     console.error("[AI] Erreur chatWithGemma:", err.message);
     console.error("[AI] Status:", err.response?.status);
     console.error("[AI] Data:", JSON.stringify(err.response?.data));
-    return buildFallbackAnswer(question, context); // ← ne throw plus
+    return buildFallbackAnswer(question, context);
   }
 }
-
-// RÉPONSE FALLBACK CHATBOT (si Cloudflare indisponible)
 
 function buildFallbackAnswer(question, context) {
   const q = question.toLowerCase();
@@ -590,13 +565,11 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
       `[AI] Image stockée — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
     );
 
-    // Stocker dans pendingImages pour que awaitCameraImage() la récupère
     pendingImages.set(poulaillerId.toString().trim(), {
       image: cleanBase64,
       receivedAt: Date.now(),
     });
 
-    // Auto-expiration après 60 secondes
     setTimeout(() => {
       if (pendingImages.has(poulaillerId.toString().trim())) {
         pendingImages.delete(poulaillerId.toString().trim());
@@ -608,16 +581,39 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-//  Publier commande capture MQTT
+// ✅ CORRECTION : publishCaptureTrigger autonome, utilise Camera + MQTT direct
 async function publishCaptureTrigger(poulaillerId) {
-  const { publishCameraCommand } = require("./mqttService");
+  const camera = await Camera.findOne({
+    poulailler: poulaillerId,
+    status: { $nin: ["pending", "dissociated"] },
+  });
 
-  const success = await publishCameraCommand(poulaillerId);
-  if (!success) {
-    throw new Error("Échec envoi commande MQTT caméra");
+  if (!camera) {
+    throw new Error("Aucune caméra active associée à ce poulailler");
   }
 
-  return true;
+  const client = getMqttClient();
+  if (!client || !client.connected) {
+    throw new Error("Client MQTT non connecté");
+  }
+
+  const topic = `poulailler/${camera.macAddress}/cmd/camera`;
+  const payload = JSON.stringify({
+    command: "capture_photo",
+    requestId: `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+  });
+
+  return new Promise((resolve, reject) => {
+    client.publish(topic, payload, { qos: 1 }, (err) => {
+      if (err) {
+        console.error("[MQTT] Erreur publish:", err.message);
+        reject(new Error("Échec envoi commande MQTT caméra"));
+      } else {
+        console.log(`[MQTT] Commande capture publiée sur ${topic}`);
+        resolve(true);
+      }
+    });
+  });
 }
 
 function buildSystemPrompt(context) {
@@ -632,8 +628,7 @@ function buildSystemPrompt(context) {
     .filter(Boolean)
     .join(", ");
 
-  return `
-Tu es un assistant vétérinaire expert en élevage de volailles.
+  return `Tu es un assistant vétérinaire expert en élevage de volailles.
 Réponds en français, de manière claire et concise (maximum 3 phrases).
 Réponds directement sans te présenter.
 Ne génère jamais de JSON ni de markdown.
