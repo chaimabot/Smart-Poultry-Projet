@@ -70,10 +70,7 @@ const connectMqtt = () => {
   const username = process.env.MQTT_USER?.trim();
   const password = process.env.MQTT_PASS?.trim();
 
-  // ✅ CORRECTION : Port 8883 par défaut (TLS natif), 8884 seulement si explicitement configuré
   let port = parseInt(process.env.MQTT_PORT) || 8883;
-
-  // Force 8883 si pas explicitement 8884
   if (port !== 8884) port = 8883;
 
   if (!username || !password) {
@@ -410,7 +407,6 @@ const publishConfig = (macAddress, poulailler) => {
 
 
 const publishCameraCommand = async (poulaillerId, requestId) => {
-  // ✅ Vérifie que requestId est passé
   if (!requestId) {
     console.error("[MQTT] ERREUR : publishCameraCommand appelé sans requestId");
     return false;
