@@ -359,7 +359,7 @@ async function chatWithVet(req, res) {
       error: "Question et poulaillerId sont requis",
     });
   }
-  if (question.trim().length < 3) {
+  if (question.trim().length < 1) {
     return res.status(400).json({
       success: false,
       error: "Question trop courte",
@@ -431,5 +431,4 @@ module.exports = {
   chatWithVet,
   pendingImages,
   awaitCameraImage,
-  
 };

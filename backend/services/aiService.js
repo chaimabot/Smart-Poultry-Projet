@@ -490,26 +490,17 @@ async function analyzeWithCloudflareAI(
 async function chatWithGemma(question, context, history = []) {
   try {
     if (!USE_CLOUDFLARE) {
+      console.warn("[AI] Cloudflare désactivé — fallback");
       return buildFallbackAnswer(question, context);
     }
 
-    // Construire les messages avec historique
     const messages = [
-      // Message système — rôle de l'assistant
-      {
-        role: "system",
-        content: buildSystemPrompt(context),
-      },
-      // Historique de la conversation (max 6 derniers messages)
+      { role: "system", content: buildSystemPrompt(context) },
       ...history.slice(-6).map((msg) => ({
-        role: msg.role, // "user" ou "assistant"
+        role: msg.role,
         content: msg.content,
       })),
-      // Question actuelle
-      {
-        role: "user",
-        content: question,
-      },
+      { role: "user", content: question },
     ];
 
     const response = await callCloudflare(
@@ -522,7 +513,6 @@ async function chatWithGemma(question, context, history = []) {
       return buildFallbackAnswer(question, context);
     }
 
-    // Nettoyer la réponse (enlever markdown, JSON résiduel)
     const cleaned = response
       .replace(/```[\s\S]*?```/g, "")
       .replace(/\{[\s\S]*?\}/g, "")
@@ -530,8 +520,11 @@ async function chatWithGemma(question, context, history = []) {
 
     return cleaned || buildFallbackAnswer(question, context);
   } catch (err) {
-    console.error("[AI] Erreur chatWithGemma :", err.message);
-    return buildFallbackAnswer(question, context);
+    // ← Log détaillé pour diagnostiquer
+    console.error("[AI] Erreur chatWithGemma:", err.message);
+    console.error("[AI] Status:", err.response?.status);
+    console.error("[AI] Data:", JSON.stringify(err.response?.data));
+    return buildFallbackAnswer(question, context); // ← ne throw plus
   }
 }
 
