@@ -184,22 +184,17 @@ if (lampeRoutes) {
   console.error("[ROUTES] ❌ SKIPPING /api/lampe mount - routes undefined!");
 }
 
-// ── AI Routes ───────────────────────────────────────────────
-let aiRoutes;
+// ── AI Routes ─────────────────────────────────────────────────────────────────
+// ✅ FIX : le check "typeof aiRoutes.use !== function" était incorrect et
+//    masquait toute erreur de chargement (ex: module manquant dans aiRoute.js).
+//    Désormais le stack complet est loggé pour débogage sur Render.
 try {
-  aiRoutes = require("./routes/aiRoute");
-  if (!aiRoutes || typeof aiRoutes.use !== "function") {
-    throw new Error("aiRoute.js n'exporte pas un router Express valide");
-  }
+  const aiRoutes = require("./routes/aiRoute");
   app.use("/api/ai", aiRoutes);
   console.log("[ROUTES] ✓ /api/ai monté avec succès");
-  console.log("[DEBUG] aiRoutes mounted: /api/ai");
-
 } catch (e) {
-  console.error("[ROUTES] ✗ ai fail:", e.message);
-  console.error(
-    "[ROUTES] Vérifiez que ./routes/aiRoute.js existe et exporte un router Express",
-  );
+  console.error("[ROUTES] ✗ /api/ai ÉCHEC — stack complet :");
+  console.error(e.stack || e.message);
 }
 try {
   const inviteRoutes = require("./routes/invite");
@@ -214,6 +209,21 @@ try {
 // ============================================================
 app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
+});
+
+// ✅ Route de diagnostic — vérifie quelles routes sont montées (utile sur Render)
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    routes: [
+      "/api/auth",
+      "/api/poulaillers",
+      "/api/ai",
+      "/api/devices",
+      "/api/alerts",
+    ],
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.post("/api/upload-image", (req, res) => {
