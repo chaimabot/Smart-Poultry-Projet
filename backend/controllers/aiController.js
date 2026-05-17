@@ -156,45 +156,81 @@ async function getCaptureStatus(req, res) {
 // ============================================================================
 async function receiveImageFromESP(req, res) {
   try {
-    const { deviceId, requestId, image } = req.body;
-    if (!deviceId)
-      return res.status(400).json({ success: false, error: "deviceId requis" });
-    if (!image)
+    const {
+      deviceId,
+      requestId,
+      image,
+      poulaillerId: directPoulaillerId,
+      imageBase64,
+    } = req.body;
+
+    // ✅ FIX : deux modes d'appel supportés :
+    //   1. ESP32-CAM  → { deviceId (MAC), requestId, image }
+    //   2. Mobile app → { poulaillerId, imageBase64 }
+    const rawImage = image || imageBase64;
+    if (!rawImage)
       return res.status(400).json({ success: false, error: "image requise" });
 
-    const normalizedMac = Camera.normalizeMac(deviceId);
-    if (!normalizedMac)
-      return res
-        .status(400)
-        .json({ success: false, error: "deviceId/MAC invalide" });
+    let poulaillerId;
+    let camera = null;
 
-    const camera = await Camera.findOne({ macAddress: normalizedMac });
-    if (!camera || !camera.poulailler) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Caméra non enregistrée" });
+    if (directPoulaillerId && !deviceId) {
+      // Mode mobile : poulaillerId fourni directement, pas de MAC
+      if (!mongoose.isValidObjectId(directPoulaillerId))
+        return res
+          .status(400)
+          .json({ success: false, error: "poulaillerId invalide" });
+      poulaillerId = directPoulaillerId;
+      // Chercher la caméra liée si elle existe (optionnel pour mobile)
+      camera = (await Camera.findOne({ poulailler: poulaillerId })) || null;
+    } else {
+      // Mode ESP32 : résolution via adresse MAC
+      if (!deviceId)
+        return res
+          .status(400)
+          .json({ success: false, error: "deviceId ou poulaillerId requis" });
+
+      const normalizedMac = Camera.normalizeMac(deviceId);
+      if (!normalizedMac)
+        return res
+          .status(400)
+          .json({ success: false, error: "deviceId/MAC invalide" });
+
+      camera = await Camera.findOne({ macAddress: normalizedMac });
+      if (!camera || !camera.poulailler)
+        return res
+          .status(404)
+          .json({ success: false, error: "Caméra non enregistrée" });
+
+      poulaillerId = camera.poulailler.toString();
+
+      await Camera.findByIdAndUpdate(camera._id, {
+        lastPing: new Date(),
+        status: "associated",
+      });
     }
 
-    const poulaillerId = camera.poulailler.toString();
-
-    const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
+    const cleanBase64 = rawImage.includes(",")
+      ? rawImage.split(",")[1]
+      : rawImage;
     const base64Length = cleanBase64.length;
     const padding = (cleanBase64.match(/=/g) || []).length;
     const imageSizeKb = Math.round(((base64Length * 3) / 4 - padding) / 1024);
 
     if (imageSizeKb < 3) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: `Image trop petite (${imageSizeKb} Ko)`,
-        });
+      return res.status(400).json({
+        success: false,
+        error: `Image trop petite (${imageSizeKb} Ko)`,
+      });
     }
 
-    await Camera.findByIdAndUpdate(camera._id, {
-      lastPing: new Date(),
-      status: "associated",
-    });
+    // ✅ Mise à jour caméra uniquement si on l'a trouvée (mode mobile sans caméra : camera=null)
+    if (camera?._id) {
+      await Camera.findByIdAndUpdate(camera._id, {
+        lastPing: new Date(),
+        status: "associated",
+      });
+    }
 
     if (requestId) {
       const captureDoc = await CaptureRequest.findOne({ requestId });
@@ -339,7 +375,8 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
     ) {
       await Alert.create({
         poulailler: poulaillerId,
-        type: "ai",
+        type: "sensor", // ✅ FIX : "ai" n'est pas dans l'enum — utilise "sensor"
+        key: "ai-analysis", // ✅ FIX : champ requis manquant
         severity: "danger",
         message: aiResult?.diagnostic || "Alerte IA déclenchée",
         icon: "alert-circle",
