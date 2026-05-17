@@ -1,9 +1,14 @@
+// jobs/aiCronJob.js
+
 const cron = require("node-cron");
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
 const Alert = require("../models/Alert");
-const { pendingImages } = require("../controllers/aiController");
+const CaptureRequest = require("../models/Capturerequest");
+
+// ✅ FIX : import depuis aiService (source unique de vérité), plus depuis aiController
 const {
+  pendingImages,
   publishCaptureTrigger,
   analyzeWithCloudflareAI,
   INTER_ANALYSIS_DELAY_MS,
@@ -37,10 +42,28 @@ function startAiCronJob() {
 
         const thresholds = poulailler.thresholds;
 
-        await publishCaptureTrigger(id);
-        console.log(`[CRON IA] Trigger → ${poulailler.name}`);
+        // ✅ FIX : génération d'un requestId avant l'appel (était undefined avant)
+        const requestId = `cron-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
-        const image = await waitForCronImage(id, 30000);
+        let mqttSent = false;
+        try {
+          mqttSent = await publishCaptureTrigger(id, requestId);
+          console.log(
+            `[CRON IA] Trigger MQTT → ${poulailler.name} (requestId: ${requestId})`,
+          );
+        } catch (mqttErr) {
+          // La caméra est peut-être absente ou déconnectée — on continue en mode capteurs
+          console.warn(
+            `[CRON IA] MQTT échoué pour ${poulailler.name} : ${mqttErr.message}`,
+          );
+        }
+
+        let image = null;
+
+        if (mqttSent) {
+          // Attente de l'image envoyée par l'ESP32 (30s max)
+          image = await waitForCronImage(id, 30000);
+        }
 
         if (!image) {
           console.warn(
@@ -54,12 +77,20 @@ function startAiCronJob() {
           );
 
           await AiAnalysis.create({
-            poulaillerId: id,
+            poultryId: id,
             triggeredBy: "auto",
             sensors: sensorData,
             result: aiResult,
             imageQuality: { sizeKb: 0, status: "poor" },
           });
+
+          await maybeCreateAlert(
+            id,
+            aiResult,
+            sensorData,
+            thresholds,
+            poulailler.name,
+          );
           continue;
         }
 
@@ -70,7 +101,7 @@ function startAiCronJob() {
         );
 
         await AiAnalysis.create({
-          poulaillerId: id,
+          poultryId: id,
           triggeredBy: "auto",
           sensors: sensorData,
           result: aiResult,
@@ -81,28 +112,18 @@ function startAiCronJob() {
           `[CRON IA] ✓ ${poulailler.name} — Score: ${aiResult.healthScore}`,
         );
 
-        if (
-          aiResult.urgencyLevel === "critique" ||
-          aiResult.detections.mortalityDetected
-        ) {
-          await Alert.create({
-            poulailler: id,
-            type: "sensor",
-            key: "ai_analysis",
-            parameter: "airQuality",
-            value: sensorData.airQualityPercent,
-            threshold: thresholds.airQualityMin,
-            direction: "below",
-            message: `[CRON] ${aiResult.diagnostic}`,
-            icon: "alert-circle",
-            severity: "danger",
-          });
-          console.warn(`[CRON IA] ⚠ ALERTE pour ${poulailler.name}`);
-        }
+        await maybeCreateAlert(
+          id,
+          aiResult,
+          sensorData,
+          thresholds,
+          poulailler.name,
+        );
       } catch (err) {
         console.error(`[CRON IA] ✗ ${poulailler.name} :`, err.message);
       }
 
+      // Délai entre deux poulaillers pour ne pas saturer l'API Cloudflare
       await new Promise((r) => setTimeout(r, INTER_ANALYSIS_DELAY_MS));
     }
 
@@ -112,36 +133,68 @@ function startAiCronJob() {
   console.log("[CRON IA] Planificateur démarré (toutes les 2 heures)");
 }
 
+// ─── Création d'alerte si critique ─────────────────────────────────────────
+
+async function maybeCreateAlert(
+  poulaillerId,
+  aiResult,
+  sensorData,
+  thresholds,
+  name,
+) {
+  if (
+    aiResult.urgencyLevel === "critique" ||
+    aiResult.detections?.mortalityDetected
+  ) {
+    await Alert.create({
+      poulailler: poulaillerId,
+      type: "sensor",
+      key: "ai_analysis",
+      parameter: "airQuality",
+      value: sensorData.airQualityPercent,
+      threshold: thresholds.airQualityMin,
+      direction: "below",
+      message: `[CRON] ${aiResult.diagnostic}`,
+      icon: "alert-circle",
+      severity: "danger",
+    });
+    console.warn(`[CRON IA] ⚠ ALERTE pour ${name}`);
+  }
+}
+
+// ─── Attente de l'image (pendingImages) ─────────────────────────────────────
+// Interroge la Map toutes les 500ms jusqu'à réception ou timeout.
+
 async function waitForCronImage(poulaillerId, timeoutMs) {
-  const id = poulaillerId.toString().trim();
+  const key = poulaillerId.toString().trim();
   const start = Date.now();
 
   return new Promise((resolve) => {
-    // Vérification synchrone avant de créer l'interval
-    const existing = pendingImages.get(id);
+    // Vérification synchrone immédiate avant de démarrer l'interval
+    const existing = pendingImages.get(key);
     if (existing?.image) {
-      pendingImages.delete(id);
+      pendingImages.delete(key);
       return resolve(existing.image);
     }
 
     const interval = setInterval(() => {
       try {
-        const entry = pendingImages.get(id);
+        const entry = pendingImages.get(key);
 
         if (entry?.image) {
           clearInterval(interval);
-          pendingImages.delete(id);
+          pendingImages.delete(key);
           return resolve(entry.image);
         }
 
         if (Date.now() - start >= timeoutMs) {
           clearInterval(interval);
-          pendingImages.delete(id);
-          resolve(null); // Le cron continue sans image
+          pendingImages.delete(key);
+          resolve(null); // continue sans image
         }
       } catch (err) {
         clearInterval(interval);
-        pendingImages.delete(id);
+        pendingImages.delete(key);
         resolve(null);
       }
     }, 500);

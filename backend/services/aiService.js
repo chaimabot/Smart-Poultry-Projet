@@ -1,16 +1,10 @@
+// services/aiService.js
 
 const path = require("path");
-require("dotenv").config({
-  path: path.resolve(__dirname, "../.env"),
-});
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const axios = require("axios");
 const sharp = require("sharp");
-const Camera = require("../models/Camera");
-
-// ✅ CORRIGÉ : Import circulaire supprimé — pendingImages n'existe pas dans aiController
-// L'ancienne ligne était : const { pendingImages } = require("../controllers/aiController");
-// handleCameraImage est désormais autonome (stockage local dans ce service)
 
 const { publishCameraCommand } = require("./mqttService");
 
@@ -45,9 +39,10 @@ const DEATH_KEYWORDS = [
   "deceased",
 ];
 
-// ✅ CORRIGÉ : stockage local propre (plus d'import circulaire)
-// Utilisé par handleCameraImage pour les images reçues hors flux requestId
+// ✅ Stockage local des images en attente (utilisé par le cron)
 const pendingImages = new Map();
+
+// ─── Utilitaires base64 ─────────────────────────────────────────────────────
 
 function cleanBase64(base64) {
   if (!base64) return null;
@@ -58,7 +53,15 @@ function getImageSizeKb(base64) {
   return Math.round((base64.length * 3) / 4 / 1024);
 }
 
+// ─── Compression image ──────────────────────────────────────────────────────
+
 async function compressImage(base64) {
+  // Early exit : si l'image est déjà assez petite, on ne compresse pas
+  if (getImageSizeKb(base64) <= LLAVA_MAX_KB) {
+    console.log("[AI] Image déjà dans les limites — pas de compression");
+    return base64;
+  }
+
   const buffer = Buffer.from(base64, "base64");
   let lastCompressed = null;
 
@@ -84,9 +87,13 @@ async function compressImage(base64) {
     lastCompressed = compressed;
   }
 
-  console.warn("[AI] Limite de compression atteinte");
+  console.warn(
+    "[AI] Limite de compression atteinte — envoi du meilleur résultat",
+  );
   return lastCompressed.toString("base64");
 }
+
+// ─── Fallback capteurs uniquement ──────────────────────────────────────────
 
 function analyzeWithSensorsOnly(sensorData = {}) {
   let score = 85;
@@ -144,6 +151,8 @@ function analyzeWithSensorsOnly(sensorData = {}) {
   };
 }
 
+// ─── Prompts ────────────────────────────────────────────────────────────────
+
 function buildAnalysisPrompt(sensorData = {}) {
   return `Analyze this poultry farm image carefully.
 
@@ -180,28 +189,33 @@ Surface        = ${sensorData.surface ?? "N/A"} m²
 `.trim();
 }
 
-function buildChatPrompt(question, context) {
+function buildSystemPrompt(context) {
+  const sensors = [
+    context.temperature != null
+      ? `Température : ${context.temperature}°C`
+      : null,
+    context.humidity != null ? `Humidité : ${context.humidity}%` : null,
+    context.airQuality != null ? `Qualité air : ${context.airQuality}%` : null,
+    context.waterLevel != null ? `Niveau eau : ${context.waterLevel}%` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
   return `Tu es un assistant vétérinaire expert en élevage de volailles.
-Réponds en français, de manière claire et concise (3 phrases maximum).
-Réponds directement à la question sans te présenter.
+Réponds en français, de manière claire et concise (maximum 3 phrases).
+Réponds directement sans te présenter.
+Ne génère jamais de JSON ni de markdown.
 
-CONTEXTE DU POULAILLER :
-- Nom            : ${context.poulaillerName}
-- Nombre volailles: ${context.animalCount}
-- Score de santé : ${context.lastScore}/100
-- Niveau urgence : ${context.lastUrgency}
-- Dernier diagnostic : ${context.lastDiagnostic}
-- Température    : ${context.temperature ?? "N/A"} °C
-- Humidité       : ${context.humidity ?? "N/A"} %
-- Qualité de l'air: ${context.airQuality ?? "N/A"} %
-- Niveau d'eau   : ${context.waterLevel ?? "N/A"} %
-- Derniers conseils: ${context.lastAdvices ?? "Aucun"}
-
-QUESTION : ${question}
-
-Réponds uniquement en texte simple, sans JSON, sans markdown, sans listes à puces.
+POULAILLER : ${context.poulaillerName} — ${context.animalCount} volailles
+CAPTEURS : ${sensors || "Aucune donnée disponible"}
+SCORE SANTÉ : ${context.lastScore != null ? `${context.lastScore}/100` : "Non disponible"}
+URGENCE : ${context.lastUrgency ?? "Non disponible"}
+DIAGNOSTIC : ${context.lastDiagnostic ?? "Aucune analyse disponible"}
+CONSEILS : ${context.lastAdvices ?? "Aucun conseil disponible"}
 `.trim();
 }
+
+// ─── Appel Cloudflare générique ─────────────────────────────────────────────
 
 async function callCloudflare(model, payload, timeout) {
   const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${model}`;
@@ -216,6 +230,8 @@ async function callCloudflare(model, payload, timeout) {
 
   return response.data.result.response;
 }
+
+// ─── Normalisation ──────────────────────────────────────────────────────────
 
 function normalizeUrgency(value) {
   if (!value) return "normal";
@@ -232,6 +248,8 @@ function mentionsDeath(text) {
   const lower = text.toLowerCase();
   return DEATH_KEYWORDS.some((kw) => lower.includes(kw));
 }
+
+// ─── Parse réponse IA ───────────────────────────────────────────────────────
 
 function parseAIResponse(text, sensorData = {}) {
   try {
@@ -296,6 +314,8 @@ function parseAIResponse(text, sensorData = {}) {
   }
 }
 
+// ─── Appels modèles ─────────────────────────────────────────────────────────
+
 async function callGemma(imageBase64, sensorData) {
   const response = await callCloudflare(
     PRIMARY_MODEL,
@@ -315,7 +335,6 @@ async function callGemma(imageBase64, sensorData) {
     },
     GEMMA_TIMEOUT,
   );
-
   return parseAIResponse(response, sensorData);
 }
 
@@ -329,9 +348,10 @@ async function callLlava(imageBase64, sensorData) {
     },
     LLAVA_TIMEOUT,
   );
-
   return parseAIResponse(response, sensorData);
 }
+
+// ─── Analyse principale ─────────────────────────────────────────────────────
 
 async function analyzeWithCloudflareAI(
   imageBase64,
@@ -389,6 +409,8 @@ async function analyzeWithCloudflareAI(
   }
 }
 
+// ─── Chat vétérinaire ───────────────────────────────────────────────────────
+
 async function chatWithGemma(question, context, history = []) {
   try {
     if (!USE_CLOUDFLARE) {
@@ -398,10 +420,10 @@ async function chatWithGemma(question, context, history = []) {
 
     const messages = [
       { role: "system", content: buildSystemPrompt(context) },
-      ...history.slice(-6).map((msg) => ({
-        role: msg.role,
-        content: msg.content,
-      })),
+      // On limite à 6 derniers messages pour ne pas exploser le contexte
+      ...history
+        .slice(-6)
+        .map((msg) => ({ role: msg.role, content: msg.content })),
       { role: "user", content: question },
     ];
 
@@ -435,7 +457,6 @@ function buildFallbackAnswer(question, context) {
   if (q.includes("santé") || q.includes("état") || q.includes("etat")) {
     return `Le poulailler ${context.poulaillerName} affiche un score de santé de ${context.lastScore}/100 (niveau : ${context.lastUrgency}). ${context.lastDiagnostic}`;
   }
-
   if (q.includes("alerte") || q.includes("danger") || q.includes("urgent")) {
     if (context.lastUrgency === "critique")
       return "Niveau critique détecté — intervention immédiate recommandée. Vérifiez la ventilation et la qualité de l'air.";
@@ -443,7 +464,6 @@ function buildFallbackAnswer(question, context) {
       return "Surveillance renforcée conseillée. Contrôlez les capteurs et observez le comportement des volailles.";
     return "Aucune alerte active. L'état du poulailler est stable.";
   }
-
   if (
     q.includes("conseil") ||
     q.includes("recommandation") ||
@@ -454,7 +474,6 @@ function buildFallbackAnswer(question, context) {
       "Maintenez une surveillance régulière, vérifiez les capteurs et assurez une bonne ventilation."
     );
   }
-
   if (
     q.includes("température") ||
     q.includes("temperature") ||
@@ -470,7 +489,6 @@ function buildFallbackAnswer(question, context) {
       return `La température est basse (${temp}°C). Vérifiez le système de chauffage et l'isolation du poulailler.`;
     return `La température est dans la plage normale (${temp}°C) — entre 18 et 28°C.`;
   }
-
   if (q.includes("eau") || q.includes("water")) {
     const wl = context.waterLevel;
     if (!wl) return "Aucune donnée de niveau d'eau disponible.";
@@ -482,7 +500,8 @@ function buildFallbackAnswer(question, context) {
   return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${context.lastScore}/100. ${context.lastDiagnostic}. Posez-moi une question sur la santé, les alertes ou les conseils.`;
 }
 
-// ✅ CORRIGÉ : stockage local propre, pas d'import circulaire
+// ─── Gestion image caméra (hors flux requestId) ─────────────────────────────
+
 async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   try {
     const cleanB64 = imageBase64.includes(",")
@@ -502,15 +521,13 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
       `[AI] Image stockée — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
     );
 
-    // ✅ Utilise le pendingImages local (plus d'import circulaire)
-    pendingImages.set(poulaillerId.toString().trim(), {
-      image: cleanB64,
-      receivedAt: Date.now(),
-    });
+    const key = poulaillerId.toString().trim();
+    pendingImages.set(key, { image: cleanB64, receivedAt: Date.now() });
 
+    // Nettoyage automatique après 60s si non consommée
     setTimeout(() => {
-      if (pendingImages.has(poulaillerId.toString().trim())) {
-        pendingImages.delete(poulaillerId.toString().trim());
+      if (pendingImages.has(key)) {
+        pendingImages.delete(key);
         console.warn(`[AI] Image expirée pour le poulailler ${poulaillerId}`);
       }
     }, 60_000);
@@ -519,64 +536,36 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
+// ─── Déclenchement capture MQTT ─────────────────────────────────────────────
 
 async function publishCaptureTrigger(poulaillerId, requestId) {
-  // ✅ Vérifie que requestId est bien passé
   if (!requestId) {
-    console.error("[AI] ERREUR : publishCaptureTrigger appelé sans requestId");
-    throw new Error("requestId requis");
+    throw new Error("[AI] publishCaptureTrigger : requestId requis");
   }
 
+  // Import local pour éviter un éventuel import circulaire au niveau module
   const Camera = require("../models/Camera");
 
   const camera = await Camera.findOne({
     poulailler: poulaillerId,
-    status: { $nin: ["pending", "dissociated"] },
+    status: "associated", // ✅ FIX : on exclut "pending" — une caméra pending ne peut pas recevoir de commandes
   });
 
   if (!camera) {
     throw new Error("Aucune caméra active associée à ce poulailler");
   }
 
-  // Utilise le client MQTT de mqttService.js
-  const { publishCameraCommand } = require("./mqttService");
-
-  // ✅ CORRECTION : Passe requestId explicitement
   const success = await publishCameraCommand(poulaillerId, requestId);
-  
   return success;
 }
-function buildSystemPrompt(context) {
-  const sensors = [
-    context.temperature != null
-      ? `Température : ${context.temperature}°C`
-      : null,
-    context.humidity != null ? `Humidité : ${context.humidity}%` : null,
-    context.airQuality != null ? `Qualité air : ${context.airQuality}%` : null,
-    context.waterLevel != null ? `Niveau eau : ${context.waterLevel}%` : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
 
-  return `Tu es un assistant vétérinaire expert en élevage de volailles.
-Réponds en français, de manière claire et concise (maximum 3 phrases).
-Réponds directement sans te présenter.
-Ne génère jamais de JSON ni de markdown.
-
-POULAILLER : ${context.poulaillerName} — ${context.animalCount} volailles
-CAPTEURS : ${sensors || "Aucune donnée disponible"}
-SCORE SANTÉ : ${context.lastScore != null ? `${context.lastScore}/100` : "Non disponible"}
-URGENCE : ${context.lastUrgency ?? "Non disponible"}
-DIAGNOSTIC : ${context.lastDiagnostic ?? "Aucune analyse disponible"}
-CONSEILS : ${context.lastAdvices ?? "Aucun conseil disponible"}
-`.trim();
-}
+// ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
   analyzeWithCloudflareAI,
   chatWithGemma,
   publishCaptureTrigger,
-  INTER_ANALYSIS_DELAY_MS,
   handleCameraImage,
-  pendingImages, // ✅ exporté depuis ce service (plus depuis aiController)
+  pendingImages, // ✅ exporté depuis ce service (source unique de vérité)
+  INTER_ANALYSIS_DELAY_MS,
 };
