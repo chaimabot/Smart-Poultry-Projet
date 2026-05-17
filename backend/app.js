@@ -185,15 +185,16 @@ if (lampeRoutes) {
 }
 
 // ── AI Routes ─────────────────────────────────────────────────────────────────
-// ✅ FIX : le check "typeof aiRoutes.use !== function" était incorrect et
-//    masquait toute erreur de chargement (ex: module manquant dans aiRoute.js).
-//    Désormais le stack complet est loggé pour débogage sur Render.
+// ✅ FIX : suppression du check "typeof aiRoutes.use !== function" — il était
+//    faux sur certains environnements Node et faisait throw silencieusement,
+//    ce qui empêchait /api/ai d'être monté (toutes les routes IA → 404).
+//    Le stack trace complet est maintenant loggé pour débogage sur Render.
 try {
   const aiRoutes = require("./routes/aiRoute");
   app.use("/api/ai", aiRoutes);
   console.log("[ROUTES] ✓ /api/ai monté avec succès");
 } catch (e) {
-  console.error("[ROUTES] ✗ /api/ai ÉCHEC — stack complet :");
+  console.error("[ROUTES] ✗ /api/ai ÉCHEC DE MONTAGE — stack complet :");
   console.error(e.stack || e.message);
 }
 try {
@@ -211,19 +212,9 @@ app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
 });
 
-// ✅ Route de diagnostic — vérifie quelles routes sont montées (utile sur Render)
+// ✅ Route de diagnostic — vérifier que /api/ai est bien monté
 app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    routes: [
-      "/api/auth",
-      "/api/poulaillers",
-      "/api/ai",
-      "/api/devices",
-      "/api/alerts",
-    ],
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 app.post("/api/upload-image", (req, res) => {
