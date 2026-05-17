@@ -2,6 +2,11 @@ const express = require("express");
 const router = express.Router();
 const { protect } = require("../middlewares/auth");
 
+// Diagnostic rapide: vérifier que /api/ai est bien monté
+router.get("/__ping", (req, res) => {
+  res.json({ ok: true });
+});
+
 const {
   triggerCapture,
   getCaptureStatus,
