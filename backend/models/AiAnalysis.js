@@ -1,113 +1,95 @@
-const mongoose = require("mongoose");
+// services/ai.js
+// ─────────────────────────────────────────────────────────────────────────────
+// Service IA — Smart Poultry
+// Calqué exactement sur le pattern de services/poultry.js
+// ─────────────────────────────────────────────────────────────────────────────
+import api from "./api"; // ← même instance axios que poultry.js
 
-const DetectionSchema = new mongoose.Schema(
-  {
-    behaviorNormal: { type: Boolean, default: true },
-    mortalityDetected: { type: Boolean, default: false },
-    densityOk: { type: Boolean, default: true },
-    cleanEnvironment: { type: Boolean, default: true },
-    ventilationAdequate: { type: Boolean, default: true },
-  },
-  { _id: false },
-);
+// ─────────────────────────────────────────────────────────────────────────────
+// IMAGE
+// ─────────────────────────────────────────────────────────────────────────────
 
-const SensorSchema = new mongoose.Schema(
-  {
-    temperature: { type: Number },
-    humidity: { type: Number },
-    airQualityPercent: { type: Number },
-    waterLevel: { type: Number },
-  },
-  { _id: false },
-);
+// Envoie l'image capturée par le mobile au backend (même endpoint que l'ESP32)
+// Body : { poulaillerId, imageBase64 }
+export const sendImageToBackend = async (poulaillerId, imageBase64) => {
+  try {
+    const response = await api.post("/ai/receive-image", {
+      poulaillerId,
+      imageBase64,
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
 
-const ImageQualitySchema = new mongoose.Schema(
-  {
-    status: {
-      type: String,
-      enum: ["pending", "processing", "optimized", "failed"],
-      default: "pending",
-    },
-    score: { type: Number, min: 0, max: 100 },
-    width: { type: Number },
-    height: { type: Number },
-    format: { type: String },
-    sizeBytes: { type: Number },
-  },
-  { _id: false },
-);
+// ─────────────────────────────────────────────────────────────────────────────
+// ANALYSE IA
+// ─────────────────────────────────────────────────────────────────────────────
 
-const ImageSchema = new mongoose.Schema(
-  {
-    url: { type: String },
-    thumbnailUrl: { type: String },
-    publicId: { type: String },
-  },
-  { _id: false },
-);
+// Déclenche une capture + analyse IA via l'ESP32-CAM
+// Body : { triggeredBy: "user" }
+// Retourne : { success, data: { requestId, pollUrl, cameraMac, mqttSent } }
+export const analyzePoultry = async (poulaillerId, triggeredBy = "user") => {
+  try {
+    // ✅ FIX : l'endpoint correct est /ai/capture/:poulaillerId (pas /ai/analyze)
+    const response = await api.post(`/ai/capture/${poulaillerId}`, {
+      triggeredBy,
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
 
-const ResultSchema = new mongoose.Schema(
-  {
-    healthScore: { type: Number, min: 0, max: 100 },
-    urgencyLevel: { type: String, enum: ["normal", "attention", "critique"] },
-    confidence: { type: Number, min: 0, max: 100 },
-    diagnostic: { type: String },
-    detections: DetectionSchema,
-    advices: [{ type: String }],
-    sensors: SensorSchema,
-  },
-  { _id: false },
-);
+// Récupère la dernière analyse IA d'un poulailler
+// Retourne : { success, data: AiAnalysis | null }
+export const getLatestAnalysis = async (poulaillerId) => {
+  try {
+    const response = await api.get(`/ai/latest/${poulaillerId}`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
 
-const AiAnalysisSchema = new mongoose.Schema(
-  {
-    poulaillerId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Poulailler",
-      required: true,
-      index: true,
-    },
+// Récupère l'historique des analyses IA d'un poulailler (10 dernières)
+// Retourne : { success, count, data: AiAnalysis[] }
+export const getAnalysisHistory = async (poulaillerId) => {
+  try {
+    const response = await api.get(`/ai/history/${poulaillerId}`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
 
-    triggeredBy: {
-      type: String,
-      required: true,
-      enum: ["user", "auto", "scheduled", "esp32-auto"],
-      default: "user",
-    },
+// Récupère les statistiques des analyses IA d'un poulailler
+// Retourne : { success, data: { totalAnalyses, avgHealthScore, trend, lastScore, urgencyDistribution } }
+export const getAnalysisStats = async (poulaillerId) => {
+  try {
+    const response = await api.get(`/ai/stats/${poulaillerId}`);
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};
 
-    image: ImageSchema,
-    imageQuality: ImageQualitySchema,
-    result: ResultSchema,
+// ─────────────────────────────────────────────────────────────────────────────
+// CHATBOT VÉTÉRINAIRE
+// ─────────────────────────────────────────────────────────────────────────────
 
-    captureRequestId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "CaptureRequest",
-      index: true,
-    },
-
-    cameraMac: { type: String },
-
-    status: {
-      type: String,
-      enum: [
-        "pending",
-        "capturing",
-        "uploading",
-        "analyzing",
-        "completed",
-        "failed",
-      ],
-      default: "pending",
-      index: true,
-    },
-
-    error: { type: String },
-  },
-  { timestamps: true },
-);
-
-AiAnalysisSchema.index({ poulaillerId: 1, createdAt: -1 });
-AiAnalysisSchema.index({ status: 1, createdAt: -1 });
-AiAnalysisSchema.index({ captureRequestId: 1 });
-
-module.exports = mongoose.model("AiAnalysis", AiAnalysisSchema);
+// Envoie une question au chatbot vétérinaire (Gemma 3 via Cloudflare)
+// Body : { question, poulaillerId }
+// Retourne : { success, data: { answer, context: { lastHealthScore, lastUrgency, lastAnalysisDate } } }
+export const chatWithVet = async (question, poulaillerId) => {
+  try {
+    const response = await api.post("/ai/chat", {
+      question,
+      poulaillerId,
+    });
+    return response.data;
+  } catch (error) {
+    throw error.response ? error.response.data : { error: "Erreur réseau" };
+  }
+};

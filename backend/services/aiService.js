@@ -519,8 +519,6 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// services/aiService.js
-// CORRECTION : Passe requestId à publishCameraCommand
 
 async function publishCaptureTrigger(poulaillerId, requestId) {
   // ✅ Vérifie que requestId est bien passé

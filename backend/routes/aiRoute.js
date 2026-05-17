@@ -2,7 +2,6 @@ const express = require("express");
 const router = express.Router();
 const { protect } = require("../middlewares/auth");
 
-
 const {
   triggerCapture,
   getCaptureStatus,
@@ -20,13 +19,18 @@ const {
 router.post(
   "/capture/:poulaillerId",
   (req, res, next) => {
-    console.log(`[AI ROUTE] /capture hit poulaillerId=${req.params.poulaillerId}`);
+    console.log(
+      `[AI ROUTE] /capture hit poulaillerId=${req.params.poulaillerId}`,
+    );
     next();
   },
   protect,
   triggerCapture,
 );
 
+router.post("/capture-status/:requestId", protect, getCaptureStatus); // ← gardé pour compatibilité
+// ✅ FIX : /analyze/:poulaillerId aliasé vers analyzePoultry (évite 404 si ancien code l'appelle encore)
+router.post("/analyze/:poulaillerId", protect, analyzePoultry);
 router.get("/capture-status/:requestId", protect, getCaptureStatus);
 router.get("/history/:poulaillerId", protect, getAnalysisHistory);
 router.get("/latest/:poulaillerId", protect, getLatestAnalysis);
