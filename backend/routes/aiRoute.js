@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const { protect } = require("../middleware/authMiddleware");
+const { protect } = require("../middlewares/auth");
+
 
 const {
   triggerCapture,
@@ -25,7 +26,6 @@ router.post("/chat", protect, chatWithVet);
 router.get("/chat/:poulaillerId", protect, getChatHistory);
 router.delete("/chat/:poulaillerId", protect, clearChatHistory);
 
-// ── Route publique ESP32 (SANS protect) ─────────────────────
 router.post("/receive-image", receiveImageFromESP);
 
 module.exports = router;
