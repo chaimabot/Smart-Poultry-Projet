@@ -1,6 +1,6 @@
 // controllers/aiController.js
-// CORRIGÉ : poulaillerId cohérent + captureRequestId lié + imageQuality sécurisé
 
+const mongoose = require("mongoose");
 const Poulailler = require("../models/Poulailler");
 const Camera = require("../models/Camera");
 const AiAnalysis = require("../models/AiAnalysis");
@@ -32,9 +32,7 @@ async function verifyCameraLinked(poulaillerId) {
     status: { $in: ["associated", "pending"] },
     macAddress: { $exists: true, $ne: null },
   });
-  if (!camera) {
-    throw new Error("Aucune caméra associée à ce poulailler");
-  }
+  if (!camera) throw new Error("Aucune caméra associée à ce poulailler");
   return camera;
 }
 
@@ -60,24 +58,14 @@ async function triggerCapture(req, res) {
   analysisLocks.add(poulaillerId);
 
   try {
-    console.log(`[AI] Déclenchement capture — poulailler ${poulaillerId}`);
-
     const camera = await verifyCameraLinked(poulaillerId);
-    console.log(`[AI] Caméra: ${camera.macAddress} (${camera.status})`);
-
     const requestId = `cap-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    await CaptureRequest.create({
-      requestId,
-      poulaillerId,
-      status: "pending",
-    });
+    await CaptureRequest.create({ requestId, poulaillerId, status: "pending" });
 
     let mqttSent = false;
     try {
-      console.log(`[AI] Publication MQTT → requestId: ${requestId}`);
       mqttSent = await publishCameraCommand(poulaillerId, requestId);
-      console.log(`[AI] MQTT envoyé: ${mqttSent}`);
     } catch (err) {
       console.error(`[AI] MQTT échoué: ${err.message}`);
     }
@@ -86,13 +74,11 @@ async function triggerCapture(req, res) {
       try {
         const doc = await CaptureRequest.findOne({ requestId });
         if (doc && doc.status === "pending") {
-          console.warn(`[AI] ⏰ Timeout capture ${requestId} — ESP32-CAM muet`);
           await CaptureRequest.findOneAndUpdate(
             { requestId },
             {
               status: "failed",
-              error:
-                "L'ESP32-CAM n'a pas répondu dans les délais (90s). Vérifiez la connexion MQTT.",
+              error: "L'ESP32-CAM n'a pas répondu dans les délais (90s).",
             },
           );
         }
@@ -109,7 +95,7 @@ async function triggerCapture(req, res) {
         cameraMac: camera.macAddress,
         message: mqttSent
           ? "Capture déclenchée. Polling requis pour le résultat."
-          : "MQTT indisponible — vérifiez la connexion au broker HiveMQ.",
+          : "MQTT indisponible — vérifiez la connexion au broker.",
         pollUrl: `/api/ai/capture-status/${requestId}`,
       },
     });
@@ -126,7 +112,6 @@ async function triggerCapture(req, res) {
 // ============================================================================
 async function getCaptureStatus(req, res) {
   const { requestId } = req.params;
-
   const capture = await CaptureRequest.findOne({ requestId });
 
   if (!capture) {
@@ -162,10 +147,7 @@ async function getCaptureStatus(req, res) {
 
   return res.json({
     success: true,
-    data: {
-      status: capture.status,
-      message: "Capture en cours...",
-    },
+    data: { status: capture.status, message: "Capture en cours..." },
   });
 }
 
@@ -175,27 +157,22 @@ async function getCaptureStatus(req, res) {
 async function receiveImageFromESP(req, res) {
   try {
     const { deviceId, requestId, image } = req.body;
-
-    if (!deviceId) {
+    if (!deviceId)
       return res.status(400).json({ success: false, error: "deviceId requis" });
-    }
-    if (!image) {
+    if (!image)
       return res.status(400).json({ success: false, error: "image requise" });
-    }
 
     const normalizedMac = Camera.normalizeMac(deviceId);
-    if (!normalizedMac) {
+    if (!normalizedMac)
       return res
         .status(400)
         .json({ success: false, error: "deviceId/MAC invalide" });
-    }
 
     const camera = await Camera.findOne({ macAddress: normalizedMac });
     if (!camera || !camera.poulailler) {
-      return res.status(404).json({
-        success: false,
-        error: "Caméra non enregistrée ou non associée",
-      });
+      return res
+        .status(404)
+        .json({ success: false, error: "Caméra non enregistrée" });
     }
 
     const poulaillerId = camera.poulailler.toString();
@@ -206,15 +183,13 @@ async function receiveImageFromESP(req, res) {
     const imageSizeKb = Math.round(((base64Length * 3) / 4 - padding) / 1024);
 
     if (imageSizeKb < 3) {
-      return res.status(400).json({
-        success: false,
-        error: `Image trop petite (${imageSizeKb} Ko)`,
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: `Image trop petite (${imageSizeKb} Ko)`,
+        });
     }
-
-    console.log(
-      `[AI] Image reçue — ${poulaillerId} (${imageSizeKb} Ko) | requestId: ${requestId || "sans"}`,
-    );
 
     await Camera.findByIdAndUpdate(camera._id, {
       lastPing: new Date(),
@@ -223,7 +198,6 @@ async function receiveImageFromESP(req, res) {
 
     if (requestId) {
       const captureDoc = await CaptureRequest.findOne({ requestId });
-
       if (captureDoc) {
         await CaptureRequest.findOneAndUpdate(
           { requestId },
@@ -231,9 +205,6 @@ async function receiveImageFromESP(req, res) {
         );
         processImageAsync(requestId, poulaillerId, cleanBase64, camera);
       } else {
-        console.warn(
-          `[AI] requestId ${requestId} introuvable — traitement orphelin`,
-        );
         const orphanId = `orphan-${Date.now()}`;
         await CaptureRequest.create({
           requestId: orphanId,
@@ -260,11 +231,10 @@ async function receiveImageFromESP(req, res) {
 }
 
 // ============================================================================
-// TRAITEMENT ASYNCHRONE — CORRIGÉ
+// TRAITEMENT ASYNCHRONE — CORRIGÉ (poultryId + imageQuality sécurisé)
 // ============================================================================
 async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
   try {
-    // ✅ Vérifie que poulaillerId est valide avant toute création
     if (!poulaillerId || !mongoose.isValidObjectId(poulaillerId)) {
       throw new Error(`poulaillerId invalide: ${poulaillerId}`);
     }
@@ -273,7 +243,6 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       { requestId },
       { status: "analyzing" },
     );
-    console.log(`[AI] Analyse en cours — requestId: ${requestId}`);
 
     const poulailler = await Poulailler.findById(poulaillerId);
     const sensorData = {
@@ -290,19 +259,15 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       sensorData,
       poulailler?.thresholds,
     );
-
-    console.log("[AI] Upload Cloudinary...");
     const cloudImage = await cloudinary.uploadImage(imageBase64, poulaillerId);
 
-    // ✅ Construction sécurisée de l'analyse
+    // ✅ Construction sécurisée — poultryId au lieu de poulaillerId
     const analysisPayload = {
-      poulaillerId: new mongoose.Types.ObjectId(poulaillerId),
+      poultryId: new mongoose.Types.ObjectId(poulaillerId),
       triggeredBy: "esp32-auto",
-      captureRequestId: new mongoose.Types.ObjectId(
-        mongoose.isValidObjectId(requestId)
-          ? requestId
-          : new mongoose.Types.ObjectId(),
-      ),
+      captureRequestId: mongoose.isValidObjectId(requestId)
+        ? new mongoose.Types.ObjectId(requestId)
+        : null,
       sensors: sensorData,
       result: {
         healthScore: aiResult?.healthScore ?? null,
@@ -368,10 +333,6 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       },
     );
 
-    console.log(
-      `[AI] ✅ Analyse complète — requestId: ${requestId} | Score: ${aiResult?.healthScore ?? "?"}`,
-    );
-
     if (
       aiResult?.urgencyLevel === "critique" ||
       aiResult?.detections?.mortalityDetected
@@ -394,16 +355,15 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
 }
 
 // ============================================================================
-// ROUTE 4 : POST /api/ai/capture/:id (ancienne compatibilité)
+// ROUTE 4 : POST /api/ai/capture/:id (compatibilité)
 // ============================================================================
 async function analyzePoultry(req, res) {
   const { poulaillerId } = req.params;
 
   if (analysisLocks.has(poulaillerId)) {
-    return res.status(429).json({
-      success: false,
-      error: "Une analyse est déjà en cours",
-    });
+    return res
+      .status(429)
+      .json({ success: false, error: "Une analyse est déjà en cours" });
   }
 
   const { error, status } = await checkAccess(poulaillerId, req.user.id);
@@ -443,7 +403,7 @@ async function analyzePoultry(req, res) {
 }
 
 // ============================================================================
-// HISTORIQUE / CHAT / STATS
+// HISTORIQUE / STATS / CHAT — CORRIGÉS (poultryId dans les filtres AiAnalysis)
 // ============================================================================
 async function getAnalysisHistory(req, res) {
   const { error, status } = await checkAccess(
@@ -454,7 +414,7 @@ async function getAnalysisHistory(req, res) {
 
   try {
     const analyses = await AiAnalysis.find({
-      poulaillerId: req.params.poulaillerId,
+      poultryId: req.params.poulaillerId,
     })
       .sort({ createdAt: -1 })
       .limit(10);
@@ -473,7 +433,7 @@ async function getLatestAnalysis(req, res) {
 
   try {
     const analysis = await AiAnalysis.findOne({
-      poulaillerId: req.params.poulaillerId,
+      poultryId: req.params.poulaillerId,
     }).sort({ createdAt: -1 });
     if (!analysis) {
       return res.json({ success: true, data: null, message: "Aucune analyse" });
@@ -493,7 +453,7 @@ async function getAnalysisStats(req, res) {
 
   try {
     const analyses = await AiAnalysis.find({
-      poulaillerId: req.params.poulaillerId,
+      poultryId: req.params.poulaillerId,
     })
       .sort({ createdAt: -1 })
       .limit(10)
@@ -550,7 +510,7 @@ async function chatWithVet(req, res) {
   if (error) return res.status(status).json({ success: false, error });
 
   try {
-    const lastAnalysis = await AiAnalysis.findOne({ poulaillerId })
+    const lastAnalysis = await AiAnalysis.findOne({ poultryId: poulaillerId })
       .sort({ createdAt: -1 })
       .select("result sensors createdAt");
 
