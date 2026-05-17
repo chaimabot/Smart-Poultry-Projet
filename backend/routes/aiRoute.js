@@ -17,7 +17,16 @@ const {
 } = require("../controllers/aiController");
 
 // ── Routes protégées (JWT) ──────────────────────────────────
-router.post("/capture/:poulaillerId", protect, triggerCapture);
+router.post(
+  "/capture/:poulaillerId",
+  (req, res, next) => {
+    console.log(`[AI ROUTE] /capture hit poulaillerId=${req.params.poulaillerId}`);
+    next();
+  },
+  protect,
+  triggerCapture,
+);
+
 router.get("/capture-status/:requestId", protect, getCaptureStatus);
 router.get("/history/:poulaillerId", protect, getAnalysisHistory);
 router.get("/latest/:poulaillerId", protect, getLatestAnalysis);

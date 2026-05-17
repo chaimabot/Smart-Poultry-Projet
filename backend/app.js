@@ -184,12 +184,22 @@ if (lampeRoutes) {
   console.error("[ROUTES] ❌ SKIPPING /api/lampe mount - routes undefined!");
 }
 
+// ── AI Routes ───────────────────────────────────────────────
+let aiRoutes;
 try {
-  const aiRoutes = require("./routes/aiRoute");
+  aiRoutes = require("./routes/aiRoute");
+  if (!aiRoutes || typeof aiRoutes.use !== "function") {
+    throw new Error("aiRoute.js n'exporte pas un router Express valide");
+  }
   app.use("/api/ai", aiRoutes);
-  console.log("[ROUTES] ✓ ia chargé");
+  console.log("[ROUTES] ✓ /api/ai monté avec succès");
+  console.log("[DEBUG] aiRoutes mounted: /api/ai");
+
 } catch (e) {
-  console.error("[ROUTES] ia fail:", e.message);
+  console.error("[ROUTES] ✗ ai fail:", e.message);
+  console.error(
+    "[ROUTES] Vérifiez que ./routes/aiRoute.js existe et exporte un router Express",
+  );
 }
 try {
   const inviteRoutes = require("./routes/invite");
