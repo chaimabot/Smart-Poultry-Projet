@@ -212,9 +212,15 @@ app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
 });
 
-// ✅ Route de diagnostic — vérifier que /api/ai est bien monté
+// ✅ Route de diagnostic — vérifier que l’API est vivante
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// ✅ Diagnostic AI — répond même si aiRoute n’est pas monté
+// (permet d’identifier si le 404 vient d’un problème de montage /api/ai)
+app.get("/api/ai/__ping-from-app", (req, res) => {
+  res.json({ ok: true, source: "app" });
 });
 
 app.post("/api/upload-image", (req, res) => {
