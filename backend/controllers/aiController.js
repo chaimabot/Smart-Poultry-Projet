@@ -6,7 +6,8 @@ const Camera = require("../models/Camera");
 const AiAnalysis = require("../models/AiAnalysis");
 const ChatHistory = require("../models/ChatHistory");
 const Alert = require("../models/Alert");
-const CaptureRequest = require("../models/CaptureRequest");
+const CaptureRequest = require("../models/Capturerequest");
+
 const cloudinary = require("../services/cloudinaryService");
 
 const {
