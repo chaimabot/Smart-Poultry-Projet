@@ -425,6 +425,27 @@ function analyzeWithSensorsOnly(sensorData = {}) {
 
 function buildPoorImageResult(sensorData = {}, reason = "image floue") {
   const sensorResult = analyzeWithSensorsOnly(sensorData);
+
+  const hasAnyValid =
+    isValidSensorValue(sensorData.temperature, -10, 60) ||
+    isValidSensorValue(sensorData.humidity, 0, 100) ||
+    isValidSensorValue(sensorData.airQualityPercent, 0, 100) ||
+    isValidSensorValue(sensorData.waterLevel, 1, 100);
+
+  // ✅ Conseils contextualisés selon disponibilité des capteurs
+  let advices;
+  if (hasAnyValid) {
+    // Des capteurs sont disponibles : on garde les conseils capteurs
+    advices = sensorResult.advices;
+  } else {
+    // Ni image exploitable, ni capteurs : conseils d'action clairs
+    advices = [
+      "Vérifiez l'éclairage du poulailler avant de relancer une analyse — une luminosité suffisante est nécessaire pour la caméra.",
+      "Assurez-vous que la caméra ESP32 est correctement positionnée et que l'objectif est propre.",
+      "Vérifiez la connexion du module de surveillance pour rétablir les données capteurs.",
+    ];
+  }
+
   return {
     ...sensorResult,
     diagnostic: sensorResult.diagnostic.startsWith("Aucune donnée")
@@ -433,6 +454,7 @@ function buildPoorImageResult(sensorData = {}, reason = "image floue") {
     imageAvailable: true,
     imageUsable: false,
     imageQuality: { sizeKb: 0, status: "poor", reason },
+    advices,
   };
 }
 
