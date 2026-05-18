@@ -1,4 +1,10 @@
 // services/aiService.js
+// CORRECTIONS :
+//   1. Détection qualité image via sharp (variance pixel) AVANT d'envoyer à Gemma
+//      → images floues/sombres détectées côté serveur, pas via le texte du diagnostic
+//   2. analyzeWithSensorsOnly retourne detections: null (non évalué) et non des true par défaut
+//   3. parseAIResponse : fallback null pour les détections si valeur absente (pas ?? true)
+//   4. imageQuality.status propagé correctement dans le résultat final
 
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
@@ -8,10 +14,10 @@ const sharp = require("sharp");
 
 const { publishCameraCommand } = require("./mqttService");
 
-const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
-const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
+const _CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
+const _CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 
-const USE_CLOUDFLARE = !!(CF_ACCOUNT_ID && CF_API_TOKEN);
+const USE_CLOUDFLARE = !!(_CF_ACCOUNT_ID && _CF_API_TOKEN);
 
 const PRIMARY_MODEL = "@cf/google/gemma-3-12b-it";
 const FALLBACK_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
@@ -21,6 +27,11 @@ const CHAT_TIMEOUT = 20000;
 const LLAVA_TIMEOUT = 10000;
 const LLAVA_MAX_KB = 24;
 const INTER_ANALYSIS_DELAY_MS = 5000;
+
+// ✅ Seuils de qualité image (via analyse sharp)
+const IMAGE_MIN_BRIGHTNESS = 20; // en dessous = trop sombre (0-255)
+const IMAGE_MAX_BRIGHTNESS = 235; // au dessus = surexposé
+const IMAGE_MIN_VARIANCE = 80; // en dessous = flou / image uniforme (0-65025)
 
 const DEATH_KEYWORDS = [
   "décédé",
@@ -53,10 +64,78 @@ function getImageSizeKb(base64) {
   return Math.round((base64.length * 3) / 4 / 1024);
 }
 
+// ─── Détection qualité image via sharp ─────────────────────────────────────
+// Retourne { usable: bool, reason: string, brightness: number, variance: number }
+// Méthode : on analyse les stats pixel (luminosité moyenne + variance)
+// Une image floue a une faible variance (peu de contraste/détails)
+// Une image sombre a une faible luminosité moyenne
+
+async function assessImageQuality(base64) {
+  try {
+    const buffer = Buffer.from(base64, "base64");
+
+    // Redimensionner à 64x64 pour accélérer l'analyse
+    const { data, info } = await sharp(buffer)
+      .resize(64, 64, { fit: "fill" })
+      .greyscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const pixels = Array.from(data);
+    const n = pixels.length;
+
+    // Luminosité moyenne
+    const brightness = pixels.reduce((sum, p) => sum + p, 0) / n;
+
+    // Variance (mesure de contraste / netteté)
+    const variance =
+      pixels.reduce((sum, p) => sum + Math.pow(p - brightness, 2), 0) / n;
+
+    console.log(
+      `[AI] Qualité image — Luminosité: ${brightness.toFixed(1)}/255, Variance: ${variance.toFixed(1)}`,
+    );
+
+    if (brightness < IMAGE_MIN_BRIGHTNESS) {
+      return {
+        usable: false,
+        reason: "image trop sombre",
+        brightness,
+        variance,
+      };
+    }
+    if (brightness > IMAGE_MAX_BRIGHTNESS) {
+      return {
+        usable: false,
+        reason: "image surexposée",
+        brightness,
+        variance,
+      };
+    }
+    if (variance < IMAGE_MIN_VARIANCE) {
+      return {
+        usable: false,
+        reason: "image floue ou uniforme",
+        brightness,
+        variance,
+      };
+    }
+
+    return { usable: true, reason: "ok", brightness, variance };
+  } catch (err) {
+    console.warn("[AI] assessImageQuality erreur:", err.message);
+    // En cas d'erreur d'analyse, on laisse passer (ne pas bloquer)
+    return {
+      usable: true,
+      reason: "analyse impossible",
+      brightness: null,
+      variance: null,
+    };
+  }
+}
+
 // ─── Compression image ──────────────────────────────────────────────────────
 
 async function compressImage(base64) {
-  // Early exit : si l'image est déjà assez petite, on ne compresse pas
   if (getImageSizeKb(base64) <= LLAVA_MAX_KB) {
     console.log("[AI] Image déjà dans les limites — pas de compression");
     return base64;
@@ -94,96 +173,181 @@ async function compressImage(base64) {
 }
 
 // ─── Fallback capteurs uniquement ──────────────────────────────────────────
+// ✅ detections toutes à null : non évaluées (pas de vision)
 
 function analyzeWithSensorsOnly(sensorData = {}) {
   let score = 85;
   let urgency = "normal";
-  let diagnostic = "État général satisfaisant d'après les capteurs.";
+  const issues = [];
 
-  const airQuality = sensorData.airQualityPercent ?? 60;
-  const temperature = sensorData.temperature ?? 25;
-  const waterLevel = sensorData.waterLevel ?? 60;
+  const airQuality = sensorData.airQualityPercent ?? null;
+  const temperature = sensorData.temperature ?? null;
+  const waterLevel = sensorData.waterLevel ?? null;
 
-  if (airQuality < 20) {
+  if (airQuality !== null && airQuality < 20) {
     score -= 40;
     urgency = "critique";
-    diagnostic = "Qualité de l'air critique — intervention immédiate requise.";
+    issues.push("qualité d'air critique");
+  } else if (airQuality !== null && airQuality < 40) {
+    score -= 20;
+    if (urgency !== "critique") urgency = "attention";
+    issues.push("qualité d'air dégradée");
   }
 
-  if (temperature > 31) {
+  if (temperature !== null && temperature > 31) {
     score -= 20;
     urgency = "critique";
-    diagnostic += " Surchauffe détectée.";
-  }
-
-  if (temperature < 15) {
+    issues.push("surchauffe détectée");
+  } else if (temperature !== null && temperature < 15) {
     score -= 15;
     if (urgency !== "critique") urgency = "attention";
-    diagnostic += " Température trop basse.";
+    issues.push("température trop basse");
   }
 
-  if (waterLevel < 20) {
+  if (waterLevel !== null && waterLevel < 20) {
     score -= 15;
     if (urgency !== "critique") urgency = "attention";
-    diagnostic += " Niveau d'eau insuffisant.";
+    issues.push("niveau d'eau insuffisant");
   }
 
   score = Math.max(0, Math.min(100, score));
+
+  let diagnostic;
+  if (issues.length > 0) {
+    diagnostic = `Alerte capteurs : ${issues.join(", ")}. Aucune image disponible pour l'évaluation visuelle.`;
+  } else if (temperature === null && airQuality === null) {
+    diagnostic =
+      "Aucune donnée capteur ni image disponible. Vérifiez la connexion des équipements.";
+  } else {
+    diagnostic =
+      "Capteurs dans les plages normales. Aucune image disponible pour l'évaluation visuelle.";
+  }
 
   return {
     healthScore: score,
     urgencyLevel: urgency,
     diagnostic,
-    confidence: 70,
+    confidence: 50,
+    imageAvailable: false,
+    imageUsable: false,
+    // ✅ null = non évalué (pas true par défaut)
     detections: {
-      mortalityDetected: false,
-      behaviorNormal: score > 60,
-      densityOk: true,
-      cleanEnvironment: true,
-      ventilationAdequate: true,
+      mortalityDetected: null,
+      behaviorNormal: null,
+      densityOk: null,
+      cleanEnvironment: null,
+      ventilationAdequate: null,
     },
-    advices: [
-      "Maintenir une surveillance continue des capteurs",
-      "Vérifier la ventilation et la circulation d'air",
-      "Effectuer une maintenance préventive",
-    ],
+    advices: buildSensorAdvices(sensorData),
     imageQuality: { sizeKb: 0, status: "poor" },
   };
+}
+
+// ─── Résultat pour image inexploitable (floue/sombre) ─────────────────────
+// Différent de analyzeWithSensorsOnly : l'image EXISTE mais est inutilisable
+
+function buildPoorImageResult(sensorData = {}, reason = "image floue") {
+  const sensorResult = analyzeWithSensorsOnly(sensorData);
+  return {
+    ...sensorResult,
+    diagnostic: `Image inexploitable (${reason}). ${sensorResult.diagnostic}`,
+    imageAvailable: true, // l'image existe physiquement
+    imageUsable: false, // mais n'a pas pu être analysée
+    imageQuality: { sizeKb: 0, status: "poor", reason },
+  };
+}
+
+// ─── Conseils capteurs ──────────────────────────────────────────────────────
+
+function buildSensorAdvices(sensorData = {}) {
+  const advices = [];
+  const { temperature, humidity, airQualityPercent, waterLevel } = sensorData;
+
+  if (
+    airQualityPercent !== null &&
+    airQualityPercent !== undefined &&
+    airQualityPercent < 40
+  ) {
+    advices.push(
+      `Augmentez la ventilation — qualité d'air à ${airQualityPercent}% (seuil critique : 20%).`,
+    );
+  }
+  if (temperature !== null && temperature !== undefined && temperature > 28) {
+    advices.push(
+      `Température élevée (${temperature}°C) — vérifiez la ventilation et l'hydratation des volailles.`,
+    );
+  } else if (
+    temperature !== null &&
+    temperature !== undefined &&
+    temperature < 18
+  ) {
+    advices.push(
+      `Température basse (${temperature}°C) — vérifiez le chauffage du poulailler.`,
+    );
+  }
+  if (waterLevel !== null && waterLevel !== undefined && waterLevel < 30) {
+    advices.push(
+      `Niveau d'eau à ${waterLevel}% — remplissez les abreuvoirs rapidement.`,
+    );
+  }
+  if (advices.length === 0) {
+    advices.push(
+      "Capteurs stables. Repositionnez la caméra ESP32 et relancez une analyse avec image.",
+    );
+  }
+  return advices;
 }
 
 // ─── Prompts ────────────────────────────────────────────────────────────────
 
 function buildAnalysisPrompt(sensorData = {}) {
-  return `Analyze this poultry farm image carefully.
+  return `You are an expert poultry farm veterinarian. Analyze this farm image.
 
-IMPORTANT RULES:
-- mortalityDetected=true ONLY with 90% visual certainty
-- sleeping birds are NOT dead
-- birds partially hidden are NOT dead
-- if uncertain => mortalityDetected=false
-- if sensors are normal => do NOT report mortality
+CRITICAL RULES:
+- Look at the image carefully. If it is blurry, out of focus, overexposed, too dark, or shows no animals: set imageUsable=false
+- If imageUsable=false: all detections must be null, healthScore must be based ONLY on sensors
+- mortalityDetected=true ONLY with 90%+ certainty of visible dead birds on the ground
+- Sleeping or resting birds are NOT dead
+- urgencyLevel must be exactly one of: "normal" | "attention" | "critique"
+- All text in French. Diagnostic max 2 sentences. Be specific, not generic.
 
-urgencyLevel must ONLY be one of: normal | attention | critique
-
-Respond ONLY with valid JSON. No markdown. No explanation.
-
-JSON FORMAT:
+Respond ONLY with this exact JSON format. No markdown, no text outside JSON:
 {
   "healthScore": 85,
   "urgencyLevel": "normal",
-  "diagnostic": "Short diagnostic in French",
+  "imageUsable": true,
+  "diagnostic": "Diagnostic précis en français.",
   "detections": {
     "mortalityDetected": false,
-    "behaviorNormal": true
+    "behaviorNormal": true,
+    "densityOk": true,
+    "cleanEnvironment": true,
+    "ventilationAdequate": true
   },
-  "advices": ["conseil 1", "conseil 2", "conseil 3"]
+  "advices": ["conseil précis 1", "conseil précis 2", "conseil précis 3"]
 }
 
-Sensor readings:
-Temperature    = ${sensorData.temperature ?? "N/A"} °C
-Humidity       = ${sensorData.humidity ?? "N/A"} %
-AirQuality     = ${sensorData.airQualityPercent ?? "N/A"} %
-WaterLevel     = ${sensorData.waterLevel ?? "N/A"} %
+If imageUsable=false, respond with:
+{
+  "healthScore": <based only on sensors>,
+  "urgencyLevel": "<based only on sensors>",
+  "imageUsable": false,
+  "diagnostic": "Image inexploitable — <raison précise>. <diagnostic capteurs>.",
+  "detections": {
+    "mortalityDetected": null,
+    "behaviorNormal": null,
+    "densityOk": null,
+    "cleanEnvironment": null,
+    "ventilationAdequate": null
+  },
+  "advices": ["<conseil basé uniquement sur capteurs>"]
+}
+
+Sensor readings (use these if image is unusable):
+Temperature    = ${sensorData.temperature ?? "N/A"} °C   (normal: 18-28°C)
+Humidity       = ${sensorData.humidity ?? "N/A"} %       (normal: 50-70%)
+AirQuality     = ${sensorData.airQualityPercent ?? "N/A"} %   (critical if <20%)
+WaterLevel     = ${sensorData.waterLevel ?? "N/A"} %     (critical if <20%)
 AnimalCount    = ${sensorData.animalCount ?? "N/A"}
 Surface        = ${sensorData.surface ?? "N/A"} m²
 `.trim();
@@ -218,11 +382,11 @@ CONSEILS : ${context.lastAdvices ?? "Aucun conseil disponible"}
 // ─── Appel Cloudflare générique ─────────────────────────────────────────────
 
 async function callCloudflare(model, payload, timeout) {
-  const url = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run/${model}`;
+  const url = `https://api.cloudflare.com/client/v4/accounts/${_CF_ACCOUNT_ID}/ai/run/${model}`;
 
   const response = await axios.post(url, payload, {
     headers: {
-      Authorization: `Bearer ${CF_API_TOKEN}`,
+      Authorization: `Bearer ${_CF_API_TOKEN}`,
       "Content-Type": "application/json",
     },
     timeout,
@@ -258,6 +422,25 @@ function parseAIResponse(text, sensorData = {}) {
 
     const parsed = JSON.parse(match[0]);
 
+    // ✅ Si le modèle lui-même dit que l'image est inexploitable
+    if (parsed.imageUsable === false) {
+      console.warn(
+        "[AI] Modèle signale image inexploitable via imageUsable=false",
+      );
+      return {
+        ...analyzeWithSensorsOnly(sensorData),
+        diagnostic:
+          parsed.diagnostic || "Image inexploitable selon le modèle IA.",
+        imageAvailable: true,
+        imageUsable: false,
+        imageQuality: {
+          sizeKb: 0,
+          status: "poor",
+          reason: "signalé par le modèle",
+        },
+      };
+    }
+
     let healthScore =
       typeof parsed.healthScore === "number" ? parsed.healthScore : 70;
     healthScore = Math.max(0, Math.min(100, healthScore));
@@ -278,9 +461,9 @@ function parseAIResponse(text, sensorData = {}) {
     const warningSensors =
       temperature < 15 || temperature > 31 || waterLevel < 20;
 
-    // Bloque les faux positifs de mortalité si capteurs normaux
-    let mortalityDetected = parsed.detections?.mortalityDetected ?? false;
-    if (mortalityDetected && sensorsNormal) {
+    // ✅ Bloque les faux positifs de mortalité si capteurs normaux
+    let mortalityDetected = parsed.detections?.mortalityDetected ?? null;
+    if (mortalityDetected === true && sensorsNormal) {
       const diagText = (parsed.diagnostic || "").toLowerCase();
       if (!mentionsDeath(diagText)) {
         console.warn(
@@ -299,14 +482,20 @@ function parseAIResponse(text, sensorData = {}) {
       healthScore,
       urgencyLevel,
       diagnostic: parsed.diagnostic || "Analyse effectuée.",
+      imageAvailable: true,
+      imageUsable: true,
       detections: {
         mortalityDetected,
-        behaviorNormal: parsed.detections?.behaviorNormal ?? true,
-        densityOk: parsed.detections?.densityOk ?? true,
-        cleanEnvironment: parsed.detections?.cleanEnvironment ?? true,
-        ventilationAdequate: parsed.detections?.ventilationAdequate ?? true,
+        // ✅ null si absent dans la réponse — pas true par défaut
+        behaviorNormal: parsed.detections?.behaviorNormal ?? null,
+        densityOk: parsed.detections?.densityOk ?? null,
+        cleanEnvironment: parsed.detections?.cleanEnvironment ?? null,
+        ventilationAdequate: parsed.detections?.ventilationAdequate ?? null,
       },
-      advices: Array.isArray(parsed.advices) ? parsed.advices : [],
+      advices:
+        Array.isArray(parsed.advices) && parsed.advices.length > 0
+          ? parsed.advices
+          : buildSensorAdvices(sensorData),
     };
   } catch (err) {
     console.error("[AI] parseAIResponse error:", err.message);
@@ -371,13 +560,38 @@ async function analyzeWithCloudflareAI(
       return analyzeWithSensorsOnly(sensorData);
     }
 
+    // ✅ ÉTAPE 1 : Évaluation qualité image via sharp AVANT d'appeler Gemma
+    const quality = await assessImageQuality(clean);
+    console.log(
+      `[AI] Qualité image : ${quality.usable ? "✓ exploitable" : `✗ ${quality.reason}`}`,
+    );
+
+    if (!quality.usable) {
+      console.warn(
+        `[AI] Image inexploitable (${quality.reason}) — pas d'envoi à Gemma`,
+      );
+      return buildPoorImageResult(sensorData, quality.reason);
+    }
+
+    // ✅ ÉTAPE 2 : Compression pour LLaVA si nécessaire
     const compressed = await compressImage(clean);
     const sizeKb = getImageSizeKb(compressed);
     console.log(`[AI] Taille image finale : ${sizeKb} Ko`);
 
+    // ✅ ÉTAPE 3 : Envoi à Gemma
     try {
       console.log("[AI] Tentative Gemma 3...");
       const result = await callGemma(compressed, sensorData);
+
+      // Si Gemma dit lui-même que l'image est inexploitable, on respecte son verdict
+      if (!result.imageUsable) {
+        return {
+          ...result,
+          confidence: 50,
+          imageQuality: { sizeKb, status: "poor", reason: "signalé par Gemma" },
+        };
+      }
+
       return {
         ...result,
         confidence: 85,
@@ -387,10 +601,24 @@ async function analyzeWithCloudflareAI(
       console.warn("[AI] Gemma échoué :", err.message);
     }
 
+    // ✅ ÉTAPE 4 : Fallback LLaVA
     if (sizeKb <= LLAVA_MAX_KB) {
       try {
         console.log("[AI] Tentative LLaVA...");
         const result = await callLlava(compressed, sensorData);
+
+        if (!result.imageUsable) {
+          return {
+            ...result,
+            confidence: 50,
+            imageQuality: {
+              sizeKb,
+              status: "poor",
+              reason: "signalé par LLaVA",
+            },
+          };
+        }
+
         return {
           ...result,
           confidence: 75,
@@ -420,7 +648,6 @@ async function chatWithGemma(question, context, history = []) {
 
     const messages = [
       { role: "system", content: buildSystemPrompt(context) },
-      // On limite à 6 derniers messages pour ne pas exploser le contexte
       ...history
         .slice(-6)
         .map((msg) => ({ role: msg.role, content: msg.content })),
@@ -445,8 +672,6 @@ async function chatWithGemma(question, context, history = []) {
     return cleaned || buildFallbackAnswer(question, context);
   } catch (err) {
     console.error("[AI] Erreur chatWithGemma:", err.message);
-    console.error("[AI] Status:", err.response?.status);
-    console.error("[AI] Data:", JSON.stringify(err.response?.data));
     return buildFallbackAnswer(question, context);
   }
 }
@@ -500,7 +725,7 @@ function buildFallbackAnswer(question, context) {
   return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${context.lastScore}/100. ${context.lastDiagnostic}. Posez-moi une question sur la santé, les alertes ou les conseils.`;
 }
 
-// ─── Gestion image caméra (hors flux requestId) ─────────────────────────────
+// ─── Gestion image caméra ────────────────────────────────────────────────────
 
 async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   try {
@@ -524,7 +749,6 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
     const key = poulaillerId.toString().trim();
     pendingImages.set(key, { image: cleanB64, receivedAt: Date.now() });
 
-    // Nettoyage automatique après 60s si non consommée
     setTimeout(() => {
       if (pendingImages.has(key)) {
         pendingImages.delete(key);
@@ -543,12 +767,11 @@ async function publishCaptureTrigger(poulaillerId, requestId) {
     throw new Error("[AI] publishCaptureTrigger : requestId requis");
   }
 
-  // Import local pour éviter un éventuel import circulaire au niveau module
   const Camera = require("../models/Camera");
 
   const camera = await Camera.findOne({
     poulailler: poulaillerId,
-    status: "associated", // ✅ FIX : on exclut "pending" — une caméra pending ne peut pas recevoir de commandes
+    status: "associated",
   });
 
   if (!camera) {
@@ -566,6 +789,6 @@ module.exports = {
   chatWithGemma,
   publishCaptureTrigger,
   handleCameraImage,
-  pendingImages, // ✅ exporté depuis ce service (source unique de vérité)
+  pendingImages,
   INTER_ANALYSIS_DELAY_MS,
 };
