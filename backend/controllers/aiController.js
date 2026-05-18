@@ -7,18 +7,18 @@ const AiAnalysis = require("../models/AiAnalysis");
 const ChatHistory = require("../models/ChatHistory");
 const Alert = require("../models/Alert");
 const CaptureRequest = require("../models/Capturerequest");
-
 const cloudinary = require("../services/cloudinaryService");
 
+// ✅ Import statique — pas de require() local dans processImageAsync
 const {
   analyzeWithCloudflareAI,
   chatWithGemma,
+  extractFreshSensors,
 } = require("../services/aiService");
+
 const { publishCameraCommand } = require("../services/mqttService");
 
-// ─── Locks d'analyse (un seul par poulailler à la fois) ─────────────────────
-// ✅ FIX : le lock est géré entièrement dans processImageAsync, pas dans triggerCapture,
-//          pour couvrir le traitement asynchrone réel.
+// ─── Locks d'analyse ────────────────────────────────────────────────────────
 const analysisLocks = new Set();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -32,7 +32,6 @@ async function checkAccess(poulaillerId, userId) {
 }
 
 async function verifyCameraLinked(poulaillerId) {
-  // ✅ FIX : on exclut "pending" — une caméra pending n'est pas prête à recevoir des commandes MQTT
   const camera = await Camera.findOne({
     poulailler: poulaillerId,
     status: "associated",
@@ -73,8 +72,6 @@ async function triggerCapture(req, res) {
       console.error(`[AI] MQTT échoué: ${err.message}`);
     }
 
-    // Timeout de 90s : marque la requête comme échouée si l'ESP32 ne répond pas
-    // (Le lock n'est PAS libéré ici — il sera libéré dans processImageAsync)
     setTimeout(async () => {
       try {
         const doc = await CaptureRequest.findOne({ requestId });
@@ -86,7 +83,6 @@ async function triggerCapture(req, res) {
               error: "L'ESP32-CAM n'a pas répondu dans les délais (90s).",
             },
           );
-          // Si la capture a expiré sans que processImageAsync soit jamais appelé, on libère le lock
           analysisLocks.delete(poulaillerId);
         }
       } catch (e) {
@@ -127,7 +123,6 @@ async function getCaptureStatus(req, res) {
   }
 
   if (capture.status === "completed") {
-    // Nettoyage différé (le client a 30s pour relire si besoin)
     setTimeout(async () => {
       await CaptureRequest.deleteOne({ requestId }).catch(() => {});
     }, 30000);
@@ -139,6 +134,8 @@ async function getCaptureStatus(req, res) {
         imageUrl: capture.result?.imageUrl,
         thumbnailUrl: capture.result?.thumbnailUrl,
         analysis: capture.result?.analysis,
+        imageQuality: capture.result?.imageQuality,
+        sensors: capture.result?.analysis?.sensors,
       },
     });
   }
@@ -176,7 +173,6 @@ async function receiveImageFromESP(req, res) {
     let camera = null;
 
     if (directPoulaillerId && !deviceId) {
-      // Mode mobile : poulaillerId fourni directement
       if (!mongoose.isValidObjectId(directPoulaillerId))
         return res
           .status(400)
@@ -184,7 +180,6 @@ async function receiveImageFromESP(req, res) {
       poulaillerId = directPoulaillerId;
       camera = (await Camera.findOne({ poulailler: poulaillerId })) || null;
     } else {
-      // Mode ESP32 : résolution via adresse MAC
       if (!deviceId)
         return res
           .status(400)
@@ -216,12 +211,10 @@ async function receiveImageFromESP(req, res) {
     const imageSizeKb = Math.round(((b64Length * 3) / 4 - padding) / 1024);
 
     if (imageSizeKb < 3) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: `Image trop petite (${imageSizeKb} Ko)`,
-        });
+      return res.status(400).json({
+        success: false,
+        error: `Image trop petite (${imageSizeKb} Ko)`,
+      });
     }
 
     if (camera?._id) {
@@ -231,7 +224,6 @@ async function receiveImageFromESP(req, res) {
       });
     }
 
-    // ✅ FIX : le lock est posé ici, avant processImageAsync, et sera libéré dans son finally
     if (requestId) {
       const captureDoc = await CaptureRequest.findOne({ requestId });
       if (captureDoc) {
@@ -239,7 +231,6 @@ async function receiveImageFromESP(req, res) {
           { requestId },
           { status: "uploading" },
         );
-        // Lock posé uniquement si pas déjà actif
         if (!analysisLocks.has(poulaillerId)) {
           analysisLocks.add(poulaillerId);
         }
@@ -276,9 +267,7 @@ async function receiveImageFromESP(req, res) {
   }
 }
 
-// ─── Traitement asynchrone de l'image ─────────────────────────────────────
-// ✅ FIX : le lock est libéré dans le finally de cette fonction, qui représente
-//          le vrai fin du traitement (pas dans triggerCapture qui retourne immédiatement).
+// ─── Traitement asynchrone de l'image ──────────────────────────────────────
 
 async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
   try {
@@ -292,16 +281,16 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
     );
 
     const poulailler = await Poulailler.findById(poulaillerId);
-    const sensorData = {
-      temperature: poulailler?.lastMonitoring?.temperature ?? null,
-      humidity: poulailler?.lastMonitoring?.humidity ?? null,
-      airQualityPercent: poulailler?.lastMonitoring?.airQualityPercent ?? null,
-      waterLevel: poulailler?.lastMonitoring?.waterLevel ?? null,
-      animalCount: poulailler?.animalCount,
-      surface: poulailler?.surface,
-    };
 
-    // ✅ FIX : AI + Cloudinary en parallèle — gain de ~2-3s par analyse
+    // ✅ extractFreshSensors importé statiquement en haut du fichier
+    //    Vérifie lastMonitoring.timestamp — nullifie si > 10 min ou capteur déconnecté
+    const sensorData = extractFreshSensors(poulailler);
+
+    console.log(
+      "[AI] sensorData utilisé pour l'analyse:",
+      JSON.stringify(sensorData),
+    );
+
     const [aiResult, cloudImage] = await Promise.all([
       analyzeWithCloudflareAI(imageBase64, sensorData, poulailler?.thresholds),
       cloudinary.uploadImage(imageBase64, poulaillerId),
@@ -313,41 +302,32 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       captureRequestId: mongoose.isValidObjectId(requestId)
         ? new mongoose.Types.ObjectId(requestId)
         : null,
+      // ✅ sensors = sensorData extrait et validé (jamais de vieilles valeurs)
       sensors: sensorData,
       result: {
         healthScore: aiResult?.healthScore ?? null,
-        urgencyLevel: ["normal", "attention", "critique"].includes(
+        urgencyLevel: ["normal", "attention", "critique", "inconnu"].includes(
           aiResult?.urgencyLevel,
         )
           ? aiResult.urgencyLevel
-          : "normal",
+          : "inconnu",
         confidence: aiResult?.confidence ?? null,
         diagnostic: aiResult?.diagnostic ?? "",
         detections: {
-          behaviorNormal: aiResult?.detections?.behaviorNormal ?? true,
-          mortalityDetected: aiResult?.detections?.mortalityDetected ?? false,
-          densityOk: aiResult?.detections?.densityOk ?? true,
-          cleanEnvironment: aiResult?.detections?.cleanEnvironment ?? true,
+          behaviorNormal: aiResult?.detections?.behaviorNormal ?? null,
+          mortalityDetected: aiResult?.detections?.mortalityDetected ?? null,
+          densityOk: aiResult?.detections?.densityOk ?? null,
+          cleanEnvironment: aiResult?.detections?.cleanEnvironment ?? null,
           ventilationAdequate:
-            aiResult?.detections?.ventilationAdequate ?? true,
+            aiResult?.detections?.ventilationAdequate ?? null,
         },
         advices: Array.isArray(aiResult?.advices) ? aiResult.advices : [],
+        // ✅ sensors dans result aussi (pour le frontend qui lit result.sensors)
         sensors: sensorData,
+        imageAvailable: aiResult?.imageAvailable ?? false,
+        imageUsable: aiResult?.imageUsable ?? false,
       },
-      imageQuality: aiResult?.imageQuality?.status
-        ? {
-            status: ["pending", "processing", "optimized", "failed"].includes(
-              aiResult.imageQuality.status,
-            )
-              ? aiResult.imageQuality.status
-              : "pending",
-            score: aiResult.imageQuality.score ?? null,
-            width: aiResult.imageQuality.width ?? null,
-            height: aiResult.imageQuality.height ?? null,
-            format: aiResult.imageQuality.format ?? null,
-            sizeBytes: aiResult.imageQuality.sizeBytes ?? null,
-          }
-        : { status: "pending" },
+      imageQuality: aiResult?.imageQuality ?? { status: "poor" },
       image: {
         url: cloudImage?.url ?? null,
         thumbnailUrl: cloudImage?.thumbnailUrl ?? null,
@@ -365,6 +345,7 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
         result: {
           imageUrl: cloudImage?.url,
           thumbnailUrl: cloudImage?.thumbnailUrl,
+          imageQuality: aiResult?.imageQuality,
           analysis: {
             _id: analysis._id,
             healthScore: aiResult?.healthScore,
@@ -372,6 +353,10 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
             diagnostic: aiResult?.diagnostic,
             detections: aiResult?.detections,
             advices: aiResult?.advices,
+            // ✅ sensors dans le résultat de polling aussi
+            sensors: sensorData,
+            imageAvailable: aiResult?.imageAvailable,
+            imageUsable: aiResult?.imageUsable,
           },
         },
       },
@@ -379,7 +364,7 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
 
     if (
       aiResult?.urgencyLevel === "critique" ||
-      aiResult?.detections?.mortalityDetected
+      aiResult?.detections?.mortalityDetected === true
     ) {
       await Alert.create({
         poulailler: poulaillerId,
@@ -397,7 +382,6 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       { status: "failed", error: err.message },
     ).catch(() => {});
   } finally {
-    // ✅ FIX : libération du lock ici, à la vraie fin du traitement
     analysisLocks.delete(poulaillerId);
   }
 }
@@ -433,7 +417,6 @@ async function analyzePoultry(req, res) {
         req.body.imageBase64,
         camera,
       );
-      // processImageAsync libère le lock dans son finally
 
       const capture = await CaptureRequest.findOne({ requestId });
       if (capture?.status === "completed") {
@@ -509,7 +492,17 @@ async function getAnalysisStats(req, res) {
     if (analyses.length === 0)
       return res.json({ success: true, data: null, message: "Aucune donnée" });
 
-    const scores = analyses.map((a) => a.result.healthScore);
+    const scores = analyses
+      .map((a) => a.result.healthScore)
+      .filter((s) => s !== null && s !== undefined);
+
+    if (scores.length === 0)
+      return res.json({
+        success: true,
+        data: null,
+        message: "Aucun score disponible",
+      });
+
     const avgScore = Math.round(
       scores.reduce((a, b) => a + b, 0) / scores.length,
     );
@@ -558,8 +551,6 @@ async function chatWithVet(req, res) {
   if (error) return res.status(status).json({ success: false, error });
 
   try {
-    // ✅ FIX : on lit l'historique depuis la DB (source de vérité) plutôt que depuis req.body
-    //          pour ne pas perdre le contexte si le client redémarre.
     const chatDoc = await ChatHistory.findOne({
       poulaillerId,
       userId: req.user.id,
@@ -570,13 +561,16 @@ async function chatWithVet(req, res) {
       .sort({ createdAt: -1 })
       .select("result sensors createdAt");
 
+    // ✅ Capteurs frais pour le contexte du chat
+    const freshSensors = extractFreshSensors(poulailler);
+
     const context = {
       poulaillerName: poulailler.name,
       animalCount: poulailler.animalCount,
-      temperature: poulailler.lastMonitoring?.temperature ?? null,
-      humidity: poulailler.lastMonitoring?.humidity ?? null,
-      airQuality: poulailler.lastMonitoring?.airQualityPercent ?? null,
-      waterLevel: poulailler.lastMonitoring?.waterLevel ?? null,
+      temperature: freshSensors.temperature,
+      humidity: freshSensors.humidity,
+      airQuality: freshSensors.airQualityPercent,
+      waterLevel: freshSensors.waterLevel,
       lastScore: lastAnalysis?.result?.healthScore ?? null,
       lastUrgency: lastAnalysis?.result?.urgencyLevel ?? null,
       lastDiagnostic: lastAnalysis?.result?.diagnostic ?? null,

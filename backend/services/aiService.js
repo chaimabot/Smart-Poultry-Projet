@@ -19,10 +19,12 @@ const LLAVA_TIMEOUT = 10000;
 const LLAVA_MAX_KB = 24;
 const INTER_ANALYSIS_DELAY_MS = 5000;
 
-//   Seuils de qualité image (via analyse sharp)
 const IMAGE_MIN_BRIGHTNESS = 20;
 const IMAGE_MAX_BRIGHTNESS = 235;
 const IMAGE_MIN_VARIANCE = 80;
+
+// ✅ Fraîcheur capteurs : données ignorées si lastMonitoring.timestamp > 10 min
+const SENSOR_STALE_MS = 10 * 60 * 1000;
 
 const DEATH_KEYWORDS = [
   "décédé",
@@ -41,7 +43,6 @@ const DEATH_KEYWORDS = [
   "deceased",
 ];
 
-//   Stockage local des images en attente (utilisé par le cron)
 const pendingImages = new Map();
 
 // ─── Utilitaires base64 ─────────────────────────────────────────────────────
@@ -55,16 +56,25 @@ function getImageSizeKb(base64) {
   return Math.round((base64.length * 3) / 4 / 1024);
 }
 
-// ─── Fraîcheur capteurs ─────────────────────────────────────────────────────
-//   Utilise lastMonitoring.timestamp (champ réel du schéma Poulailler)
-// Retourne un objet sensorData avec null pour les champs si données obsolètes
+// ─── Guard valeur capteur ───────────────────────────────────────────────────
+// ✅ Rejette : null, undefined, NaN, Infinity, valeurs hors plage physique
+// ✅ waterLevel min=1 : 0 = capteur déconnecté, on l'ignore
 
-const SENSOR_STALE_MS = 10 * 60 * 1000; // 10 minutes
+function isValidSensorValue(value, min = 0, max = 100) {
+  if (value === null || value === undefined) return false;
+  const n = Number(value);
+  if (!isFinite(n) || isNaN(n)) return false;
+  if (n < min || n > max) return false;
+  return true;
+}
+
+// ─── Extraction capteurs frais ──────────────────────────────────────────────
+// ✅ Utilise lastMonitoring.timestamp (champ réel du schéma Poulailler)
+// ✅ Nullifie les valeurs hors plage physique (corrompues)
 
 function extractFreshSensors(poulailler) {
   const monitoring = poulailler?.lastMonitoring;
 
-  //   Vérifie lastMonitoring.timestamp (défini dans le schema Poulailler)
   const timestamp = monitoring?.timestamp
     ? new Date(monitoring.timestamp).getTime()
     : 0;
@@ -73,9 +83,9 @@ function extractFreshSensors(poulailler) {
 
   if (!isFresh) {
     console.log(
-      `[AI] Capteurs obsolètes ou absents (timestamp: ${
+      `[AI] Capteurs obsolètes/absents (timestamp: ${
         timestamp ? new Date(timestamp).toISOString() : "jamais"
-      }) — toutes les valeurs nullifiées`,
+      }) — toutes valeurs nullifiées`,
     );
     return {
       temperature: null,
@@ -87,15 +97,25 @@ function extractFreshSensors(poulailler) {
     };
   }
 
+  // Nullifie les valeurs hors plage physique (capteur défaillant)
+  const safeNumber = (val, min, max) => {
+    if (val === null || val === undefined) return null;
+    const n = Number(val);
+    if (!isFinite(n) || isNaN(n)) return null;
+    if (n < min || n > max) return null;
+    return n;
+  };
+
   console.log(
     `[AI] Capteurs frais ✓ (timestamp: ${new Date(timestamp).toISOString()})`,
   );
 
   return {
-    temperature: monitoring.temperature ?? null,
-    humidity: monitoring.humidity ?? null,
-    airQualityPercent: monitoring.airQualityPercent ?? null,
-    waterLevel: monitoring.waterLevel ?? null,
+    temperature: safeNumber(monitoring.temperature, -10, 60),
+    humidity: safeNumber(monitoring.humidity, 0, 100),
+    airQualityPercent: safeNumber(monitoring.airQualityPercent, 0, 100),
+    // ✅ min=1 : waterLevel=0 traité comme capteur déconnecté
+    waterLevel: safeNumber(monitoring.waterLevel, 1, 100),
     animalCount: poulailler?.animalCount ?? null,
     surface: poulailler?.surface ?? null,
   };
@@ -187,6 +207,7 @@ async function compressImage(base64) {
       console.log(`[AI] Image compressée OK : ${Math.round(kb)} Ko`);
       return compressed.toString("base64");
     }
+
     lastCompressed = compressed;
   }
 
@@ -196,22 +217,16 @@ async function compressImage(base64) {
   return lastCompressed.toString("base64");
 }
 
-// ─── Conseils capteurs — PROFESSIONNELS, sans valeurs brutes ───────────────
-//   N'affiche un conseil que si la donnée est non-null (fraîche)
-//   Aucune valeur numérique brute dans les textes
+// ─── Conseils capteurs ──────────────────────────────────────────────────────
+// ✅ Utilise isValidSensorValue — aucun conseil généré sans valeur valide
+// ✅ Aucune valeur numérique brute dans les textes
 
 function buildSensorAdvices(sensorData = {}) {
   const advices = [];
   const { temperature, humidity, airQualityPercent, waterLevel } = sensorData;
 
-  const hasAnySensor =
-    (temperature !== null && temperature !== undefined) ||
-    (humidity !== null && humidity !== undefined) ||
-    (airQualityPercent !== null && airQualityPercent !== undefined) ||
-    (waterLevel !== null && waterLevel !== undefined);
-
-  // ── Qualité de l'air ─────────────────────────────────────────────────────
-  if (airQualityPercent !== null && airQualityPercent !== undefined) {
+  // ── Qualité de l'air (0–100%) ────────────────────────────────────────────
+  if (isValidSensorValue(airQualityPercent, 0, 100)) {
     if (airQualityPercent < 20) {
       advices.push(
         "Ventilation insuffisante — augmentez immédiatement le débit d'air du poulailler.",
@@ -223,8 +238,8 @@ function buildSensorAdvices(sensorData = {}) {
     }
   }
 
-  // ── Température ──────────────────────────────────────────────────────────
-  if (temperature !== null && temperature !== undefined) {
+  // ── Température (−10 à 60°C) ─────────────────────────────────────────────
+  if (isValidSensorValue(temperature, -10, 60)) {
     if (temperature > 31) {
       advices.push(
         "Température excessive — activez le refroidissement et augmentez la ventilation en urgence.",
@@ -244,8 +259,8 @@ function buildSensorAdvices(sensorData = {}) {
     }
   }
 
-  // ── Humidité ─────────────────────────────────────────────────────────────
-  if (humidity !== null && humidity !== undefined) {
+  // ── Humidité (0–100%) ────────────────────────────────────────────────────
+  if (isValidSensorValue(humidity, 0, 100)) {
     if (humidity > 80) {
       advices.push(
         "Humidité excessive — risque bactérien élevé, améliorez la ventilation et changez la litière.",
@@ -257,8 +272,9 @@ function buildSensorAdvices(sensorData = {}) {
     }
   }
 
-  // ── Niveau d'eau ─────────────────────────────────────────────────────────
-  if (waterLevel !== null && waterLevel !== undefined) {
+  // ── Niveau d'eau (1–100%) ────────────────────────────────────────────────
+  // ✅ min=1 : exclut 0 et null — capteur déconnecté ou non initialisé
+  if (isValidSensorValue(waterLevel, 1, 100)) {
     if (waterLevel < 20) {
       advices.push(
         "Niveau d'abreuvement critique — remplissez les abreuvoirs immédiatement.",
@@ -270,14 +286,20 @@ function buildSensorAdvices(sensorData = {}) {
     }
   }
 
-  // ── Tout est normal avec données disponibles ─────────────────────────────
-  if (advices.length === 0 && hasAnySensor) {
+  // ── Au moins une donnée valide et tout est normal ─────────────────────────
+  const hasAnyValid =
+    isValidSensorValue(temperature, -10, 60) ||
+    isValidSensorValue(humidity, 0, 100) ||
+    isValidSensorValue(airQualityPercent, 0, 100) ||
+    isValidSensorValue(waterLevel, 1, 100);
+
+  if (advices.length === 0 && hasAnyValid) {
     advices.push(
       "Paramètres environnementaux dans les plages normales — maintenez la surveillance habituelle.",
     );
   }
 
-  // ── Aucune donnée capteur du tout ─────────────────────────────────────────
+  // ── Aucune donnée capteur valide du tout ─────────────────────────────────
   if (advices.length === 0) {
     advices.push(
       "Aucune donnée capteur disponible — vérifiez la connexion du module de surveillance.",
@@ -291,9 +313,8 @@ function buildSensorAdvices(sensorData = {}) {
 }
 
 // ─── Fallback capteurs uniquement ──────────────────────────────────────────
-//   detections toutes à null : non évaluées (pas de vision)
-//   Diagnostic professionnel sans valeurs brutes
-//   urgencyLevel = "inconnu" si aucune donnée capteur du tout
+// ✅ healthScore = null et urgencyLevel = "inconnu" si aucune donnée valide
+// ✅ detections toutes à null (pas de vision)
 
 function analyzeWithSensorsOnly(sensorData = {}) {
   const airQuality = sensorData.airQualityPercent ?? null;
@@ -301,14 +322,14 @@ function analyzeWithSensorsOnly(sensorData = {}) {
   const waterLevel = sensorData.waterLevel ?? null;
   const humidity = sensorData.humidity ?? null;
 
-  const hasAnySensor =
-    temperature !== null ||
-    humidity !== null ||
-    airQuality !== null ||
-    waterLevel !== null;
+  const hasAnyValid =
+    isValidSensorValue(temperature, -10, 60) ||
+    isValidSensorValue(humidity, 0, 100) ||
+    isValidSensorValue(airQuality, 0, 100) ||
+    isValidSensorValue(waterLevel, 1, 100);
 
-  // ── Si aucune donnée capteur : résultat indéterminé ──────────────────────
-  if (!hasAnySensor) {
+  // ── Aucune donnée valide ─────────────────────────────────────────────────
+  if (!hasAnyValid) {
     return {
       healthScore: null,
       urgencyLevel: "inconnu",
@@ -329,53 +350,57 @@ function analyzeWithSensorsOnly(sensorData = {}) {
     };
   }
 
-  // ── Calcul du score à partir des capteurs disponibles ────────────────────
+  // ── Calcul score ─────────────────────────────────────────────────────────
   let score = 85;
   let urgency = "normal";
   const issues = [];
 
-  if (airQuality !== null && airQuality < 20) {
-    score -= 40;
-    urgency = "critique";
-    issues.push("qualité d'air critique");
-  } else if (airQuality !== null && airQuality < 40) {
-    score -= 20;
-    if (urgency !== "critique") urgency = "attention";
-    issues.push("qualité d'air dégradée");
+  if (isValidSensorValue(airQuality, 0, 100)) {
+    if (airQuality < 20) {
+      score -= 40;
+      urgency = "critique";
+      issues.push("qualité d'air critique");
+    } else if (airQuality < 40) {
+      score -= 20;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("qualité d'air dégradée");
+    }
   }
 
-  if (temperature !== null && temperature > 31) {
-    score -= 20;
-    urgency = "critique";
-    issues.push("surchauffe détectée");
-  } else if (temperature !== null && temperature < 15) {
-    score -= 15;
-    if (urgency !== "critique") urgency = "attention";
-    issues.push("température trop basse");
+  if (isValidSensorValue(temperature, -10, 60)) {
+    if (temperature > 31) {
+      score -= 20;
+      urgency = "critique";
+      issues.push("surchauffe détectée");
+    } else if (temperature < 15) {
+      score -= 15;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("température trop basse");
+    }
   }
 
-  if (waterLevel !== null && waterLevel < 20) {
-    score -= 15;
-    if (urgency !== "critique") urgency = "attention";
-    issues.push("niveau d'abreuvement insuffisant");
+  if (isValidSensorValue(waterLevel, 1, 100)) {
+    if (waterLevel < 20) {
+      score -= 15;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("niveau d'abreuvement insuffisant");
+    }
   }
 
-  if (humidity !== null && humidity > 80) {
-    score -= 10;
-    if (urgency !== "critique") urgency = "attention";
-    issues.push("humidité excessive");
+  if (isValidSensorValue(humidity, 0, 100)) {
+    if (humidity > 80) {
+      score -= 10;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("humidité excessive");
+    }
   }
 
   score = Math.max(0, Math.min(100, score));
 
-  // ── Diagnostic professionnel ─────────────────────────────────────────────
-  let diagnostic;
-  if (issues.length > 0) {
-    diagnostic = `Anomalies environnementales détectées : ${issues.join(", ")}. Évaluation visuelle indisponible — image absente ou inexploitable.`;
-  } else {
-    diagnostic =
-      "Paramètres environnementaux dans les plages normales. Évaluation visuelle indisponible — relancez une analyse avec image.";
-  }
+  const diagnostic =
+    issues.length > 0
+      ? `Anomalies environnementales détectées : ${issues.join(", ")}. Évaluation visuelle indisponible — image absente ou inexploitable.`
+      : "Paramètres environnementaux dans les plages normales. Évaluation visuelle indisponible — relancez une analyse avec image.";
 
   return {
     healthScore: score,
@@ -396,7 +421,7 @@ function analyzeWithSensorsOnly(sensorData = {}) {
   };
 }
 
-// ─── Résultat pour image inexploitable ────────────────────────────────────
+// ─── Résultat pour image inexploitable ─────────────────────────────────────
 
 function buildPoorImageResult(sensorData = {}, reason = "image floue") {
   const sensorResult = analyzeWithSensorsOnly(sensorData);
@@ -423,8 +448,10 @@ CRITICAL RULES:
 - Sleeping or resting birds are NOT dead
 - urgencyLevel must be exactly one of: "normal" | "attention" | "critique"
 - All text in French. Diagnostic max 2 sentences. Be specific, not generic.
-- NEVER include raw sensor values in diagnostic or advices text.
-- Write advices as professional veterinary recommendations, not sensor readings.
+- NEVER include raw numeric sensor values in diagnostic or advices text.
+- Write advices as professional veterinary recommendations only.
+- Only generate an advice about water level if WaterLevel sensor value is explicitly provided (not N/A).
+- Only generate an advice about temperature if Temperature sensor value is explicitly provided (not N/A).
 
 Respond ONLY with this exact JSON format. No markdown, no text outside JSON:
 {
@@ -442,10 +469,10 @@ Respond ONLY with this exact JSON format. No markdown, no text outside JSON:
   "advices": ["conseil vétérinaire professionnel 1", "conseil 2", "conseil 3"]
 }
 
-If imageUsable=false, respond with:
+If imageUsable=false:
 {
-  "healthScore": <based only on sensors>,
-  "urgencyLevel": "<based only on sensors>",
+  "healthScore": <based only on available sensors>,
+  "urgencyLevel": "<based only on available sensors>",
   "imageUsable": false,
   "diagnostic": "Image inexploitable — <raison précise>. <diagnostic capteurs professionnel>.",
   "detections": {
@@ -455,14 +482,14 @@ If imageUsable=false, respond with:
     "cleanEnvironment": null,
     "ventilationAdequate": null
   },
-  "advices": ["conseil professionnel basé uniquement sur capteurs"]
+  "advices": ["conseil professionnel basé uniquement sur capteurs disponibles"]
 }
 
-Sensor readings:
-Temperature    = ${sensorData.temperature ?? "N/A"} °C   (normal: 18-28°C)
-Humidity       = ${sensorData.humidity ?? "N/A"} %       (normal: 40-70%)
-AirQuality     = ${sensorData.airQualityPercent ?? "N/A"} %   (critical if <20%)
-WaterLevel     = ${sensorData.waterLevel ?? "N/A"} %     (critical if <20%)
+Sensor readings (N/A means sensor not connected — DO NOT generate advice for N/A sensors):
+Temperature    = ${isValidSensorValue(sensorData.temperature, -10, 60) ? sensorData.temperature + " °C" : "N/A"}   (normal: 18-28°C)
+Humidity       = ${isValidSensorValue(sensorData.humidity, 0, 100) ? sensorData.humidity + " %" : "N/A"}           (normal: 40-70%)
+AirQuality     = ${isValidSensorValue(sensorData.airQualityPercent, 0, 100) ? sensorData.airQualityPercent + " %" : "N/A"}   (critical if <20%)
+WaterLevel     = ${isValidSensorValue(sensorData.waterLevel, 1, 100) ? sensorData.waterLevel + " %" : "N/A"}       (critical if <20%)
 AnimalCount    = ${sensorData.animalCount ?? "N/A"}
 Surface        = ${sensorData.surface ?? "N/A"} m²
 `.trim();
@@ -484,7 +511,8 @@ function buildSystemPrompt(context) {
 Réponds en français, de manière claire et concise (maximum 3 phrases).
 Réponds directement sans te présenter.
 Ne génère jamais de JSON ni de markdown.
-Ne mentionne jamais de valeurs numériques brutes des capteurs dans tes réponses — parle uniquement en termes qualitatifs (normal, élevé, bas, critique).
+Ne mentionne jamais de valeurs numériques brutes des capteurs — parle uniquement en termes qualitatifs (normal, élevé, bas, critique).
+Ne génère jamais de conseil sur un capteur dont la valeur est absente.
 
 POULAILLER : ${context.poulaillerName} — ${context.animalCount} volailles
 CAPTEURS : ${sensors || "Aucune donnée disponible"}
@@ -565,14 +593,17 @@ function parseAIResponse(text, sensorData = {}) {
     const waterLevel = sensorData.waterLevel ?? null;
 
     const sensorsNormal =
-      (temperature === null || (temperature >= 18 && temperature <= 28)) &&
-      (airQuality === null || airQuality >= 40) &&
-      (waterLevel === null || waterLevel >= 20);
+      (!isValidSensorValue(temperature, -10, 60) ||
+        (temperature >= 18 && temperature <= 28)) &&
+      (!isValidSensorValue(airQuality, 0, 100) || airQuality >= 40) &&
+      (!isValidSensorValue(waterLevel, 1, 100) || waterLevel >= 20);
 
-    const criticalSensors = airQuality !== null && airQuality < 20;
+    const criticalSensors =
+      isValidSensorValue(airQuality, 0, 100) && airQuality < 20;
     const warningSensors =
-      (temperature !== null && (temperature < 15 || temperature > 31)) ||
-      (waterLevel !== null && waterLevel < 20);
+      (isValidSensorValue(temperature, -10, 60) &&
+        (temperature < 15 || temperature > 31)) ||
+      (isValidSensorValue(waterLevel, 1, 100) && waterLevel < 20);
 
     let mortalityDetected = parsed.detections?.mortalityDetected ?? null;
     if (mortalityDetected === true && sensorsNormal) {
@@ -589,7 +620,8 @@ function parseAIResponse(text, sensorData = {}) {
     else if (warningSensors && urgencyLevel === "normal")
       urgencyLevel = "attention";
 
-    //   Utilise buildSensorAdvices si aucun conseil pertinent fourni par l'IA
+    // ✅ Advices de l'IA acceptées seulement si non vides
+    //    Sinon, on génère les conseils depuis les capteurs valides uniquement
     const aiAdvices =
       Array.isArray(parsed.advices) && parsed.advices.length > 0
         ? parsed.advices
@@ -689,6 +721,7 @@ async function analyzeWithCloudflareAI(
     const sizeKb = getImageSizeKb(compressed);
     console.log(`[AI] Taille image finale : ${sizeKb} Ko`);
 
+    // ── Tentative Gemma 3 ────────────────────────────────────────────────
     try {
       console.log("[AI] Tentative Gemma 3...");
       const result = await callGemma(compressed, sensorData);
@@ -708,6 +741,7 @@ async function analyzeWithCloudflareAI(
       console.warn("[AI] Gemma échoué :", err.message);
     }
 
+    // ── Fallback LLaVA ───────────────────────────────────────────────────
     if (sizeKb <= LLAVA_MAX_KB) {
       try {
         console.log("[AI] Tentative LLaVA...");
@@ -888,7 +922,7 @@ module.exports = {
   chatWithGemma,
   publishCaptureTrigger,
   handleCameraImage,
-  extractFreshSensors, //   exporté pour usage dans aiController + aiCronJob
+  extractFreshSensors,
   pendingImages,
   INTER_ANALYSIS_DELAY_MS,
 };
