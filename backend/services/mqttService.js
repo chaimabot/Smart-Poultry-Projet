@@ -374,12 +374,12 @@ const handleMqttMessage = async (topic, message) => {
 
     const poulaillerId = poulailler._id.toString();
 
-    // ── Mesures ───────────────────────────────────────────────────────────
     if (messageType === "measures") {
       await Measure.create({
         poulailler: poulailler._id,
         temperature: data.temperature ?? null,
         humidity: data.humidity ?? null,
+        airQualityPercent: data.airQualityPercent ?? null,
         co2: data.co2 ?? null,
         nh3: data.nh3 ?? null,
         waterLevel: data.waterLevel ?? null,
@@ -389,6 +389,9 @@ const handleMqttMessage = async (topic, message) => {
       poulailler.lastMonitoring = {
         temperature: data.temperature ?? poulailler.lastMonitoring?.temperature,
         humidity: data.humidity ?? poulailler.lastMonitoring?.humidity,
+        airQualityPercent:
+          data.airQualityPercent ??
+          poulailler.lastMonitoring?.airQualityPercent,
         co2: data.co2 ?? poulailler.lastMonitoring?.co2,
         nh3: data.nh3 ?? poulailler.lastMonitoring?.nh3,
         waterLevel: data.waterLevel ?? poulailler.lastMonitoring?.waterLevel,
