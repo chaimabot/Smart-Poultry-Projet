@@ -123,7 +123,7 @@ const connectMqtt = () => {
 
   if (!username || !password) {
     console.error(
-      "[MQTT] ❌ Credentials manquants (MQTT_USER ou MQTT_PASS vide)",
+      "[MQTT]   Credentials manquants (MQTT_USER ou MQTT_PASS vide)",
     );
     return null;
   }
@@ -163,7 +163,7 @@ const connectMqtt = () => {
   try {
     client = mqtt.connect(brokerUrl, options);
   } catch (err) {
-    console.error("[MQTT] ❌ Erreur création client:", err.message);
+    console.error("[MQTT]  Erreur création client:", err.message);
     isConnecting = false;
     scheduleReconnect();
     return null;
@@ -174,7 +174,7 @@ const connectMqtt = () => {
   client.on("connect", () => {
     isConnecting = false;
     connectionAttempt = 0;
-    console.log(`[MQTT] ✅ CONNECTÉ au broker ! (ClientId: ${clientId})`);
+    console.log(`[MQTT]  CONNECTÉ au broker ! (ClientId: ${clientId})`);
 
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
@@ -215,7 +215,7 @@ const connectMqtt = () => {
 
   client.on("error", (error) => {
     isConnecting = false;
-    console.error("[MQTT] ❌ Erreur:", error.message);
+    console.error("[MQTT]  Erreur:", error.message);
 
     if (error.code === "ECONNREFUSED") {
       console.error("[MQTT] → Connexion refusée — vérifiez le port et l'hôte");
@@ -253,16 +253,16 @@ const connectMqtt = () => {
   });
 
   client.on("offline", () => {
-    console.log("[MQTT] ⚠️ Client hors ligne");
+    console.log("[MQTT]   Client hors ligne");
   });
 
   client.on("reconnect", () => {
-    console.log("[MQTT] 🔄 Reconnexion auto...");
+    console.log("[MQTT]  Reconnexion auto...");
   });
 
   client.on("end", () => {
     isConnecting = false;
-    console.log("[MQTT] 🛑 Client terminé");
+    console.log("[MQTT]  Client terminé");
   });
 
   return client;
@@ -284,8 +284,6 @@ function scheduleReconnect() {
     connectMqtt();
   }, delay);
 }
-
-// ─── TRAITEMENT DES MESSAGES ──────────────────────────────────────────────────
 
 const handleMqttMessage = async (topic, message) => {
   try {
@@ -311,7 +309,6 @@ const handleMqttMessage = async (topic, message) => {
       const mac = data.mac || data.macAddress || data.deviceId;
       if (!mac) return;
 
-      // Tente de mettre à jour Module en premier, puis Camera
       const updatedModule = await Module.findOneAndUpdate(
         { macAddress: mac },
         { lastPing: new Date() },
@@ -336,7 +333,6 @@ const handleMqttMessage = async (topic, message) => {
         return;
       }
 
-      // Met à jour lastPing de la caméra
       const Camera = require("../models/Camera");
       await Camera.findOneAndUpdate(
         { macAddress },
@@ -357,7 +353,7 @@ const handleMqttMessage = async (topic, message) => {
       );
 
       console.log(
-        `[MQTT] ✅ Image traitée: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
+        `[MQTT]   Image traitée: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
       );
       return;
     }
@@ -374,7 +370,18 @@ const handleMqttMessage = async (topic, message) => {
 
     const poulaillerId = poulailler._id.toString();
 
+    // ════════════════════════════════════════════════════════════════════════
+    // ── MEASURES (données capteurs) ─────────────────────────────────────────
+    // ════════════════════════════════════════════════════════════════════════
     if (messageType === "measures") {
+      console.log(`[MQTT MEASURES] ${macAddress}:`, {
+        temp: data.temperature,
+        hum: data.humidity,
+        air: data.airQualityPercent,
+        water: data.waterLevel,
+      });
+
+      // 1. Sauvegarde mesure historique
       await Measure.create({
         poulailler: poulailler._id,
         temperature: data.temperature ?? null,
@@ -386,6 +393,7 @@ const handleMqttMessage = async (topic, message) => {
         timestamp: new Date(),
       });
 
+      // 2. Mise à jour lastMonitoring
       poulailler.lastMonitoring = {
         temperature: data.temperature ?? poulailler.lastMonitoring?.temperature,
         humidity: data.humidity ?? poulailler.lastMonitoring?.humidity,
@@ -398,6 +406,7 @@ const handleMqttMessage = async (topic, message) => {
         timestamp: new Date(),
       };
 
+      // 3. Update module status
       await Module.findOneAndUpdate(
         { macAddress },
         { lastPing: new Date(), status: "associated" },
@@ -405,24 +414,59 @@ const handleMqttMessage = async (topic, message) => {
       if (poulailler.status !== "connecte") poulailler.status = "connecte";
       await poulailler.save();
 
+      // 4. Vérifier seuils et créer alertes
       await checkSensorThresholds(poulaillerId, data, poulailler.thresholds);
       await resolveNormalValues(poulaillerId, data, poulailler.thresholds);
+
+      //   5. NOUVEAU : Évaluer les contrôles AUTO et envoyer les commandes
+      try {
+        const { evaluateAutoControls } = require("./autoControlService");
+        await evaluateAutoControls(poulailler, macAddress, client);
+      } catch (autoErr) {
+        console.error("[AUTO] Erreur évaluation:", autoErr.message);
+        console.error(autoErr.stack);
+      }
+
       return;
     }
 
-    // ── Status ────────────────────────────────────────────────────────────
     if (messageType === "status") {
-      if (data.fanOn !== undefined)
-        poulailler.actuatorStates.ventilation.status = data.fanOn
-          ? "on"
-          : "off";
-      if (data.lampOn !== undefined)
-        poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
-      if (data.pumpOn !== undefined)
-        poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
+      console.log(`[MQTT STATUS] ${macAddress}:`, {
+        fan: data.fanOn,
+        lamp: data.lampOn,
+        pump: data.pumpOn,
+        door: data.doorState,
+      });
 
+      // ── Synchronisation des états réels depuis l'ESP32 ──────────────────
+      //   Ne pas écraser si en mode AUTO (le serveur a déjà décidé)
+      if (data.fanOn !== undefined) {
+        const fanMode = poulailler.actuatorStates.ventilation?.mode;
+        if (fanMode !== "auto") {
+          poulailler.actuatorStates.ventilation.status = data.fanOn
+            ? "on"
+            : "off";
+        }
+      }
+
+      if (data.lampOn !== undefined) {
+        const lampMode = poulailler.actuatorStates.lamp?.mode;
+        if (lampMode !== "auto") {
+          poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
+        }
+      }
+
+      if (data.pumpOn !== undefined) {
+        const pumpMode = poulailler.actuatorStates.pump?.mode;
+        if (pumpMode !== "auto") {
+          poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
+        }
+      }
+
+      // ── Envoi de la config à l'ESP32 (seuils) ───────────────────────────
       publishConfig(macAddress, poulailler);
 
+      // ── Gestion de la porte ─────────────────────────────────────────────
       if (data.doorState !== undefined) {
         const doorStateMap = {
           OPEN: "open",
@@ -455,10 +499,19 @@ const handleMqttMessage = async (topic, message) => {
       }
 
       await poulailler.save();
+
+      try {
+        const { evaluateAutoControls } = require("./autoControlService");
+        await evaluateAutoControls(poulailler, macAddress, client);
+      } catch (autoErr) {
+        console.error("[AUTO STATUS] Erreur:", autoErr.message);
+      }
+
       return;
     }
   } catch (error) {
     console.error("[MQTT] handleMessage ERROR:", error.message);
+    console.error(error.stack);
   }
 };
 
@@ -489,11 +542,11 @@ const publishCameraCommand = async (poulaillerId, requestId) => {
 
   const connected = await ensureConnected(10000);
   if (!connected) {
-    console.error("[MQTT] ❌ Impossible de se connecter au broker");
+    console.error("[MQTT]   Impossible de se connecter au broker");
     return false;
   }
 
-  // ✅ CORRECTION : cherche la MAC de la caméra en priorité
+  //     cherche la MAC de la caméra en priorité
   const macAddress = await resolveCameraMacByPoulaillerId(poulaillerId);
   if (!macAddress) {
     console.error(`[MQTT] Aucune MAC caméra pour poulailler ${poulaillerId}`);
@@ -518,7 +571,7 @@ const publishCameraCommand = async (poulaillerId, requestId) => {
         console.error("[MQTT] Erreur publish:", err.message);
         resolve(false);
       } else {
-        console.log(`[MQTT] ✅ Commande envoyée (rid=${requestId})`);
+        console.log(`[MQTT]   Commande envoyée (rid=${requestId})`);
         resolve(true);
       }
     });
