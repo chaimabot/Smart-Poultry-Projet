@@ -53,7 +53,7 @@ const handleControlPorte = async (req, res) => {
             error: e.message,
           });
         }
-      }, 5000);
+      }, 7000);
     }
 
     console.log("[PORTE][API] Commande envoyee avec succes", {
