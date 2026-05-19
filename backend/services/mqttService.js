@@ -721,4 +721,7 @@ module.exports = {
   stopDoorMonitoring,
   startDoorClockSync,
   stopDoorClockSync,
+  // ✅ Exporté pour pompeService (arrêt forcé + anti-override)
+  markManualCommand,
+  hasRecentManualCommand,
 };
