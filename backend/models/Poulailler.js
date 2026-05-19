@@ -75,14 +75,24 @@ const poulaillerSchema = new mongoose.Schema(
       ventilation: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
+        // ✅ NOUVEAU : Raison de la dernière décision AUTO
+        lastAutoReason: { type: String, default: "" },
+        // ✅ NOUVEAU : Date du dernier changement AUTO
+        lastAutoChange: { type: Date, default: null },
       },
       lamp: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "manual" },
+        // ✅ NOUVEAU
+        lastAutoReason: { type: String, default: "" },
+        lastAutoChange: { type: Date, default: null },
       },
       pump: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
+        // ✅ NOUVEAU
+        lastAutoReason: { type: String, default: "" },
+        lastAutoChange: { type: Date, default: null },
       },
     },
     lastMonitoring: {
