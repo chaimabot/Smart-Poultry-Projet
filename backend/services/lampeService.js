@@ -99,6 +99,11 @@ async function updateLampe(id, mode, action) {
   return poulailler;
 }
 
+// ✅ Compatibilité : ancien controller utilise sendLampCommand
+// Ce projet a une seule fonction métier updateLampe.
+const sendLampCommand = updateLampe;
+
 module.exports = {
   updateLampe,
+  sendLampCommand,
 };
