@@ -311,6 +311,7 @@ const handleMqttMessage = async (topic, message) => {
       const mac = data.mac || data.macAddress || data.deviceId;
       if (!mac) return;
 
+      // Tente de mettre à jour Module en premier, puis Camera
       const updatedModule = await Module.findOneAndUpdate(
         { macAddress: mac },
         { lastPing: new Date() },
@@ -335,6 +336,7 @@ const handleMqttMessage = async (topic, message) => {
         return;
       }
 
+      // Met à jour lastPing de la caméra
       const Camera = require("../models/Camera");
       await Camera.findOneAndUpdate(
         { macAddress },
@@ -355,7 +357,7 @@ const handleMqttMessage = async (topic, message) => {
       );
 
       console.log(
-        `[MQTT]  Image traitée: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
+        `[MQTT] ✅ Image traitée: ${poulailler._id} (${Math.round(imageBase64.length / 1024)}Ko)`,
       );
       return;
     }
@@ -373,14 +375,6 @@ const handleMqttMessage = async (topic, message) => {
     const poulaillerId = poulailler._id.toString();
 
     if (messageType === "measures") {
-      console.log(`[MQTT MEASURES] ${macAddress}:`, {
-        temp: data.temperature,
-        hum: data.humidity,
-        air: data.airQualityPercent,
-        water: data.waterLevel,
-      });
-
-      // 1. Sauvegarde mesure historique
       await Measure.create({
         poulailler: poulailler._id,
         temperature: data.temperature ?? null,
@@ -392,7 +386,6 @@ const handleMqttMessage = async (topic, message) => {
         timestamp: new Date(),
       });
 
-      // 2. Mise à jour lastMonitoring
       poulailler.lastMonitoring = {
         temperature: data.temperature ?? poulailler.lastMonitoring?.temperature,
         humidity: data.humidity ?? poulailler.lastMonitoring?.humidity,
@@ -405,7 +398,6 @@ const handleMqttMessage = async (topic, message) => {
         timestamp: new Date(),
       };
 
-      // 3. Update module status
       await Module.findOneAndUpdate(
         { macAddress },
         { lastPing: new Date(), status: "associated" },
@@ -413,51 +405,21 @@ const handleMqttMessage = async (topic, message) => {
       if (poulailler.status !== "connecte") poulailler.status = "connecte";
       await poulailler.save();
 
-      // 4. Vérifier seuils et créer alertes
       await checkSensorThresholds(poulaillerId, data, poulailler.thresholds);
       await resolveNormalValues(poulaillerId, data, poulailler.thresholds);
-
-      try {
-        const { evaluateAutoControls } = require("./autoControlService");
-        await evaluateAutoControls(poulailler, macAddress, client);
-      } catch (autoErr) {
-        console.error("[AUTO] Erreur évaluation:", autoErr.message);
-        console.error(autoErr.stack);
-      }
-
       return;
     }
 
+    // ── Status ────────────────────────────────────────────────────────────
     if (messageType === "status") {
-      console.log(`[MQTT STATUS] ${macAddress}:`, {
-        fan: data.fanOn,
-        lamp: data.lampOn,
-        pump: data.pumpOn,
-        door: data.doorState,
-      });
-
-      if (data.fanOn !== undefined) {
-        const fanMode = poulailler.actuatorStates.ventilation?.mode;
-        if (fanMode !== "auto") {
-          poulailler.actuatorStates.ventilation.status = data.fanOn
-            ? "on"
-            : "off";
-        }
-      }
-
-      if (data.lampOn !== undefined) {
-        const lampMode = poulailler.actuatorStates.lamp?.mode;
-        if (lampMode !== "auto") {
-          poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
-        }
-      }
-
-      if (data.pumpOn !== undefined) {
-        const pumpMode = poulailler.actuatorStates.pump?.mode;
-        if (pumpMode !== "auto") {
-          poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
-        }
-      }
+      if (data.fanOn !== undefined)
+        poulailler.actuatorStates.ventilation.status = data.fanOn
+          ? "on"
+          : "off";
+      if (data.lampOn !== undefined)
+        poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
+      if (data.pumpOn !== undefined)
+        poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
 
       publishConfig(macAddress, poulailler);
 
@@ -493,19 +455,10 @@ const handleMqttMessage = async (topic, message) => {
       }
 
       await poulailler.save();
-
-      try {
-        const { evaluateAutoControls } = require("./autoControlService");
-        await evaluateAutoControls(poulailler, macAddress, client);
-      } catch (autoErr) {
-        console.error("[AUTO STATUS] Erreur:", autoErr.message);
-      }
-
       return;
     }
   } catch (error) {
     console.error("[MQTT] handleMessage ERROR:", error.message);
-    console.error(error.stack);
   }
 };
 
