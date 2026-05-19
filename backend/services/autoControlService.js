@@ -57,10 +57,10 @@ function shouldLampBeOn(measures, thresholds) {
       ? Number(thresholds.temperatureMin)
       : null;
 
-  if (temp !== null && tempMin !== null && temp < tempMin)
+  if (temp !== null && tempMin !== null && temp <= tempMin)
     return {
       shouldBeOn: true,
-      reason: `Température < ${tempMin}°C (${temp}°C)`,
+      reason: `Température <= ${tempMin}°C (${temp}°C)`,
     };
 
   return { shouldBeOn: false, reason: "Conditions normales" };
@@ -142,7 +142,9 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
       const topic = `poulailler/${macAddress}/cmd/${type}`;
       const payload = JSON.stringify({ on, mode: "auto" });
 
-      console.log(`[AUTO ${type.toUpperCase()}] 📤 Publish: ${topic} → ${payload}`);
+      console.log(
+        `[AUTO ${type.toUpperCase()}] 📤 Publish: ${topic} → ${payload}`,
+      );
 
       mqttClient.publish(topic, payload, { qos: 1 }, (err) => {
         if (err) {
@@ -175,7 +177,9 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
     );
 
     //   1 : Sauvegarder la raison TOUJOURS (même sans changement)
-    if (poulailler.actuatorStates.ventilation.lastAutoReason !== result.reason) {
+    if (
+      poulailler.actuatorStates.ventilation.lastAutoReason !== result.reason
+    ) {
       poulailler.actuatorStates.ventilation.lastAutoReason = result.reason;
       reasonChanged = true;
     }
@@ -247,7 +251,9 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
           : "off";
         poulailler.actuatorStates.pump.lastAutoChange = new Date();
         stateChanged = true;
-        console.log(`[AUTO PUMP] ✅ État sauvegardé: ${result.shouldBeOn ? "ON" : "OFF"}`);
+        console.log(
+          `[AUTO PUMP] ✅ État sauvegardé: ${result.shouldBeOn ? "ON" : "OFF"}`,
+        );
       } else {
         console.error(`[AUTO PUMP] ❌ Échec envoi MQTT`);
       }
