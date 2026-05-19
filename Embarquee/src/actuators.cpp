@@ -1,4 +1,5 @@
 #include "actuators.h"
+#include "config.h"
 #include <Preferences.h>
 
 // =========================================================
@@ -72,32 +73,50 @@ const char* actuators_doorStateName(DoorState s) {
 }
 
 // =========================================================
-//  Init hardware - CORRIGÉ (Pas de mouvement au démarrage)
+//  Init hardware
 // =========================================================
 void actuators_init() {
-  // Relais
+  // --- Relais ---
   pinMode(PIN_PUMP,        OUTPUT);
   pinMode(PIN_VENTILATEUR, OUTPUT);
   pinMode(PIN_LAMPE,       OUTPUT);
-  digitalWrite(PIN_PUMP,        HIGH); 
-  digitalWrite(PIN_VENTILATEUR, HIGH); 
-  digitalWrite(PIN_LAMPE,       LOW);  
+  // Relais actif-bas : HIGH = OFF
+  digitalWrite(PIN_PUMP,        HIGH);
+  digitalWrite(PIN_VENTILATEUR, HIGH);
+  // Lampe actif-haut : LOW = OFF
+  digitalWrite(PIN_LAMPE,       LOW);
 
-  // Fins de course
+  // --- Fins de course ---
   pinMode(PIN_SWITCH_OPEN,  INPUT_PULLUP);
   pinMode(PIN_SWITCH_CLOSE, INPUT_PULLUP);
 
-  // Moteur
+  // --- Moteur ---
   pinMode(PIN_MOTOR_IN1, OUTPUT);
   pinMode(PIN_MOTOR_IN2, OUTPUT);
   pinMode(PIN_MOTOR_IN3, OUTPUT);
   pinMode(PIN_MOTOR_IN4, OUTPUT);
   stepper_off();
 
-  // Planning depuis Flash NVS
+  _th.tempMin          = DEFAULT_TEMP_MIN;
+  _th.tempMax          = DEFAULT_TEMP_MAX;
+  _th.waterMin         = DEFAULT_WATER_MIN;
+  _th.waterHysteresis  = DEFAULT_WATER_HYSTERESIS;
+  _th.airQualityMin    = DEFAULT_AIR_QUALITY_MIN;
+
+  Serial.printf("[ACTUATORS] Seuils par defaut : Temp[%.1f-%.1f]C | Eau>%.1f%% | Air>%.1f%%\n",
+    _th.tempMin, _th.tempMax, _th.waterMin, _th.airQualityMin);
+
+  _state.fanOn    = false;
+  _state.lampOn   = false;
+  _state.pumpOn   = false;
+  _state.fanAuto  = false;
+  _state.lampAuto = false;
+  _state.pumpAuto = false;
+
+  // --- Planning depuis Flash NVS ---
   actuators_loadSched();
 
-  // --- LOGIQUE DE DÉMARRAGE CORRIGÉE ---
+  // --- Position porte au démarrage (sans mouvement) ---
   if (switch_isOpen()) {
     _state.doorState = DOOR_OPEN;
     Serial.println("[DOOR] Demarrage : porte detectee OUVERTE");
@@ -105,10 +124,8 @@ void actuators_init() {
     _state.doorState = DOOR_CLOSED;
     Serial.println("[DOOR] Demarrage : porte detectee FERMEE");
   } else {
-    // On reste immobile même si la position est inconnue
     _state.doorState = DOOR_UNKNOWN;
-    Serial.println("[DOOR] Demarrage : position INCONNUE (Attente commande)");
-    // La ligne actuators_moveDoor(false); a été supprimée pour éviter l'ouverture/fermeture directe.
+    Serial.println("[DOOR] Demarrage : position INCONNUE (attente commande)");
   }
 
   Serial.println("[ACTUATORS] Initialise.");
@@ -164,12 +181,12 @@ void actuators_moveDoor(bool open) {
     Serial.println("[DOOR] FERMER ignoree : deja fermee");
     return;
   }
-  if (open  && _state.doorState == DOOR_OPENING) return;
+  if ( open && _state.doorState == DOOR_OPENING) return;
   if (!open && _state.doorState == DOOR_CLOSING) return;
 
   _state.doorState = open ? DOOR_OPENING : DOOR_CLOSING;
   _doorMoveStart   = millis();
-  _lastStepTime    = 0; 
+  _lastStepTime    = 0;
   Serial.printf("[DOOR] Commande : %s\n", open ? "OUVRIR" : "FERMER");
 }
 
@@ -182,13 +199,13 @@ void actuators_doorLoop() {
   if (_state.doorState == DOOR_OPENING && atOpen) {
     stepper_off();
     _state.doorState = DOOR_OPEN;
-    Serial.println("[DOOR] *** Porte OUVERTE (Fin de course) ***");
+    Serial.println("[DOOR] *** Porte OUVERTE (fin de course) ***");
     return;
   }
   if (_state.doorState == DOOR_CLOSING && atClose) {
     stepper_off();
     _state.doorState = DOOR_CLOSED;
-    Serial.println("[DOOR] *** Porte FERMEE (Fin de course) ***");
+    Serial.println("[DOOR] *** Porte FERMEE (fin de course) ***");
     return;
   }
 
@@ -210,7 +227,12 @@ void actuators_doorLoop() {
   }
 }
 
+// =========================================================
+//  Tick automatismes (appelé toutes les 5s)
+// =========================================================
 void actuators_tick(float temp, float water, float airQuality) {
+
+  // --- Planning porte ---
   if (_doorSched.active && _currentH != -1) {
     if (_currentH == _doorSched.openH && _currentM == _doorSched.openM) {
       if (_lastOpenTriggeredM != _currentM) {
@@ -229,20 +251,6 @@ void actuators_tick(float temp, float water, float airQuality) {
       }
     }
   }
-
-  // Automatismes relais
-  if (_state.lampAuto) {
-    if      (temp < _th.tempMin) actuators_setLamp(true);
-    else if (temp > _th.tempMax) actuators_setLamp(false);
-  }
-  if (_state.fanAuto) {
-    if (temp > _th.tempMax || airQuality < _th.airQualityMin)actuators_setFan(true);
-    else                                      actuators_setFan(false);
-  }
-  if (_state.pumpAuto) {
-    if      (water < _th.waterMin && !_state.pumpOn) actuators_setPump(true);
-    else if (water > (_th.waterMin + _th.waterHysteresis) && _state.pumpOn) actuators_setPump(false);
-  }
 }
 
 // =========================================================
@@ -250,18 +258,18 @@ void actuators_tick(float temp, float water, float airQuality) {
 // =========================================================
 void actuators_setLamp(bool on) {
   _state.lampOn = on;
-  digitalWrite(PIN_LAMPE, on ? HIGH : LOW);
+  digitalWrite(PIN_LAMPE, on ? HIGH : LOW); // Actif-haut
 }
 void actuators_setLampAuto(bool autoMode) { _state.lampAuto = autoMode; }
 
 void actuators_setPump(bool on) {
   _state.pumpOn = on;
-  digitalWrite(PIN_PUMP, on ? LOW : HIGH);
+  digitalWrite(PIN_PUMP, on ? LOW : HIGH);  // Actif-bas
 }
 void actuators_setPumpAuto(bool autoMode) { _state.pumpAuto = autoMode; }
 
 void actuators_setFan(bool on) {
   _state.fanOn = on;
-  digitalWrite(PIN_VENTILATEUR, on ? LOW : HIGH);
+  digitalWrite(PIN_VENTILATEUR, on ? LOW : HIGH); // Actif-bas
 }
 void actuators_setFanAuto(bool autoMode) { _state.fanAuto = autoMode; }

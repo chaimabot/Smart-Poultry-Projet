@@ -1,309 +1,201 @@
 // hooks/useAIAnalysis.js
-// ─────────────────────────────────────────────────────────────────────────────
-// Hook React Native — Smart Poultry
-// Utilise services/ai.js (même pattern que services/poultry.js)
-// ─────────────────────────────────────────────────────────────────────────────
+import { useState, useCallback } from "react";
+import api from "../services/api";
 
-import { useState, useCallback, useRef } from "react";
-import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system";
-
-import {
-  sendImageToBackend,
-  analyzePoultry,
-  getLatestAnalysis,
-  getAnalysisHistory,
-  getAnalysisStats,
-  chatWithVet,
-} from "../services/aiAnalysis";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HELPERS
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function uriToBase64(uri) {
-  return FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-}
-
-function mapUrgency(level) {
-  if (level === "critique") return "danger";
-  if (level === "attention") return "warn";
-  return "ok";
-}
-
-function mapBadge(level) {
-  if (level === "critique") return "CRITIQUE";
-  if (level === "attention") return "ATTENTION";
-  return "NORMAL";
-}
-
-function fmtTime(iso) {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleTimeString("fr-FR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-// Transforme un document AiAnalysis (MongoDB) en objet attendu par les écrans
-export function formatAnalysis(doc) {
-  if (!doc) return null;
-
-  const result = doc.result ?? {};
-  const sensors = doc.sensors ?? {};
-
-  return {
-    id: doc._id,
-    poulaillerId: doc.poulaillerId,
-    triggeredBy: doc.triggeredBy,
-    createdAt: doc.createdAt,
-    time: fmtTime(doc.createdAt),
-
-    healthScore: result.healthScore ?? 0,
-    urgencyLevel: result.urgencyLevel ?? "normal",
-    status: mapUrgency(result.urgencyLevel),
-    badge: mapBadge(result.urgencyLevel),
-
-    diagnostic: result.diagnostic ?? "",
-    advices: result.advices ?? [],
-    confidence: result.confidence ?? 100,
-
-    detections: {
-      mortalityDetected: result.detections?.mortalityDetected ?? false,
-      behaviorNormal: result.detections?.behaviorNormal ?? true,
-      densityOk: result.detections?.densityOk ?? true,
-      cleanEnvironment: result.detections?.cleanEnvironment ?? true,
-      ventilationAdequate: result.detections?.ventilationAdequate ?? true,
-    },
-
-    // Capteurs enrichis pour AIDetailScreen
-    sensors: {
-      temperature: {
-        value: sensors.temperature ?? "--",
-        ok: sensors.temperature >= 18 && sensors.temperature <= 28,
-        status:
-          sensors.temperature > 28
-            ? "Élevée"
-            : sensors.temperature < 18
-              ? "Basse"
-              : "Normale",
-      },
-      humidity: {
-        value: sensors.humidity ?? "--",
-        ok: sensors.humidity >= 40 && sensors.humidity <= 70,
-        status:
-          sensors.humidity > 70
-            ? "Élevée"
-            : sensors.humidity < 40
-              ? "Basse"
-              : "Normale",
-      },
-      airQuality: {
-        value: sensors.airQualityPercent ?? "--",
-        ok: sensors.airQualityPercent >= 40,
-        status:
-          sensors.airQualityPercent < 20
-            ? "Critique"
-            : sensors.airQualityPercent < 40
-              ? "Faible"
-              : "Bonne",
-      },
-      waterLevel: {
-        value: sensors.waterLevel ?? "--",
-        ok: sensors.waterLevel >= 20,
-        status:
-          sensors.waterLevel < 20
-            ? "Insuffisant"
-            : sensors.waterLevel < 40
-              ? "Faible"
-              : "Suffisant",
-      },
-    },
-
-    imageQuality: {
-      sizeKb: doc.imageQuality?.sizeKb ?? 0,
-      status: doc.imageQuality?.status ?? "poor",
-      clarity: (doc.imageQuality?.sizeKb ?? 0) > 10 ? 85 : 60,
-    },
-
-    model: {
-      name: "Gemma 3 12B",
-      platform: "Cloudflare AI",
-      fallback: "LLaVA 1.5",
-      version: "gemma-3-12b-it",
-    },
-    processingTime: null,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HOOK PRINCIPAL
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function useAIAnalysis(poultryId) {
+export function useAIAnalysis(poulaillerId) {
   const [analyzing, setAnalyzing] = useState(false);
-  const [chatLoading, setChatLoading] = useState(false);
+  const [capturing, setCapturing] = useState(false);
   const [latestResult, setLatestResult] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [stats, setStats] = useState(null);
-  const [error, setError] = useState(null);
+  const [chatLoading, setChatLoading] = useState(false);
 
-  // Evite les doubles appels si analyze est déjà en cours
-  const lockRef = useRef(false);
+  // ── Capture + analyse via ESP32CAM (MQTT + polling) ─────────────────────
+  // ✅ FIX : /ai/capture retourne { requestId } pour polling,
+  //          PAS imageBase64 directement. On poll /ai/capture-status/:requestId.
+  const captureFromCamera = useCallback(
+    async ({ onStatusUpdate } = {}) => {
+      if (!poulaillerId) throw new Error("ID poulailler requis");
 
-  // ── Capture photo ──────────────────────────────────────────────────────────
-  const captureImage = useCallback(async (source = "camera") => {
-    if (source === "camera") {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== "granted") throw new Error("Permission caméra refusée");
-    } else {
-      const { status } =
-        await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== "granted") throw new Error("Permission galerie refusée");
-    }
-
-    const options = {
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-      base64: false,
-      allowsEditing: false,
-    };
-
-    const result =
-      source === "camera"
-        ? await ImagePicker.launchCameraAsync(options)
-        : await ImagePicker.launchImageLibraryAsync(options);
-
-    if (result.canceled || !result.assets?.[0]?.uri) return null;
-    return result.assets[0].uri;
-  }, []);
-
-  // ── Lancer une analyse IA ──────────────────────────────────────────────────
-  const analyze = useCallback(
-    async (imageUri) => {
-      if (!poultryId) throw new Error("poultryId manquant");
-      if (lockRef.current) throw new Error("Analyse déjà en cours");
-
-      lockRef.current = true;
-      setAnalyzing(true);
-      setError(null);
-
+      setCapturing(true);
       try {
-        // 1. Conversion URI → base64
-        const base64 = await uriToBase64(imageUri);
-
-        // 2. Envoi image (même endpoint que l'ESP32)
-        await sendImageToBackend(poultryId, base64);
-
-        // 3. Déclenchement analyse (trigger MQTT + attente résultat)
-        const response = await analyzePoultry(poultryId, "manual");
-
-        if (!response?.success) {
-          throw { error: response?.error || "Erreur analyse IA" };
+        // 1. Déclencher la capture MQTT
+        const triggerRes = await api.post(`/ai/capture/${poulaillerId}`);
+        if (!triggerRes.data?.success) {
+          throw new Error(
+            triggerRes.data?.error || "Erreur déclenchement capture",
+          );
         }
 
-        const formatted = formatAnalysis(response.data);
-        setLatestResult(formatted);
-        return formatted;
-      } catch (err) {
-        const msg = err?.error || err?.message || "Erreur inconnue";
-        setError(msg);
-        throw { error: msg };
+        const { requestId } = triggerRes.data.data;
+        if (!requestId) throw new Error("Aucun requestId reçu du serveur");
+
+        onStatusUpdate?.("capturing");
+
+        // 2. Polling toutes les 2s jusqu'à completed ou failed (max 90s)
+        const result = await new Promise((resolve, reject) => {
+          const start = Date.now();
+          const TIMEOUT_MS = 90_000;
+
+          const interval = setInterval(async () => {
+            try {
+              if (Date.now() - start > TIMEOUT_MS) {
+                clearInterval(interval);
+                return reject(
+                  new Error("Timeout — ESP32CAM n'a pas répondu (90s)"),
+                );
+              }
+
+              const statusRes = await api.get(
+                `/ai/capture-status/${requestId}`,
+              );
+              const data = statusRes.data?.data;
+
+              if (!data) return;
+
+              onStatusUpdate?.(data.status);
+
+              if (data.status === "completed") {
+                clearInterval(interval);
+                resolve(data);
+              } else if (data.status === "failed") {
+                clearInterval(interval);
+                reject(new Error(statusRes.data?.error || "Capture échouée"));
+              }
+              // pending / capturing / uploading / analyzing → on continue
+            } catch (pollErr) {
+              if (pollErr.response?.status === 404) {
+                clearInterval(interval);
+                reject(new Error("Session expirée. Relancez l'analyse."));
+              }
+              // Erreur réseau passagère → on continue
+            }
+          }, 2000);
+        });
+
+        return result; // { status, imageUrl, thumbnailUrl, analysis }
       } finally {
-        setAnalyzing(false);
-        lockRef.current = false;
+        setCapturing(false);
       }
     },
-    [poultryId],
+    [poulaillerId],
   );
 
-  // ── Dernière analyse ───────────────────────────────────────────────────────
-  const fetchLatest = useCallback(async () => {
-    if (!poultryId) return;
-    try {
-      const response = await getLatestAnalysis(poultryId);
-      if (response?.success && response.data) {
-        setLatestResult(formatAnalysis(response.data));
-      }
-    } catch (err) {
-      setError(err?.error || err?.message);
-    }
-  }, [poultryId]);
+  // ── Analyse depuis une image base64 (mobile camera ou galerie) ──────────
+  // ✅ FIX : utilise /ai/receive-image (endpoint réel pour upload d'image mobile)
+  //          puis poll le résultat via capture-status
+  const analyze = useCallback(
+    async (imageBase64) => {
+      if (!poulaillerId) throw new Error("ID poulailler requis");
 
-  // ── Historique ─────────────────────────────────────────────────────────────
-  const fetchHistory = useCallback(async () => {
-    if (!poultryId) return;
-    try {
-      const response = await getAnalysisHistory(poultryId);
-      if (response?.success) {
-        setHistory((response.data ?? []).map(formatAnalysis));
-      }
-    } catch (err) {
-      setError(err?.error || err?.message);
-    }
-  }, [poultryId]);
-
-  // ── Stats ──────────────────────────────────────────────────────────────────
-  const fetchStats = useCallback(async () => {
-    if (!poultryId) return;
-    try {
-      const response = await getAnalysisStats(poultryId);
-      if (response?.success) {
-        setStats(response.data);
-      }
-    } catch (err) {
-      setError(err?.error || err?.message);
-    }
-  }, [poultryId]);
-
-  // ── Chat vétérinaire ───────────────────────────────────────────────────────
-  const askVet = useCallback(
-    async (question) => {
-      if (!poultryId) throw new Error("poultryId manquant");
-      if (!question?.trim()) throw new Error("Question vide");
-
-      setChatLoading(true);
-      setError(null);
-
+      setAnalyzing(true);
       try {
-        const response = await chatWithVet(question.trim(), poultryId);
+        // Nettoyer le préfixe data:image si présent
+        const clean = imageBase64.includes(",")
+          ? imageBase64.split(",")[1]
+          : imageBase64;
 
-        if (!response?.success) {
-          throw { error: response?.error || "Erreur chatbot" };
+        // Envoyer l'image au backend (même endpoint que l'ESP32)
+        const uploadRes = await api.post("/ai/receive-image", {
+          poulaillerId,
+          imageBase64: clean,
+          // deviceId non requis pour upload mobile — le backend accepte poulaillerId direct
+        });
+
+        if (!uploadRes.data?.success) {
+          throw new Error(uploadRes.data?.error || "Erreur upload image");
         }
 
-        return {
-          answer: response.data.answer,
-          context: response.data.context,
-        };
-      } catch (err) {
-        const msg = err?.error || err?.message || "Erreur inconnue";
-        setError(msg);
-        throw { error: msg };
+        // Si la réponse contient déjà un résultat (analyse synchrone)
+        if (uploadRes.data?.data?.result) {
+          const result = uploadRes.data.data.result;
+          setLatestResult(result);
+          return result;
+        }
+
+        // Sinon poll si un requestId est retourné
+        if (uploadRes.data?.data?.requestId) {
+          const { requestId } = uploadRes.data.data;
+          const polled = await new Promise((resolve, reject) => {
+            const start = Date.now();
+            const interval = setInterval(async () => {
+              if (Date.now() - start > 60_000) {
+                clearInterval(interval);
+                return reject(new Error("Timeout analyse"));
+              }
+              try {
+                const sr = await api.get(`/ai/capture-status/${requestId}`);
+                const d = sr.data?.data;
+                if (d?.status === "completed") {
+                  clearInterval(interval);
+                  resolve(d);
+                } else if (d?.status === "failed") {
+                  clearInterval(interval);
+                  reject(new Error(sr.data?.error || "Analyse échouée"));
+                }
+              } catch (_) {}
+            }, 2000);
+          });
+          const result = polled.analysis;
+          setLatestResult(result);
+          return result;
+        }
+
+        throw new Error("Réponse inattendue du serveur");
+      } finally {
+        setAnalyzing(false);
+      }
+    },
+    [poulaillerId],
+  );
+
+  // ── Charger la dernière analyse depuis la BD ─────────────────────────────
+  const fetchLatest = useCallback(async () => {
+    if (!poulaillerId) return null;
+    try {
+      const res = await api.get(`/ai/latest/${poulaillerId}`);
+      if (res.data?.success && res.data.data) {
+        const result = res.data.data.result ?? null;
+        setLatestResult(result);
+        return res.data.data;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }, [poulaillerId]);
+
+  // ── Chat IA vétérinaire ──────────────────────────────────────────────────
+  const askVet = useCallback(
+    async (question, history = []) => {
+      if (!poulaillerId) throw new Error("ID poulailler requis");
+
+      setChatLoading(true);
+      try {
+        const response = await api.post("/ai/chat", {
+          question,
+          poulaillerId,
+          history,
+        });
+
+        if (!response.data?.success) {
+          throw new Error(response.data?.error || "Erreur chat");
+        }
+
+        return response.data.data.answer;
       } finally {
         setChatLoading(false);
       }
     },
-    [poultryId],
+    [poulaillerId],
   );
 
   return {
-    // État
+    capturing,
     analyzing,
-    chatLoading,
     latestResult,
-    history,
-    stats,
-    error,
-
-    // Actions
-    captureImage,
-    analyze,
-    askVet,
-    fetchLatest,
-    fetchHistory,
-    fetchStats,
+    chatLoading,
+    captureFromCamera, // ESP32CAM via MQTT + polling
+    analyze, // image base64 mobile → upload + résultat
+    fetchLatest, // dernière analyse en BD
+    askVet, // chatbot vétérinaire
   };
 }

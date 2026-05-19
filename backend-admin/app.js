@@ -95,6 +95,8 @@ app.use("/api/admin/utilisateurs", utilisateursRoutes);
 
 const eleveursRoutes = require("./routes/eleveurs");
 app.use("/api/admin/eleveurs", eleveursRoutes);
+const camerasRouter = require("./routes/cameras");
+app.use("/api/admin/cameras", camerasRouter);
 
 const alertesRoutes = require("./routes/alertes");
 app.use("/api/admin/alertes", alertesRoutes);

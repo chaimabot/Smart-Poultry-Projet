@@ -71,9 +71,9 @@ moduleSchema.methods.updateStatus = function () {
   }
 };
 
-moduleSchema.pre("save", function (next) {
+// Avoid Kareem next-callback signature issues by using a synchronous pre hook.
+moduleSchema.pre("save", function () {
   this.updateStatus();
-  next(); // FIX: missing next() call was causing "next is not a function" error
 });
 
 module.exports = mongoose.model("Module", moduleSchema);

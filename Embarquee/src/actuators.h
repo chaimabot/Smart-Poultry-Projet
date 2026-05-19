@@ -55,8 +55,7 @@ extern DoorSchedule  _doorSched;
 // Initialisation hardware
 void actuators_init();
 
-// ⚡ À appeler dans chaque loop() — pilote le moteur pas-à-pas
-//    sans bloquer (non-bloquant, comme dans le test standalone)
+
 void actuators_doorLoop();
 
 // À appeler toutes les 5s — logique relais + planning horaire

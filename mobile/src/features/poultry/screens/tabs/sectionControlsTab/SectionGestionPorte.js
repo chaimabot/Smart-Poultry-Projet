@@ -49,8 +49,53 @@ export default function SectionGestionPorte({
     [doorSchedule?.closeHour, doorSchedule?.closeMinute],
   );
 
-  const isDoorOpen = Boolean(data);
-  const disableOpen = isDoorOpen && !doorMoving;
+  console.log(
+    "[PORTE][UI] door data =",
+    data,
+    "type=",
+    typeof data,
+    "json=",
+    (() => {
+      try {
+        return JSON.stringify(data);
+      } catch (_) {
+        return "<unserializable>";
+      }
+    })(),
+  );
+
+  const isDoorOpen =
+    // formats primitifs
+    // (ton log indique parfois `data` arrive en boolean)
+    data === true ||
+    data === 1 ||
+    data === "1" ||
+    data === "open" ||
+    data === "OPEN" ||
+    data === "ouvert" ||
+    data === "OUVERT" ||
+
+    // objets possibles
+    data?.status === "open" ||
+    data?.status === "OPEN" ||
+    data?.status === "ouvert" ||
+    data?.status === "OUVERT" ||
+    data?.doorState === "open" ||
+    data?.doorState === "OPEN" ||
+    data?.doorState === "ouvert" ||
+    data?.doorState === "OUVERT" ||
+    // variantes courantes côté actuators
+    data?.actuatorStates?.door?.status === "open" ||
+    data?.actuatorStates?.door?.status === "OPEN" ||
+    data?.actuatorStates?.door?.status === "ouvert" ||
+    data?.actuatorStates?.door?.status === "OUVERT" ||
+    data?.actuatorStates?.door?.doorState === "open" ||
+    data?.actuatorStates?.door?.doorState === "OPEN" ||
+    data?.actuatorStates?.door?.doorState === "ouvert" ||
+    data?.actuatorStates?.door?.doorState === "OUVERT";
+
+  const isDoorActuallyOpen = isDoorOpen && !doorMoving;
+  const disableOpen = isDoorActuallyOpen && !doorMoving;
 
   const handleToggleMode = async () => {
     if (!setDoorMode) return;
@@ -91,7 +136,9 @@ export default function SectionGestionPorte({
       setDoorMode(isAutoMode ? "horaire" : "manual");
       Alert.alert(
         "Erreur",
-        error?.message || error?.error || "Impossible de changer le mode de la porte.",
+        error?.message ||
+          error?.error ||
+          "Impossible de changer le mode de la porte.",
       );
     }
   };
@@ -182,8 +229,7 @@ export default function SectionGestionPorte({
         error: error?.message || error?.error || error,
       });
 
-      const message =
-        error?.message || error?.error || "La commande a echoue.";
+      const message = error?.message || error?.error || "La commande a echoue.";
       Alert.alert("Erreur", message);
     }
   };
@@ -225,7 +271,11 @@ export default function SectionGestionPorte({
             {isAutoMode
               ? "Auto - Horaires"
               : `Manuel - ${
-                  doorMoving ? "Mouvement..." : isDoorOpen ? "Ouverte" : "Fermee"
+                  doorMoving
+                    ? "Mouvement..."
+                    : isDoorActuallyOpen
+                      ? "Ouverte"
+                      : "Fermee"
                 }`}
           </Text>
         </View>
@@ -298,7 +348,10 @@ export default function SectionGestionPorte({
               color={isDoorOpen ? DOOR_COLOR : "#fff"}
             />
             <Text
-              style={[styles.btnText, { color: isDoorOpen ? DOOR_COLOR : "#fff" }]}
+              style={[
+                styles.btnText,
+                { color: isDoorOpen ? DOOR_COLOR : "#fff" },
+              ]}
             >
               Ouvrir
             </Text>
@@ -306,10 +359,7 @@ export default function SectionGestionPorte({
 
           <TouchableOpacity
             onPress={() => handleManualAction("close")}
-            style={[
-              styles.btn,
-              styles.btnSecondary,
-            ]}
+            style={[styles.btn, styles.btnSecondary]}
           >
             <MaterialIcons name="arrow-downward" size={16} color="#EF4444" />
             <Text style={[styles.btnText, { color: "#EF4444" }]}>Fermer</Text>

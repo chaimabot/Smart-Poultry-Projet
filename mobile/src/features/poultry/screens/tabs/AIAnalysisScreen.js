@@ -1,10 +1,13 @@
 // screens/AIAnalysisScreen.js
-// ============================================================
-// Écran Analyse IA Santé — Smart Poultry
-// Capture photo → Analyse Gemma 3 → Résultat + Chat
-// ============================================================
+// ─────────────────────────────────────────────────────────────────────────────
+// CORRECTIONS v4 :
+//   1. normalizeSensors : garde NaN + 30+ aliases backend
+//   2. rawSensors lookup : 5 chemins de fallback (sensors/sensorData/result root)
+//   3. isResultPoorImage : fallback texte diagnostic
+//   4. imageQuality merge : préserve usable/score + lit depuis la racine
+// ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -15,8 +18,6 @@ import {
   Dimensions,
   ActivityIndicator,
   Animated,
-  Alert,
-  Platform,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -24,155 +25,655 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
-import * as ImagePicker from "expo-image-picker";
-
-import { useAIAnalysis } from "../../../../hooks/useAIAnalysis";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import api from "../../../../services/api";
 import Toast from "../../../../components/Toast";
 
 const { width } = Dimensions.get("window");
 
-// ─── Score Circle Component ────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
-function ScoreCircle({ score, size = 90 }) {
-  const rotation = (score / 100) * 360;
-  const color = score >= 70 ? "#22C55E" : score >= 40 ? "#F59E0B" : "#EF4444";
+/**
+ * Détecte si le résultat correspond à une image inexploitable.
+ * Couvre tous les shapes connus du backend + fallback texte diagnostic.
+ */
+function isResultPoorImage(result) {
+  if (!result) return false;
+
+  // 1. Flags booléens / statut explicite
+  if (
+    result.imageQuality?.status === "poor" ||
+    result.imageUsable === false ||
+    result.imageAvailable === false ||
+    result.imageQuality?.usable === false ||
+    result.result?.imageQuality?.status === "poor" ||
+    result.result?.imageUsable === false
+  )
+    return true;
+
+  // 2. Score imageQuality trop bas (< 30)
+  const iqScore = result.imageQuality?.score;
+  if (iqScore != null && Number(iqScore) < 30) return true;
+
+  // 3. Fallback texte : le diagnostic mentionne explicitement l'image floue
+  const diag =
+    typeof result.diagnostic === "string"
+      ? result.diagnostic.toLowerCase()
+      : "";
+  if (
+    diag.includes("inexploitable") ||
+    diag.includes("image floue") ||
+    diag.includes("image trop floue") ||
+    diag.includes("image non") ||
+    diag.includes("sans image")
+  )
+    return true;
+
+  return false;
+}
+
+/**
+ * Normalise l'objet capteurs brut du backend vers la shape canonique
+ * attendue par SensorsSection.
+ *   Garde NaN, couvre 30+ alias de noms de champs backend.
+ */
+function normalizeSensors(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  // Cherche la première clé valide et retourne un Number propre
+  const pick = (...keys) => {
+    for (const k of keys) {
+      const v = raw[k];
+      if (v !== null && v !== undefined) {
+        const n = Number(v);
+        if (!isNaN(n)) return n; //   garde NaN
+      }
+    }
+    return undefined;
+  };
+
+  const normalized = {
+    temperature: pick(
+      "temperature",
+      "temp",
+      "Temperature",
+      "temperatureC",
+      "temp_c",
+      "ambientTemp",
+      "ambient_temp",
+    ),
+    humidity: pick(
+      "humidity",
+      "humidite",
+      "hum",
+      "Humidity",
+      "humidityPercent",
+      "humidity_percent",
+      "relativeHumidity",
+      "relative_humidity",
+    ),
+    waterLevel: pick(
+      "waterLevel",
+      "water_level",
+      "waterLevelPercent",
+      "water_level_percent",
+      "water",
+      "WaterLevel",
+      "waterLvl",
+      "water_lvl",
+      "niveauEau",
+      "niveau_eau",
+      "waterPercent",
+      "water_percent",
+    ),
+    airQualityPercent: pick(
+      "airQualityPercent",
+      "air_quality",
+      "airQuality",
+      "air",
+      "AirQuality",
+      "air_quality_percent",
+      "airIndex",
+      "air_index",
+      "iaq",
+      "IAQ",
+    ),
+    co2: pick(
+      "co2",
+      "CO2",
+      "co2_ppm",
+      "co2Ppm",
+      "carbonDioxide",
+      "carbon_dioxide",
+    ),
+    nh3: pick("nh3", "NH3", "ammonia", "nh3_ppm", "ammoniac", "nh3Ppm"),
+  };
+
+  const hasAny = Object.values(normalized).some((v) => v !== undefined);
+  return hasAny ? normalized : null;
+}
+
+/**
+ * Extrait l'objet capteurs brut depuis toutes les shapes connues du backend.
+ * Retourne le premier objet non-vide trouvé.
+ */
+function extractRawSensors(source) {
+  if (!source) return null;
+
+  // Helpers
+  const notEmpty = (obj) =>
+    obj && typeof obj === "object" && Object.keys(obj).length > 0;
+
+  // 1. source.sensors
+  if (notEmpty(source.sensors)) return source.sensors;
+
+  // 2. source.sensorData
+  if (notEmpty(source.sensorData)) return source.sensorData;
+
+  // 3. source.result.sensors
+  if (notEmpty(source.result?.sensors)) return source.result.sensors;
+
+  // 4. source.result.sensorData
+  if (notEmpty(source.result?.sensorData)) return source.result.sensorData;
+
+  // 5. source.analysis.sensors
+  if (notEmpty(source.analysis?.sensors)) return source.analysis.sensors;
+
+  // 6. source.analysis.sensorData
+  if (notEmpty(source.analysis?.sensorData)) return source.analysis.sensorData;
+
+  // 7. Les valeurs capteurs sont directement sur source.result (root flat)
+  if (
+    hasSensorValue(source.result?.waterLevel) ||
+    hasSensorValue(source.result?.temperature) ||
+    hasSensorValue(source.result?.humidity) ||
+    hasSensorValue(source.result?.water_level) ||
+    hasSensorValue(source.result?.waterLevelPercent)
+  )
+    return source.result;
+
+  // 8. Les valeurs capteurs sont directement sur source (root flat)
+  if (
+    hasSensorValue(source.waterLevel) ||
+    hasSensorValue(source.temperature) ||
+    hasSensorValue(source.humidity) ||
+    hasSensorValue(source.water_level) ||
+    hasSensorValue(source.waterLevelPercent)
+  )
+    return source;
+
+  return null;
+}
+
+// Vérifie si une valeur capteur est réellement disponible
+function hasSensorValue(value) {
+  return value !== null && value !== undefined && !isNaN(Number(value));
+}
+
+// ─── Score Circle ────────────────────────────────────────────────────────────
+
+function ScoreCircle({ score, size = 88, dimmed = false }) {
+  const isUnknown = score === null || score === undefined;
+  const color =
+    isUnknown || dimmed
+      ? "#94A3B8"
+      : score >= 70
+        ? "#22C55E"
+        : score >= 40
+          ? "#F59E0B"
+          : "#EF4444";
 
   return (
     <View
-      style={[
-        styles.scoreCircleOuter,
-        { width: size, height: size, borderRadius: size / 2 },
-      ]}
+      style={{
+        width: size,
+        height: size,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
     >
       <View
-        style={[
-          styles.scoreCircleInner,
-          {
-            width: size - 14,
-            height: size - 14,
-            borderRadius: (size - 14) / 2,
-            backgroundColor: "#fff",
-          },
-        ]}
-      >
-        <Text style={[styles.scoreCircleValue, { color }]}>{score}</Text>
-      </View>
-      {/* SVG-like conic gradient using multiple segments */}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 7,
+          borderColor: "#F1F5F9",
+          position: "absolute",
+        }}
+      />
       <View
-        style={[StyleSheet.absoluteFill, { transform: [{ rotate: "-90deg" }] }]}
-      >
-        <View
-          style={[
-            styles.scoreArc,
-            {
-              width: size,
-              height: size,
-              borderRadius: size / 2,
-              borderWidth: 7,
-              borderColor: color,
-              borderLeftColor: "transparent",
-              borderBottomColor: "transparent",
-              transform: [{ rotate: `${Math.min(rotation, 180)}deg` }],
-            },
-          ]}
-        />
-        {rotation > 180 && (
-          <View
-            style={[
-              styles.scoreArc,
-              {
-                width: size,
-                height: size,
-                borderRadius: size / 2,
-                borderWidth: 7,
-                borderColor: color,
-                borderTopColor: "transparent",
-                borderRightColor: "transparent",
-                transform: [{ rotate: `${rotation - 180}deg` }],
-              },
-            ]}
-          />
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 7,
+          borderColor: color,
+          borderRightColor: "transparent",
+          borderBottomColor: "transparent",
+          position: "absolute",
+          transform: [{ rotate: "-90deg" }],
+          opacity: isUnknown ? 0 : 1,
+        }}
+      />
+      <View style={{ alignItems: "center", justifyContent: "center" }}>
+        <Text
+          style={{ fontSize: 26, fontWeight: "800", color, lineHeight: 30 }}
+        >
+          {isUnknown ? "—" : score}
+        </Text>
+        <Text style={{ fontSize: 10, color: "#94A3B8", fontWeight: "600" }}>
+          {isUnknown ? "inconnu" : dimmed ? "capteurs" : "/ 100"}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// ─── Urgency Badge ───────────────────────────────────────────────────────────
+
+function UrgencyBadge({ level }) {
+  const isUnknown = !level || level === "inconnu";
+  const config = isUnknown
+    ? {
+        bg: "#F1F5F9",
+        color: "#64748B",
+        icon: "help-outline",
+        label: "INCONNU",
+      }
+    : level === "critique"
+      ? { bg: "#FEF2F2", color: "#EF4444", icon: "error", label: "CRITIQUE" }
+      : level === "attention"
+        ? {
+            bg: "#FEF3C7",
+            color: "#F59E0B",
+            icon: "warning",
+            label: "ATTENTION",
+          }
+        : {
+            bg: "#F0FDF4",
+            color: "#22C55E",
+            icon: "check-circle",
+            label: "NORMAL",
+          };
+
+  return (
+    <View style={[styles.urgencyBadge, { backgroundColor: config.bg }]}>
+      <MaterialIcons name={config.icon} size={14} color={config.color} />
+      <Text style={[styles.urgencyBadgeText, { color: config.color }]}>
+        {config.label}
+      </Text>
+    </View>
+  );
+}
+
+// ─── Detection Row ───────────────────────────────────────────────────────────
+
+function DetectionRow({ icon, label, desc, value, isMortality = false }) {
+  const isNull = value === null || value === undefined;
+  const ok = isNull ? null : isMortality ? !value : value;
+  const color = isNull ? "#94A3B8" : ok ? "#22C55E" : "#EF4444";
+  const bg = isNull ? "#F8FAFC" : ok ? "#F0FDF4" : "#FEF2F2";
+  const badgeLabel = isNull ? "N/A" : ok ? "OK" : "ALERTE";
+
+  return (
+    <View style={[styles.detectionRow, { opacity: isNull ? 0.55 : 1 }]}>
+      <View style={[styles.detectionIcon, { backgroundColor: bg }]}>
+        <MaterialIcons name={icon} size={19} color={color} />
+      </View>
+      <View style={styles.detectionContent}>
+        <View style={styles.detectionTopRow}>
+          <Text style={[styles.detectionName, isNull && { color: "#94A3B8" }]}>
+            {label}
+          </Text>
+          <View style={[styles.detectionBadge, { backgroundColor: bg }]}>
+            <Text style={[styles.detectionBadgeText, { color }]}>
+              {badgeLabel}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.detectionDesc}>{desc}</Text>
+        {isNull && (
+          <Text style={styles.detectionNa}>
+            Non évalué — image indisponible
+          </Text>
         )}
       </View>
     </View>
   );
 }
 
-// ─── Detection Item ────────────────────────────────────────────────────────
+// ─── Sensor Card ─────────────────────────────────────────────────────────────
 
-function DetectionItem({ icon, label, desc, confidence, status = "ok" }) {
-  const colors = {
-    ok: { bg: "#F0FDF4", icon: "#22C55E", text: "#166534" },
-    warn: { bg: "#FEF3C7", icon: "#F59E0B", text: "#92400E" },
-    danger: { bg: "#FEF2F2", icon: "#EF4444", text: "#991B1B" },
-  };
-  const c = colors[status] || colors.ok;
-
+function SensorCard({
+  icon,
+  label,
+  value,
+  unit,
+  color = "#22C55E",
+  alert = false,
+}) {
+  const bg = alert ? color + "18" : color + "12";
   return (
-    <View style={styles.detectionItem}>
-      <View style={[styles.detectionIcon, { backgroundColor: c.bg }]}>
-        <MaterialIcons name={icon} size={20} color={c.icon} />
+    <View
+      style={[
+        styles.sensorCard,
+        alert && { borderWidth: 1, borderColor: color + "60" },
+      ]}
+    >
+      <View style={[styles.sensorCardIcon, { backgroundColor: bg }]}>
+        <MaterialIcons name={icon} size={18} color={color} />
       </View>
-      <View style={styles.detectionContent}>
-        <Text style={styles.detectionName}>{label}</Text>
-        <Text style={styles.detectionDesc}>{desc}</Text>
-        <View style={styles.detectionBar}>
-          <View
-            style={[
-              styles.detectionBarFill,
-              { width: `${confidence}%`, backgroundColor: c.icon },
-            ]}
-          />
-        </View>
-        <Text style={[styles.detectionConfidence, { color: c.icon }]}>
-          {confidence}% confiance
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-// ─── Sensor Mini Card ──────────────────────────────────────────────────────
-
-function SensorMini({ icon, label, value, unit, color = "#22C55E" }) {
-  return (
-    <View style={styles.sensorMini}>
-      <View style={[styles.sensorMiniIcon, { backgroundColor: color + "15" }]}>
-        <MaterialIcons name={icon} size={16} color={color} />
-      </View>
-      <View>
-        <Text style={styles.sensorMiniValue}>
+      <View style={styles.sensorCardBody}>
+        <Text
+          style={[styles.sensorCardValue, { color: alert ? color : "#1E293B" }]}
+        >
           {value}
-          <Text style={styles.sensorMiniUnit}>{unit}</Text>
+          <Text style={styles.sensorCardUnit}> {unit}</Text>
         </Text>
-        <Text style={styles.sensorMiniLabel}>{label}</Text>
+        <Text style={styles.sensorCardLabel}>{label}</Text>
       </View>
+      {alert && (
+        <MaterialIcons
+          name="warning"
+          size={14}
+          color={color}
+          style={{ marginLeft: "auto" }}
+        />
+      )}
     </View>
   );
 }
 
-// ─── Main Screen ───────────────────────────────────────────────────────────
+// ─── Sensors Section ─────────────────────────────────────────────────────────
 
-import { useNavigation, useRoute } from "@react-navigation/native";
+function SensorsSection({ sensors, thresholds }) {
+  if (!sensors) {
+    return (
+      <View style={styles.noSensorBox}>
+        <MaterialIcons name="sensors-off" size={18} color="#94A3B8" />
+        <Text style={styles.noSensorText}>
+          Capteurs non connectés — aucune donnée disponible
+        </Text>
+      </View>
+    );
+  }
+
+  const rows = [];
+
+  if (hasSensorValue(sensors.temperature)) {
+    const thresh = thresholds?.tempMax ?? 30;
+    const alert = sensors.temperature > thresh;
+    rows.push(
+      <SensorCard
+        key="temp"
+        icon="thermostat"
+        label="Température"
+        value={`${Number(sensors.temperature).toFixed(1)}`}
+        unit="°C"
+        color={alert ? "#EF4444" : "#F97316"}
+        alert={alert}
+      />,
+    );
+  }
+
+  if (hasSensorValue(sensors.humidity)) {
+    const thresh = thresholds?.humidityMax ?? 75;
+    const alert = sensors.humidity > thresh;
+    rows.push(
+      <SensorCard
+        key="hum"
+        icon="water-drop"
+        label="Humidité"
+        value={`${Number(sensors.humidity).toFixed(0)}`}
+        unit="%"
+        color={alert ? "#EF4444" : "#3B82F6"}
+        alert={alert}
+      />,
+    );
+  }
+
+  if (hasSensorValue(sensors.waterLevel)) {
+    const alert = sensors.waterLevel < 20;
+    rows.push(
+      <SensorCard
+        key="water"
+        icon="local-drink"
+        label="Niveau d'eau"
+        value={`${Number(sensors.waterLevel).toFixed(0)}`}
+        unit="%"
+        color={
+          alert ? "#EF4444" : sensors.waterLevel < 40 ? "#F59E0B" : "#22C55E"
+        }
+        alert={alert}
+      />,
+    );
+  }
+
+  if (hasSensorValue(sensors.airQualityPercent)) {
+    const thresh = thresholds?.airQualityMin ?? 50;
+    const alert = sensors.airQualityPercent < thresh;
+    rows.push(
+      <SensorCard
+        key="air"
+        icon="air"
+        label="Qualité de l'air"
+        value={`${Number(sensors.airQualityPercent).toFixed(0)}`}
+        unit="%"
+        color={alert ? "#EF4444" : "#8B5CF6"}
+        alert={alert}
+      />,
+    );
+  }
+
+  if (hasSensorValue(sensors.co2)) {
+    const alert = sensors.co2 > 3000;
+    rows.push(
+      <SensorCard
+        key="co2"
+        icon="cloud"
+        label="CO₂"
+        value={`${Math.round(sensors.co2)}`}
+        unit="ppm"
+        color={alert ? "#EF4444" : "#6B7280"}
+        alert={alert}
+      />,
+    );
+  }
+
+  if (hasSensorValue(sensors.nh3)) {
+    const alert = sensors.nh3 > 25;
+    rows.push(
+      <SensorCard
+        key="nh3"
+        icon="science"
+        label="Ammoniac (NH₃)"
+        value={`${Number(sensors.nh3).toFixed(1)}`}
+        unit="ppm"
+        color={alert ? "#EF4444" : "#F59E0B"}
+        alert={alert}
+      />,
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <View style={styles.noSensorBox}>
+        <MaterialIcons name="sensors-off" size={18} color="#94A3B8" />
+        <Text style={styles.noSensorText}>
+          Capteurs non connectés — aucune donnée disponible
+        </Text>
+      </View>
+    );
+  }
+
+  return <View style={styles.sensorGrid}>{rows}</View>;
+}
+
+// ─── Advice Item ─────────────────────────────────────────────────────────────
+
+function AdviceItem({ text, index }) {
+  return (
+    <View style={styles.adviceItem}>
+      <View style={styles.adviceNumber}>
+        <Text style={styles.adviceNumberText}>{index + 1}</Text>
+      </View>
+      <Text style={styles.adviceText}>{text}</Text>
+    </View>
+  );
+}
+
+// ─── History Item ────────────────────────────────────────────────────────────
+
+function HistoryItem({ item, onPress }) {
+  const urgency = item.result?.urgencyLevel;
+  const score = item.result?.healthScore; //   peut être null
+
+  const color =
+    urgency === "critique"
+      ? "#EF4444"
+      : urgency === "attention"
+        ? "#F59E0B"
+        : urgency === "inconnu"
+          ? "#94A3B8"
+          : "#22C55E";
+
+  const label =
+    urgency === "critique"
+      ? "Critique"
+      : urgency === "attention"
+        ? "Attention"
+        : urgency === "inconnu"
+          ? "Inconnu"
+          : "Normal";
+
+  const poor = isResultPoorImage(item);
+
+  const date = new Date(item.createdAt).toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  //   Affiche "—" si score null, sinon "70/100"
+  const scoreText =
+    score !== null && score !== undefined ? `${score}/100` : "—";
+
+  return (
+    <TouchableOpacity
+      style={styles.historyItem}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
+      <View style={styles.historyThumb}>
+        {item.image?.url ? (
+          <Image
+            source={{ uri: item.image.thumbnailUrl || item.image.url }}
+            style={[
+              { width: 48, height: 48, borderRadius: 12 },
+              poor && { opacity: 0.4 },
+            ]}
+            resizeMode="cover"
+          />
+        ) : (
+          <MaterialIcons name="image-not-supported" size={20} color="#94A3B8" />
+        )}
+        {poor && (
+          <View style={styles.historyThumbBadge}>
+            <MaterialIcons name="blur-on" size={10} color="#fff" />
+          </View>
+        )}
+      </View>
+      <View style={styles.historyInfo}>
+        <Text style={styles.historyDate}>{date}</Text>
+        {/*   scoreText jamais vide */}
+        <Text style={[styles.historyScore, { color }]}>
+          {scoreText} — {label}
+          {poor ? " (sans image)" : ""}
+        </Text>
+      </View>
+      <MaterialIcons name="chevron-right" size={20} color="#CBD5E1" />
+    </TouchableOpacity>
+  );
+}
+
+// ─── Phase Step Indicator ────────────────────────────────────────────────────
+
+function PhaseSteps({ currentPhase }) {
+  const steps = [
+    {
+      key: "capturing",
+      icon: "settings-remote",
+      label: "Déclenchement caméra",
+    },
+    { key: "uploading", icon: "cloud-upload", label: "Envoi de la photo" },
+    { key: "analyzing", icon: "biotech", label: "Analyse IA en cours" },
+  ];
+
+  const phaseOrder = ["capturing", "uploading", "analyzing"];
+  const currentIdx = phaseOrder.indexOf(currentPhase);
+
+  return (
+    <View style={styles.phaseSteps}>
+      {steps.map((step, idx) => {
+        const done = idx < currentIdx;
+        const active = idx === currentIdx;
+        const color = done ? "#22C55E" : active ? "#3B82F6" : "#CBD5E1";
+        return (
+          <View key={step.key} style={styles.phaseStep}>
+            <View
+              style={[
+                styles.phaseStepIcon,
+                {
+                  backgroundColor: done
+                    ? "#F0FDF4"
+                    : active
+                      ? "#EFF6FF"
+                      : "#F8FAFC",
+                  borderWidth: active ? 2 : 1,
+                  borderColor: color,
+                },
+              ]}
+            >
+              {done ? (
+                <MaterialIcons name="check" size={14} color="#22C55E" />
+              ) : (
+                <MaterialIcons name={step.icon} size={14} color={color} />
+              )}
+            </View>
+            <Text
+              style={[
+                styles.phaseStepLabel,
+                { color: active ? "#1E293B" : done ? "#22C55E" : "#94A3B8" },
+              ]}
+            >
+              {step.label}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// ─── Main Screen ─────────────────────────────────────────────────────────────
 
 export default function AIAnalysisScreen() {
   const navigation = useNavigation();
   const route = useRoute();
-  const { poultryId, poultryName } = route?.params || {};
+  const params = route?.params || {};
+  const poultryId = params.poultryId || params.poulaillerId;
+  const poultryName = params.poultryName || params.poulaillerName;
   const insets = useSafeAreaInsets();
 
-  const {
-    analyzing,
-    latestResult,
-    captureImage,
-    analyze,
-    askVet,
-    chatLoading,
-  } = useAIAnalysis(poultryId);
-
+  const [phase, setPhase] = useState("idle");
+  const [phaseLabel, setPhaseLabel] = useState("");
   const [imageUri, setImageUri] = useState(null);
+  const [result, setResult] = useState(null);
+  const [sensors, setSensors] = useState(null);
+  const [history, setHistory] = useState([]);
   const [progress, setProgress] = useState(0);
-  const [showResult, setShowResult] = useState(false);
   const [toast, setToast] = useState({
     visible: false,
     message: "",
@@ -181,115 +682,384 @@ export default function AIAnalysisScreen() {
 
   const progressAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const progressInterval = useRef(null);
+  const pollIntervalRef = useRef(null);
+  const pollTimeoutRef = useRef(null);
+  const isMountedRef = useRef(true);
 
-  // ── Capture photo ────────────────────────────────────────────────────────
-  const handleCapture = useCallback(
-    async (source = "camera") => {
-      try {
-        const uri = await captureImage(source);
-        if (uri) {
-          setImageUri(uri);
-          setShowResult(false);
-          setProgress(0);
-        }
-      } catch (err) {
-        setToast({
-          visible: true,
-          message: "Erreur capture: " + err.message,
-          type: "error",
-        });
-      }
-    },
-    [captureImage],
-  );
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
+      if (progressInterval.current) clearInterval(progressInterval.current);
+    };
+  }, []);
 
-  // ── Lancer analyse ───────────────────────────────────────────────────────
-  const handleAnalyze = useCallback(async () => {
-    if (!imageUri) {
-      setToast({
-        visible: true,
-        message: "Prenez d'abord une photo",
-        type: "error",
-      });
-      return;
-    }
+  useEffect(() => {
+    if (!poultryId) return;
+    loadHistory();
+    loadLatestAnalysis();
+  }, [poultryId]);
 
-    setShowResult(false);
-    setProgress(0);
+  // ── loadHistory ────────────────────────────────────────────────────────────
 
-    // Animation progress
-    Animated.timing(progressAnim, {
-      toValue: 1,
-      duration: 3000,
-      useNativeDriver: false,
-    }).start();
-
-    // Progress steps
-    let p = 0;
-    const interval = setInterval(() => {
-      p += 5;
-      setProgress(Math.min(p, 95));
-      if (p >= 95) clearInterval(interval);
-    }, 150);
-
+  const loadHistory = async () => {
+    if (!poultryId) return;
     try {
-      const result = await analyze(imageUri);
-      clearInterval(interval);
-      setProgress(100);
+      const res = await api.get(`/ai/history/${poultryId}`);
+      if (res.data?.success && isMountedRef.current)
+        setHistory(res.data.data || []);
+    } catch (e) {
+      console.warn("[AI] Erreur historique:", e.message);
+    }
+  };
 
-      // Fade in result
-      Animated.timing(fadeAnim, {
+  // ── loadLatestAnalysis ─────────────────────────────────────────────────────
+
+  const loadLatestAnalysis = async () => {
+    if (!poultryId) return;
+    try {
+      const res = await api.get(`/ai/latest/${poultryId}`);
+      if (res.data?.success && res.data.data && isMountedRef.current) {
+        const latest = res.data.data;
+
+        //   Merge imageQuality depuis la racine ET depuis result
+        const rootIQ = latest.imageQuality || {};
+        const resultIQ = latest.result?.imageQuality || {};
+        const mergedIQ = {
+          ...resultIQ,
+          ...rootIQ,
+          status:
+            rootIQ.status === "poor" || resultIQ.status === "poor"
+              ? "poor"
+              : rootIQ.status || resultIQ.status || "unknown",
+          usable: rootIQ.usable !== undefined ? rootIQ.usable : resultIQ.usable,
+          score: rootIQ.score !== undefined ? rootIQ.score : resultIQ.score,
+        };
+
+        setResult({
+          ...latest.result,
+          imageQuality: mergedIQ,
+          imageUsable:
+            latest.imageUsable !== undefined
+              ? latest.imageUsable
+              : latest.result?.imageUsable,
+          imageAvailable:
+            latest.imageAvailable !== undefined
+              ? latest.imageAvailable
+              : latest.result?.imageAvailable,
+        });
+
+        //   Extraction multi-chemins + normalisation des noms de champs
+        const rawSensors = extractRawSensors(latest);
+        console.log("[AI] rawSensors:", JSON.stringify(rawSensors, null, 2));
+        console.log("[AI] normalized:", normalizeSensors(rawSensors));
+        setSensors(normalizeSensors(rawSensors));
+
+        if (latest.image?.url) setImageUri(latest.image.url);
+        setPhase("done");
+        fadeAnim.setValue(1);
+      }
+    } catch (e) {
+      console.warn("[AI] Erreur dernière analyse:", e.message);
+    }
+  };
+
+  // ── stopPolling ────────────────────────────────────────────────────────────
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+    if (progressInterval.current) {
+      clearInterval(progressInterval.current);
+      progressInterval.current = null;
+    }
+  }, []);
+
+  const showToast = useCallback((message, type = "success") => {
+    setToast({ visible: true, message, type });
+  }, []);
+
+  // ── startPolling ───────────────────────────────────────────────────────────
+
+  const startPolling = useCallback(
+    (requestId) => {
+      setPhase("capturing");
+      setPhaseLabel("Attente de l'image ESP32...");
+
+      Animated.timing(progressAnim, {
         toValue: 1,
-        duration: 500,
-        useNativeDriver: true,
+        duration: 30000,
+        useNativeDriver: false,
       }).start();
 
-      setShowResult(true);
-      setToast({
-        visible: true,
-        message: `Analyse terminée — Score: ${result.healthScore}/100`,
-        type: "success",
-      });
-    } catch (err) {
-      clearInterval(interval);
-      setProgress(0);
-      setToast({
-        visible: true,
-        message: err.message || "Erreur analyse IA",
-        type: "error",
-      });
-    }
-  }, [imageUri, analyze, fadeAnim, progressAnim]);
+      let p = 0;
+      progressInterval.current = setInterval(() => {
+        p += 1;
+        if (isMountedRef.current) setProgress(Math.min(p, 90));
+        if (p >= 90) clearInterval(progressInterval.current);
+      }, 300);
 
-  // ── Reset ────────────────────────────────────────────────────────────────
+      pollTimeoutRef.current = setTimeout(() => {
+        stopPolling();
+        if (isMountedRef.current) {
+          setPhase("idle");
+          setPhaseLabel("");
+          showToast(
+            "La caméra n'a pas répondu (90s). Vérifiez la connexion et réessayez.",
+            "error",
+          );
+        }
+      }, 90000);
+
+      pollIntervalRef.current = setInterval(async () => {
+        if (!isMountedRef.current) {
+          stopPolling();
+          return;
+        }
+
+        try {
+          const statusRes = await api.get(`/ai/capture-status/${requestId}`);
+          const statusData = statusRes.data?.data;
+          if (!statusData) return;
+
+          const phaseMap = {
+            pending: {
+              phase: "capturing",
+              label: "Attente de l'image ESP32...",
+            },
+            capturing: {
+              phase: "capturing",
+              label: "La caméra prend la photo...",
+            },
+            uploading: {
+              phase: "uploading",
+              label: "Envoi de la photo vers le cloud...",
+            },
+            analyzing: {
+              phase: "analyzing",
+              label: "Analyse IA en cours (Gemma 3)...",
+            },
+          };
+          if (phaseMap[statusData.status] && isMountedRef.current) {
+            setPhase(phaseMap[statusData.status].phase);
+            setPhaseLabel(phaseMap[statusData.status].label);
+          }
+
+          if (statusData.status === "completed") {
+            stopPolling();
+            if (!isMountedRef.current) return;
+
+            setProgress(100);
+            if (statusData.imageUrl) setImageUri(statusData.imageUrl);
+
+            if (statusData.analysis) {
+              //   Merge imageQuality
+              const aIQ = statusData.analysis?.imageQuality || {};
+              const sIQ = statusData.imageQuality || {};
+              const mergedIQ = {
+                ...aIQ,
+                ...sIQ,
+                status:
+                  sIQ.status === "poor" || aIQ.status === "poor"
+                    ? "poor"
+                    : !statusData.imageUrl
+                      ? "poor"
+                      : sIQ.status || aIQ.status || "optimized",
+                usable: sIQ.usable !== undefined ? sIQ.usable : aIQ.usable,
+                score: sIQ.score !== undefined ? sIQ.score : aIQ.score,
+              };
+              setResult({
+                ...statusData.analysis,
+                imageQuality: mergedIQ,
+                imageUsable:
+                  statusData.imageUsable !== undefined
+                    ? statusData.imageUsable
+                    : statusData.analysis?.imageUsable,
+                imageAvailable:
+                  statusData.imageAvailable !== undefined
+                    ? statusData.imageAvailable
+                    : statusData.analysis?.imageAvailable,
+              });
+            }
+
+            //   Extraction multi-chemins + normalisation
+            const rawSensors = extractRawSensors(statusData);
+            console.log(
+              "[AI] rawSensors (poll):",
+              JSON.stringify(rawSensors, null, 2),
+            );
+            setSensors(normalizeSensors(rawSensors));
+
+            Animated.timing(fadeAnim, {
+              toValue: 1,
+              duration: 500,
+              useNativeDriver: true,
+            }).start();
+            setPhase("done");
+            setPhaseLabel("");
+
+            const poor =
+              !statusData.imageUrl ||
+              statusData.imageQuality?.status === "poor";
+            showToast(
+              poor
+                ? `Analyse terminée — image floue. Score : ${statusData.analysis?.healthScore ?? "—"}/100`
+                : `Analyse terminée — Score : ${statusData.analysis?.healthScore ?? "—"}/100`,
+              poor ? "warn" : "success",
+            );
+            loadHistory();
+          } else if (statusData.status === "failed") {
+            stopPolling();
+            if (isMountedRef.current) {
+              setPhase("idle");
+              setPhaseLabel("");
+              showToast(statusRes.data?.error || "Analyse échouée", "error");
+            }
+          }
+        } catch (err) {
+          const httpStatus = err.response?.status;
+          if (httpStatus === 404) {
+            stopPolling();
+            if (isMountedRef.current) {
+              setPhase("idle");
+              setPhaseLabel("");
+              showToast("Session expirée. Relancez l'analyse.", "error");
+            }
+            return;
+          }
+          if (httpStatus === 500) {
+            stopPolling();
+            if (isMountedRef.current) {
+              setPhase("idle");
+              setPhaseLabel("");
+              showToast(err.response?.data?.error || "Erreur serveur", "error");
+            }
+            return;
+          }
+          console.warn("[AI] Erreur polling réseau:", err.message);
+        }
+      }, 2000);
+    },
+    [stopPolling, fadeAnim, progressAnim, showToast],
+  );
+
+  // ── handleAnalyze ──────────────────────────────────────────────────────────
+
+  const handleAnalyze = useCallback(async () => {
+    if (phase === "capturing" || phase === "uploading" || phase === "analyzing")
+      return;
+
+    stopPolling();
+    fadeAnim.setValue(0);
+    progressAnim.setValue(0);
+    setProgress(0);
+    setResult(null);
+    setSensors(null);
+
+    setPhase("capturing");
+    setPhaseLabel("Envoi de la commande à la caméra...");
+    showToast("Commande envoyée à la caméra ESP32...", "info");
+
+    try {
+      const captureRes = await api.post(`/ai/capture/${poultryId}`);
+      if (!captureRes.data?.success)
+        throw new Error(
+          captureRes.data?.error || "Erreur déclenchement capture",
+        );
+
+      const requestId = captureRes.data.data?.requestId;
+      const mqttSent = captureRes.data.data?.mqttSent;
+      const cameraMac = captureRes.data.data?.cameraMac;
+
+      if (!requestId) {
+        showToast("Erreur serveur — aucun identifiant reçu", "error");
+        if (isMountedRef.current) {
+          setPhase("idle");
+          setPhaseLabel("");
+        }
+        return;
+      }
+
+      showToast(
+        mqttSent
+          ? "Caméra déclenchée — attente de la photo..."
+          : `Reconnexion en cours... (${cameraMac || "caméra"})`,
+        mqttSent ? "info" : "warn",
+      );
+
+      startPolling(requestId);
+    } catch (err) {
+      showToast(err.message || "Erreur déclenchement", "error");
+      if (isMountedRef.current) {
+        setPhase("idle");
+        setPhaseLabel("");
+      }
+    }
+  }, [
+    phase,
+    poultryId,
+    stopPolling,
+    startPolling,
+    fadeAnim,
+    progressAnim,
+    showToast,
+  ]);
+
+  // ── handleReset ────────────────────────────────────────────────────────────
+
   const handleReset = useCallback(() => {
-    setImageUri(null);
-    setShowResult(false);
+    stopPolling();
+    setPhase("idle");
+    setPhaseLabel("");
     setProgress(0);
     progressAnim.setValue(0);
     fadeAnim.setValue(0);
-  }, [progressAnim, fadeAnim]);
+    setResult(null);
+    setSensors(null);
+    setImageUri(null);
+  }, [stopPolling]);
 
-  // ── Navigation Chat ──────────────────────────────────────────────────────
-  const goToChat = useCallback(() => {
-    navigation.navigate("AIChat", {
-      poultryId,
-      poultryName,
-      context: latestResult,
-    });
-  }, [navigation, poultryId, poultryName, latestResult]);
+  const goToDetail = useCallback(
+    (item) =>
+      navigation.navigate("AIDetail", {
+        analysis: item,
+        poultryId,
+        poultryName,
+      }),
+    [navigation, poultryId, poultryName],
+  );
 
-  // ── Navigation Detail ────────────────────────────────────────────────────
-  const goToDetail = useCallback(() => {
-    navigation.navigate("AIDetail");
-  }, [navigation]);
+  const goToChat = useCallback(
+    () =>
+      navigation.navigate("AIChat", {
+        poultryId,
+        poultryName,
+        context: result,
+      }),
+    [navigation, poultryId, poultryName, result],
+  );
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const isLoading =
+    phase === "capturing" || phase === "uploading" || phase === "analyzing";
+  const poorImage = result ? isResultPoorImage(result) : false;
+  const detections = result?.detections || {};
+
+  // ─── Render ────────────────────────────────────────────────────────────────
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* Header */}
+      {/* ── Header ── */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backBtn}
@@ -298,10 +1068,29 @@ export default function AIAnalysisScreen() {
         >
           <Ionicons name="arrow-back" size={20} color="#1E293B" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Analyse IA Santé</Text>
-        <View style={styles.liveBadge}>
-          <View style={styles.liveDot} />
-          <Text style={styles.liveText}>LIVE</Text>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle}>Analyse IA — Santé</Text>
+          {poultryName && (
+            <Text style={styles.headerSub} numberOfLines={1}>
+              {poultryName}
+            </Text>
+          )}
+        </View>
+        <View
+          style={[
+            styles.liveBadge,
+            isLoading && { backgroundColor: "#FEF3C7" },
+          ]}
+        >
+          <View
+            style={[
+              styles.liveDot,
+              isLoading && { backgroundColor: "#F59E0B" },
+            ]}
+          />
+          <Text style={[styles.liveText, isLoading && { color: "#92400E" }]}>
+            {isLoading ? "EN COURS" : "ACTIF"}
+          </Text>
         </View>
       </View>
 
@@ -312,99 +1101,84 @@ export default function AIAnalysisScreen() {
           { paddingBottom: 100 + Math.max(insets.bottom, 0) },
         ]}
       >
-        {/* Camera Zone */}
-        <TouchableOpacity
-          style={[styles.cameraZone, imageUri && styles.cameraZoneHasImage]}
-          onPress={() => {
-            Alert.alert("Source", "Choisir la source", [
-              {
-                text: "📷 Appareil photo",
-                onPress: () => handleCapture("camera"),
-              },
-              { text: "🖼️ Galerie", onPress: () => handleCapture("library") },
-              { text: "Annuler", style: "cancel" },
-            ]);
-          }}
-          activeOpacity={0.8}
-        >
-          {imageUri ? (
+        {/* ── Zone image ── */}
+        <View style={[styles.imageZone, imageUri && styles.imageZoneHasImage]}>
+          {phase === "capturing" ? (
+            <View style={styles.capturingOverlay}>
+              <View style={styles.capturingIconWrap}>
+                <MaterialIcons
+                  name="settings-remote"
+                  size={28}
+                  color="#22C55E"
+                />
+              </View>
+              <Text style={styles.capturingTitle}>Déclenchement caméra</Text>
+              <Text style={styles.capturingHint}>
+                La caméra va prendre une photo du poulailler
+              </Text>
+            </View>
+          ) : imageUri ? (
             <>
               <Image
                 source={{ uri: imageUri }}
-                style={StyleSheet.absoluteFill}
+                style={[StyleSheet.absoluteFill, poorImage && { opacity: 0.4 }]}
+                resizeMode="cover"
               />
-              <View style={styles.cameraOverlay}>
-                <View style={styles.cameraOverlayTop}>
-                  <View style={styles.cameraOverlayBadge}>
-                    <MaterialIcons name="camera-alt" size={12} color="#fff" />
-                    <Text style={styles.cameraOverlayBadgeText}>
-                      Analyse IA
-                    </Text>
+              {poorImage && (
+                <View style={styles.poorImageOverlay}>
+                  <MaterialIcons name="blur-on" size={28} color="#fff" />
+                  <Text style={styles.poorImageText}>
+                    Image floue — non exploitable
+                  </Text>
+                </View>
+              )}
+              <View style={styles.imageOverlay}>
+                <View style={styles.imageOverlayTop}>
+                  <View style={styles.imageBadge}>
+                    <MaterialIcons name="camera-alt" size={11} color="#fff" />
+                    <Text style={styles.imageBadgeText}>ESP32CAM</Text>
                   </View>
-                  {showResult && (
+                  {result && (
                     <View
                       style={[
-                        styles.cameraOverlayBadge,
-                        { backgroundColor: "rgba(34,197,94,0.9)" },
+                        styles.imageBadge,
+                        {
+                          backgroundColor: poorImage
+                            ? "rgba(100,116,139,0.85)"
+                            : result.urgencyLevel === "critique"
+                              ? "rgba(239,68,68,0.9)"
+                              : result.urgencyLevel === "attention"
+                                ? "rgba(245,158,11,0.9)"
+                                : "rgba(34,197,94,0.9)",
+                        },
                       ]}
                     >
-                      <Text style={styles.cameraOverlayBadgeText}>
-                        {latestResult?.healthScore}/100
+                      <Text style={styles.imageBadgeText}>
+                        {result.healthScore}/100{poorImage ? " ⚠" : ""}
                       </Text>
                     </View>
                   )}
                 </View>
-                <TouchableOpacity
-                  style={styles.retakeBtn}
-                  onPress={handleReset}
-                  activeOpacity={0.7}
-                >
-                  <MaterialIcons name="refresh" size={18} color="#fff" />
-                  <Text style={styles.retakeText}>Reprendre</Text>
-                </TouchableOpacity>
               </View>
             </>
           ) : (
-            <>
-              <View style={styles.cameraIcon}>
-                <MaterialIcons name="camera-alt" size={28} color="#fff" />
+            <View style={styles.imagePlaceholder}>
+              <View style={styles.imageIconWrap}>
+                <MaterialIcons name="camera-alt" size={30} color="#22C55E" />
               </View>
-              <Text style={styles.cameraHint}>
-                Appuyez pour{" "}
-                <Text style={styles.cameraHintHighlight}>
-                  prendre une photo
-                </Text>
-                {"ou choisir depuis la galerie"}
+              <Text style={styles.imageHint}>
+                Appuyez sur{" "}
+                <Text style={styles.imageHintHighlight}>Analyser</Text>
+                {"\n"}pour déclencher la caméra et obtenir un diagnostic
               </Text>
-            </>
-          )}
-        </TouchableOpacity>
-
-        {/* Sensor Strip */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.sensorStrip}
-          contentContainerStyle={styles.sensorStripContent}
-        >
-          <SensorMini
-            icon="thermostat"
-            label="Température"
-            value="24"
-            unit="°C"
-          />
-          <SensorMini icon="water-drop" label="Humidité" value="58" unit="%" />
-          <SensorMini icon="air" label="Qualité air" value="70" unit="%" />
-          <SensorMini icon="waves" label="Niveau eau" value="55" unit="%" />
-        </ScrollView>
-
-        {/* Progress */}
-        {analyzing && (
-          <View style={styles.progressSection}>
-            <View style={styles.progressHeader}>
-              <ActivityIndicator size="small" color="#22C55E" />
-              <Text style={styles.progressTitle}>Analyse en cours...</Text>
             </View>
+          )}
+        </View>
+
+        {/* ── Progression analyse ── */}
+        {isLoading && (
+          <View style={styles.progressCard}>
+            <PhaseSteps currentPhase={phase} />
             <View style={styles.progressBarBg}>
               <Animated.View
                 style={[
@@ -418,273 +1192,303 @@ export default function AIAnalysisScreen() {
                 ]}
               />
             </View>
-            <View style={styles.progressText}>
+            <View style={styles.progressMeta}>
               <Text style={styles.progressLabel}>
-                Détection visuelle + corrélation capteurs
+                {phaseLabel || "Analyse en cours..."}
               </Text>
-              <Text style={styles.progressPercent}>{progress}%</Text>
+              <Text style={styles.progressPct}>{progress}%</Text>
             </View>
-            <Text style={styles.progressModel}>Gemma 3 • Cloudflare AI</Text>
+            <Text style={styles.progressModel}>Gemma 3 · Cloudflare AI</Text>
           </View>
         )}
 
-        {/* Result Card */}
-        {showResult && latestResult && (
-          <Animated.View style={[styles.resultCard, { opacity: fadeAnim }]}>
-            {/* Score */}
-            <View style={styles.resultScoreSection}>
-              <ScoreCircle score={latestResult.healthScore} size={90} />
-              <View style={styles.resultScoreInfo}>
-                <View
-                  style={[
-                    styles.resultStatusBadge,
-                    {
-                      backgroundColor:
-                        latestResult.urgencyLevel === "critique"
-                          ? "#FEF2F2"
-                          : latestResult.urgencyLevel === "attention"
-                            ? "#FEF3C7"
-                            : "#F0FDF4",
-                    },
-                  ]}
-                >
-                  <MaterialIcons
-                    name={
-                      latestResult.urgencyLevel === "critique"
-                        ? "error"
-                        : latestResult.urgencyLevel === "attention"
-                          ? "warning"
-                          : "check-circle"
-                    }
-                    size={14}
-                    color={
-                      latestResult.urgencyLevel === "critique"
-                        ? "#EF4444"
-                        : latestResult.urgencyLevel === "attention"
-                          ? "#F59E0B"
-                          : "#22C55E"
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.resultStatusText,
-                      {
-                        color:
-                          latestResult.urgencyLevel === "critique"
-                            ? "#991B1B"
-                            : latestResult.urgencyLevel === "attention"
-                              ? "#92400E"
-                              : "#166534",
-                      },
-                    ]}
-                  >
-                    {latestResult.urgencyLevel === "critique"
-                      ? "CRITIQUE"
-                      : latestResult.urgencyLevel === "attention"
-                        ? "ATTENTION"
-                        : "NORMAL"}
+        {/* ── Résultat ── */}
+        {phase === "done" && result && (
+          <Animated.View style={{ opacity: fadeAnim }}>
+            {/* Bannière image floue */}
+            {poorImage && (
+              <View style={styles.poorBanner}>
+                <MaterialIcons name="camera-roll" size={18} color="#92400E" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.poorBannerTitle}>
+                    Image inexploitable
+                  </Text>
+                  <Text style={styles.poorBannerDesc}>
+                    Photo trop floue ou trop sombre. Le bilan est basé
+                    uniquement sur les capteurs disponibles.
                   </Text>
                 </View>
-                <Text style={styles.resultMeta}>
-                  Confiance: {latestResult.confidence}% •{" "}
-                  {latestResult.imageQuality?.sizeKb || "?"}Ko
-                </Text>
               </View>
-            </View>
+            )}
 
-            {/* Diagnostic */}
-            <View style={styles.diagnosticBox}>
-              <Text style={styles.diagnosticText}>
-                {latestResult.diagnostic}
-              </Text>
-            </View>
-
-            {/* Detections */}
-            <Text style={styles.sectionTitle}>🔍 Détections</Text>
-            <View style={styles.detectionList}>
-              <DetectionItem
-                icon="psychology"
-                label="Comportement normal"
-                desc="Volailles actives, pas de signes de stress"
-                confidence={95}
-                status={latestResult.detections?.behaviorNormal ? "ok" : "warn"}
-              />
-              <DetectionItem
-                icon="favorite"
-                label="Aucune mortalité"
-                desc="Aucun cadavre visible dans l'image"
-                confidence={99}
-                status={
-                  !latestResult.detections?.mortalityDetected ? "ok" : "danger"
-                }
-              />
-              <DetectionItem
-                icon="group"
-                label="Densité adéquate"
-                desc="100 volailles / 40m² = 2.5/m²"
-                confidence={88}
-                status={latestResult.detections?.densityOk ? "ok" : "warn"}
-              />
-              <DetectionItem
-                icon="cleaning-services"
-                label="Environnement propre"
-                desc="Litière en bon état"
-                confidence={92}
-                status={
-                  latestResult.detections?.cleanEnvironment ? "ok" : "warn"
-                }
-              />
-              <DetectionItem
-                icon="air"
-                label="Ventilation correcte"
-                desc="Circulation d'air visible"
-                confidence={90}
-                status={
-                  latestResult.detections?.ventilationAdequate ? "ok" : "warn"
-                }
-              />
-            </View>
-
-            {/* Advices */}
-            <Text style={styles.sectionTitle}>💡 Recommandations</Text>
-            <View style={styles.adviceList}>
-              {(latestResult.advices || []).map((advice, i) => (
-                <View key={i} style={styles.adviceItem}>
-                  <View style={styles.adviceNumber}>
-                    <Text style={styles.adviceNumberText}>{i + 1}</Text>
-                  </View>
-                  <Text style={styles.adviceText}>{advice}</Text>
+            {/* Bannière aucune donnée */}
+            {result.urgencyLevel === "inconnu" && (
+              <View style={styles.unknownBanner}>
+                <MaterialIcons name="sensors-off" size={18} color="#64748B" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.unknownBannerTitle}>
+                    Aucune donnée disponible
+                  </Text>
+                  <Text style={styles.unknownBannerDesc}>
+                    Capteurs non connectés et image inexploitable. Vérifiez vos
+                    équipements.
+                  </Text>
                 </View>
-              ))}
-            </View>
+              </View>
+            )}
 
-            {/* Actions */}
-            <View style={styles.resultActions}>
-              <TouchableOpacity
-                style={styles.resultActionBtn}
-                onPress={goToChat}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="chat" size={16} color="#64748B" />
-                <Text style={styles.resultActionText}>Chat IA</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.resultActionBtn, styles.resultActionBtnPrimary]}
-                onPress={goToDetail}
-                activeOpacity={0.7}
-              >
-                <MaterialIcons name="open-in-new" size={16} color="#fff" />
-                <Text style={styles.resultActionTextPrimary}>Détails</Text>
-              </TouchableOpacity>
+            {/* ── Carte principale ── */}
+            <View style={styles.resultCard}>
+              {/* Score + Urgence */}
+              <View style={styles.scoreRow}>
+                <ScoreCircle
+                  score={result.healthScore}
+                  size={88}
+                  dimmed={
+                    result.healthScore === null ||
+                    result.healthScore === undefined ||
+                    poorImage ||
+                    result.urgencyLevel === "inconnu"
+                  }
+                />
+                <View style={styles.scoreInfo}>
+                  <UrgencyBadge level={result.urgencyLevel} />
+                  {result.confidence != null && (
+                    <Text style={styles.confidenceText}>
+                      Confiance : {result.confidence}%
+                      {poorImage ? " (capteurs)" : ""}
+                    </Text>
+                  )}
+                  <View style={styles.imageQualityRow}>
+                    <MaterialIcons
+                      name={poorImage ? "broken-image" : "photo-camera"}
+                      size={12}
+                      color={poorImage ? "#F59E0B" : "#94A3B8"}
+                    />
+                    <Text
+                      style={[
+                        styles.imageQualityText,
+                        poorImage && { color: "#F59E0B" },
+                      ]}
+                    >
+                      {poorImage ? "Sans image" : "Image analysée"}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Diagnostic */}
+              <View style={styles.diagnosticBox}>
+                <Text style={styles.diagnosticText}>{result.diagnostic}</Text>
+              </View>
+
+              {/* ── Détections visuelles ── */}
+              <View style={styles.sectionHeader}>
+                <MaterialIcons name="search" size={15} color="#94A3B8" />
+                <Text style={styles.sectionLabel}>Détections visuelles</Text>
+              </View>
+
+              {poorImage && (
+                <View style={styles.unavailableRow}>
+                  <MaterialIcons
+                    name="visibility-off"
+                    size={15}
+                    color="#94A3B8"
+                  />
+                  <Text style={styles.unavailableText}>
+                    Impossible sans image exploitable — relancez l'analyse
+                  </Text>
+                </View>
+              )}
+
+              <View style={styles.detectionList}>
+                <DetectionRow
+                  icon="psychology"
+                  label="Comportement"
+                  desc="Activité et posture des volailles"
+                  value={poorImage ? null : detections.behaviorNormal}
+                />
+                <DetectionRow
+                  icon="favorite"
+                  label="Mortalité"
+                  desc="Présence de cadavres dans l'image"
+                  value={poorImage ? null : detections.mortalityDetected}
+                  isMortality
+                />
+                <DetectionRow
+                  icon="group"
+                  label="Densité"
+                  desc="Répartition des volailles au m²"
+                  value={poorImage ? null : detections.densityOk}
+                />
+                <DetectionRow
+                  icon="cleaning-services"
+                  label="Litière"
+                  desc="État et propreté de la litière"
+                  value={poorImage ? null : detections.cleanEnvironment}
+                />
+                <DetectionRow
+                  icon="air"
+                  label="Ventilation"
+                  desc="Circulation d'air visible"
+                  value={poorImage ? null : detections.ventilationAdequate}
+                />
+              </View>
+
+              {/* ── Capteurs ── */}
+              <View style={[styles.sectionHeader, { marginTop: 20 }]}>
+                <MaterialIcons name="device-hub" size={15} color="#94A3B8" />
+                <Text style={styles.sectionLabel}>Données capteurs</Text>
+              </View>
+
+              <SensorsSection
+                sensors={sensors}
+                thresholds={result?.thresholds}
+              />
+
+              {/* ── Recommandations ── */}
+              {(result.advices || []).length > 0 &&
+                !(poorImage && result.urgencyLevel === "inconnu") && (
+                  <>
+                    <View style={[styles.sectionHeader, { marginTop: 20 }]}>
+                      <MaterialIcons
+                        name="lightbulb"
+                        size={15}
+                        color="#94A3B8"
+                      />
+                      <Text style={styles.sectionLabel}>Recommandations</Text>
+                    </View>
+                    <View style={styles.adviceList}>
+                      {(result.advices || []).map((advice, i) => (
+                        <AdviceItem key={i} text={advice} index={i} />
+                      ))}
+                    </View>
+                  </>
+                )}
+
+              {/* CTA relancer si image floue */}
+              {poorImage && (
+                <TouchableOpacity
+                  style={styles.retryBtn}
+                  onPress={handleAnalyze}
+                  activeOpacity={0.8}
+                >
+                  <MaterialIcons name="camera-alt" size={16} color="#fff" />
+                  <Text style={styles.retryBtnText}>
+                    Relancer avec une nouvelle photo
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
           </Animated.View>
         )}
 
-        {/* History Preview */}
-        <View style={styles.historyPreview}>
+        {/* ── État initial (idle sans résultat) ── */}
+        {phase === "idle" && !result && (
+          <View style={styles.idleCard}>
+            <View style={styles.idleIconWrap}>
+              <MaterialIcons name="biotech" size={32} color="#22C55E" />
+            </View>
+            <Text style={styles.idleTitle}>Prêt à analyser</Text>
+            <Text style={styles.idleDesc}>
+              L'IA va déclencher la caméra, prendre une photo et analyser l'état
+              de santé de votre troupeau en quelques secondes.
+            </Text>
+          </View>
+        )}
+
+        {/* ── Historique ── */}
+        <View style={styles.historyCard}>
           <View style={styles.historyHeader}>
-            <Text style={styles.historyTitle}>📜 Historique</Text>
+            <View style={styles.historyTitleRow}>
+              <MaterialIcons name="history" size={18} color="#1E293B" />
+              <Text style={styles.historyTitle}>Historique</Text>
+            </View>
             <TouchableOpacity
               onPress={() => navigation.navigate("AIHistory", { poultryId })}
             >
               <Text style={styles.historyLink}>Voir tout</Text>
             </TouchableOpacity>
           </View>
-          {/* Mock history items */}
-          {[
-            { date: "Auj 14:30", score: 80, status: "ok", label: "Normal" },
-            {
-              date: "Auj 08:15",
-              score: 55,
-              status: "warn",
-              label: "Attention",
-            },
-            {
-              date: "Hier 16:45",
-              score: 30,
-              status: "danger",
-              label: "Critique",
-            },
-          ].map((item, i) => (
-            <TouchableOpacity
-              key={i}
-              style={styles.historyItem}
-              onPress={goToDetail}
-              activeOpacity={0.7}
-            >
-              <View style={styles.historyThumb}>
-                <MaterialIcons name="image" size={20} color="#94A3B8" />
-              </View>
-              <View style={styles.historyInfo}>
-                <Text style={styles.historyDate}>{item.date}</Text>
-                <Text
-                  style={[
-                    styles.historyScore,
-                    item.status === "ok" && { color: "#22C55E" },
-                    item.status === "warn" && { color: "#F59E0B" },
-                    item.status === "danger" && { color: "#EF4444" },
-                  ]}
-                >
-                  {item.score}/100 — {item.label}
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={20} color="#CBD5E1" />
-            </TouchableOpacity>
-          ))}
+          {history.length === 0 ? (
+            <Text style={styles.historyEmpty}>
+              Aucune analyse effectuée pour l'instant
+            </Text>
+          ) : (
+            history
+              .slice(0, 3)
+              .map((item, i) => (
+                <HistoryItem
+                  key={i}
+                  item={item}
+                  onPress={() => goToDetail(item)}
+                />
+              ))
+          )}
         </View>
       </ScrollView>
 
-      {/* Bottom Actions */}
-      {!showResult && (
-        <View
-          style={[
-            styles.bottomActions,
-            { paddingBottom: Math.max(insets.bottom, 16) + 16 },
-          ]}
+      {/* ── Barre de boutons ── */}
+      <View
+        style={[
+          styles.bottomBar,
+          { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+        ]}
+      >
+        <TouchableOpacity
+          style={styles.chatBtn}
+          onPress={goToChat}
+          activeOpacity={0.7}
         >
+          <MaterialIcons name="chat" size={18} color="#475569" />
+          <Text style={styles.chatBtnText}>Chat IA</Text>
+        </TouchableOpacity>
+
+        {phase === "done" && (
           <TouchableOpacity
-            style={styles.bottomBtnSecondary}
+            style={styles.resetBtn}
             onPress={handleReset}
             activeOpacity={0.7}
           >
-            <MaterialIcons name="refresh" size={18} color="#64748B" />
-            <Text style={styles.bottomBtnSecondaryText}>Réinitialiser</Text>
+            <MaterialIcons name="refresh" size={18} color="#475569" />
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.bottomBtnPrimary}
-            onPress={handleAnalyze}
-            disabled={analyzing || !imageUri}
-            activeOpacity={0.7}
-          >
-            {analyzing ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <>
-                <MaterialIcons name="camera-alt" size={18} color="#fff" />
-                <Text style={styles.bottomBtnPrimaryText}>Analyser</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        </View>
-      )}
+        )}
 
-      {/* Toast */}
+        <TouchableOpacity
+          style={[styles.analyzeBtn, isLoading && styles.analyzeBtnDisabled]}
+          onPress={handleAnalyze}
+          disabled={isLoading}
+          activeOpacity={0.85}
+        >
+          {isLoading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <MaterialIcons name="biotech" size={20} color="#fff" />
+              <Text style={styles.analyzeBtnText}>
+                {phase === "done" ? "Nouvelle analyse" : "Analyser"}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
       <Toast
         visible={toast.visible}
         message={toast.message}
         type={toast.type}
-        onHide={() => setToast((prev) => ({ ...prev, visible: false }))}
+        onHide={() => setToast((p) => ({ ...p, visible: false }))}
       />
     </SafeAreaView>
   );
 }
 
-// ─── Styles ────────────────────────────────────────────────────────────────
+// ─── Styles ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAF9" },
 
-  // Header
+  // ── Header
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -693,6 +1497,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderBottomWidth: 1,
     borderBottomColor: "#F1F5F9",
+    gap: 12,
   },
   backBtn: {
     width: 38,
@@ -702,17 +1507,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  headerCenter: { flex: 1 },
   headerTitle: {
-    flex: 1,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "800",
     color: "#1E293B",
-    marginLeft: 12,
+    lineHeight: 20,
+  },
+  headerSub: {
+    fontSize: 11,
+    color: "#94A3B8",
+    fontWeight: "600",
+    marginTop: 1,
   },
   liveBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 5,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 20,
@@ -724,268 +1535,380 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     backgroundColor: "#22C55E",
   },
-  liveText: { fontSize: 11, fontWeight: "700", color: "#22C55E" },
+  liveText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#16A34A",
+    letterSpacing: 0.5,
+  },
 
-  // Scroll
-  scrollContent: { paddingTop: 16 },
+  scrollContent: { paddingTop: 12 },
 
-  // Camera Zone
-  cameraZone: {
-    marginHorizontal: 16,
-    height: 280,
-    borderRadius: 24,
+  // ── Image zone
+  imageZone: {
+    marginHorizontal: 12,
+    marginBottom: 12,
+    height: 220,
+    borderRadius: 20,
     borderWidth: 2,
     borderStyle: "dashed",
     borderColor: "#22C55E",
     backgroundColor: "#F0FDF4",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 16,
     overflow: "hidden",
   },
-  cameraZoneHasImage: { borderStyle: "solid", borderColor: "transparent" },
-  cameraIcon: {
+  imageZoneHasImage: { borderStyle: "solid", borderColor: "transparent" },
+  imagePlaceholder: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    paddingHorizontal: 24,
+  },
+  imageIconWrap: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: "#22C55E",
+    backgroundColor: "#22C55E15",
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#22C55E",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 15,
-    elevation: 8,
   },
-  cameraHint: {
-    fontSize: 14,
-    fontWeight: "600",
+  imageHint: {
+    fontSize: 13,
     color: "#64748B",
     textAlign: "center",
-    lineHeight: 22,
+    lineHeight: 20,
   },
-  cameraHintHighlight: { color: "#22C55E" },
-  cameraOverlay: {
+  imageHintHighlight: { color: "#22C55E", fontWeight: "700" },
+  capturingOverlay: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 24,
+  },
+  capturingIconWrap: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 2,
+    borderColor: "#22C55E",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  capturingTitle: { fontSize: 15, fontWeight: "700", color: "#22C55E" },
+  capturingHint: {
+    fontSize: 12,
+    color: "#64748B",
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  poorImageOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.38)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  poorImageText: { fontSize: 13, fontWeight: "700", color: "#fff" },
+  imageOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "space-between",
-    padding: 16,
+    padding: 12,
   },
-  cameraOverlayTop: { flexDirection: "row", justifyContent: "space-between" },
-  cameraOverlayBadge: {
+  imageOverlayTop: { flexDirection: "row", justifyContent: "space-between" },
+  imageBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     borderRadius: 20,
     backgroundColor: "rgba(0,0,0,0.6)",
   },
-  cameraOverlayBadgeText: { fontSize: 11, fontWeight: "700", color: "#fff" },
-  retakeBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    alignSelf: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "rgba(0,0,0,0.6)",
-  },
-  retakeText: { fontSize: 12, fontWeight: "700", color: "#fff" },
+  imageBadgeText: { fontSize: 11, fontWeight: "700", color: "#fff" },
 
-  // Sensor Strip
-  sensorStrip: { marginTop: 16, marginBottom: 16 },
-  sensorStripContent: { paddingHorizontal: 16, gap: 10 },
-  sensorMini: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 16,
-    backgroundColor: "#F0FDF4",
+  // ── Progress
+  progressCard: {
+    marginHorizontal: 12,
+    marginBottom: 12,
+    padding: 18,
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  sensorMiniIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+  phaseSteps: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+  phaseStep: { alignItems: "center", gap: 6, flex: 1 },
+  phaseStepIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     alignItems: "center",
     justifyContent: "center",
   },
-  sensorMiniValue: { fontSize: 14, fontWeight: "800", color: "#1E293B" },
-  sensorMiniUnit: { fontSize: 10, fontWeight: "600", color: "#94A3B8" },
-  sensorMiniLabel: { fontSize: 10, fontWeight: "600", color: "#64748B" },
+  phaseStepLabel: { fontSize: 9, fontWeight: "600", textAlign: "center" },
+  progressBarBg: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#F1F5F9",
+    overflow: "hidden",
+    marginBottom: 8,
+  },
+  progressBarFill: {
+    height: "100%",
+    borderRadius: 3,
+    backgroundColor: "#22C55E",
+  },
+  progressMeta: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  progressLabel: { fontSize: 11, color: "#64748B", flex: 1 },
+  progressPct: { fontSize: 12, fontWeight: "700", color: "#22C55E" },
+  progressModel: {
+    fontSize: 10,
+    color: "#CBD5E1",
+    marginTop: 6,
+    textAlign: "center",
+  },
 
-  // Progress
-  progressSection: {
-    marginHorizontal: 16,
-    marginBottom: 16,
+  // ── Banners
+  poorBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    marginHorizontal: 12,
+    marginBottom: 10,
+    backgroundColor: "#FEF3C7",
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#FCD34D",
+  },
+  poorBannerTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#92400E",
+    marginBottom: 2,
+  },
+  poorBannerDesc: { fontSize: 12, color: "#92400E", lineHeight: 18 },
+  unknownBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    marginHorizontal: 12,
+    marginBottom: 10,
+    backgroundColor: "#F1F5F9",
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  unknownBannerTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#475569",
+    marginBottom: 2,
+  },
+  unknownBannerDesc: { fontSize: 12, color: "#64748B", lineHeight: 18 },
+
+  // ── Result card
+  resultCard: {
+    marginHorizontal: 12,
+    marginBottom: 12,
     padding: 20,
     backgroundColor: "#fff",
     borderRadius: 20,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
     elevation: 2,
   },
-  progressHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 12,
-  },
-  progressTitle: { fontSize: 13, fontWeight: "700", color: "#64748B" },
-  progressBarBg: {
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#F1F5F9",
-    overflow: "hidden",
-  },
-  progressBarFill: {
-    height: "100%",
-    borderRadius: 4,
-    backgroundColor: "#22C55E",
-  },
-  progressText: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 8,
-  },
-  progressLabel: { fontSize: 12, color: "#94A3B8" },
-  progressPercent: { fontSize: 12, fontWeight: "700", color: "#22C55E" },
-  progressModel: {
-    fontSize: 11,
-    color: "#CBD5E1",
-    marginTop: 8,
-    textAlign: "center",
-  },
 
-  // Result Card
-  resultCard: {
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 24,
-    backgroundColor: "#fff",
-    borderRadius: 24,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 3,
-  },
-  resultScoreSection: {
+  // ── Score
+  scoreRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 20,
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  resultScoreInfo: { flex: 1 },
-  resultStatusBadge: {
+  scoreInfo: { flex: 1, gap: 6 },
+  urgencyBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
     alignSelf: "flex-start",
-    marginBottom: 8,
   },
-  resultStatusText: { fontSize: 13, fontWeight: "700" },
-  resultMeta: { fontSize: 12, color: "#94A3B8" },
+  urgencyBadgeText: { fontSize: 12, fontWeight: "700" },
+  confidenceText: { fontSize: 11, color: "#94A3B8" },
+  imageQualityRow: { flexDirection: "row", alignItems: "center", gap: 4 },
+  imageQualityText: { fontSize: 11, color: "#94A3B8", fontWeight: "600" },
 
+  // ── Diagnostic
   diagnosticBox: {
     backgroundColor: "#F8FAFC",
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 20,
+    borderRadius: 12,
+    padding: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: "#22C55E",
+    marginBottom: 18,
   },
   diagnosticText: {
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 13,
     color: "#475569",
-    lineHeight: 22,
+    lineHeight: 21,
+    fontWeight: "500",
   },
 
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
-    color: "#94A3B8",
-    marginBottom: 12,
-    marginTop: 4,
-  },
-
-  // Score Circle
-  scoreCircleOuter: {
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  scoreCircleInner: {
-    justifyContent: "center",
-    alignItems: "center",
-    zIndex: 2,
-  },
-  scoreCircleValue: { fontSize: 28, fontWeight: "800" },
-  scoreArc: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    borderRadius: 100,
-  },
-
-  // Detections
-  detectionList: { gap: 10 },
-  detectionItem: {
+  // ── Section headers
+  sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    padding: 12,
-    borderRadius: 14,
+    gap: 5,
+    marginBottom: 10,
+  },
+  sectionLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1.0,
+    textTransform: "uppercase",
+    color: "#94A3B8",
+  },
+
+  // ── Detections
+  detectionList: { gap: 8 },
+  detectionRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 11,
+    borderRadius: 12,
     backgroundColor: "#F8FAFC",
   },
   detectionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+    width: 38,
+    height: 38,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
   detectionContent: { flex: 1 },
-  detectionName: { fontSize: 14, fontWeight: "700", color: "#1E293B" },
-  detectionDesc: { fontSize: 11, color: "#94A3B8", marginTop: 2 },
-  detectionBar: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: "#F1F5F9",
-    marginTop: 8,
-    overflow: "hidden",
+  detectionTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 2,
   },
-  detectionBarFill: { height: "100%", borderRadius: 2 },
-  detectionConfidence: { fontSize: 10, fontWeight: "700", marginTop: 4 },
+  detectionName: { fontSize: 13, fontWeight: "700", color: "#1E293B" },
+  detectionBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  detectionBadgeText: { fontSize: 10, fontWeight: "800" },
+  detectionDesc: { fontSize: 11, color: "#94A3B8" },
+  detectionNa: {
+    fontSize: 11,
+    color: "#CBD5E1",
+    fontStyle: "italic",
+    marginTop: 3,
+  },
 
-  // Advices
-  adviceList: { gap: 8 },
+  unavailableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+  },
+  unavailableText: { fontSize: 12, color: "#94A3B8", fontWeight: "600" },
+
+  // ── Sensors
+  sensorGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  sensorCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#F8FAFC",
+    width: (width - 24 - 8 - 40) / 2,
+  },
+  sensorCardIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sensorCardBody: { flex: 1 },
+  sensorCardValue: { fontSize: 15, fontWeight: "800", color: "#1E293B" },
+  sensorCardUnit: { fontSize: 10, fontWeight: "600", color: "#94A3B8" },
+  sensorCardLabel: {
+    fontSize: 10,
+    color: "#64748B",
+    marginTop: 1,
+    fontWeight: "600",
+  },
+  noSensorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#F8FAFC",
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: "#E2E8F0",
+  },
+  noSensorText: {
+    fontSize: 12,
+    color: "#94A3B8",
+    fontStyle: "italic",
+    flex: 1,
+    lineHeight: 18,
+  },
+
+  // ── Advices
+  adviceList: { gap: 7 },
   adviceItem: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    padding: 10,
+    padding: 11,
     borderRadius: 12,
     backgroundColor: "#F0FDF4",
   },
   adviceNumber: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     backgroundColor: "#22C55E",
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 2,
+    marginTop: 1,
   },
-  adviceNumberText: { fontSize: 11, fontWeight: "800", color: "#fff" },
+  adviceNumberText: { fontSize: 10, fontWeight: "800", color: "#fff" },
   adviceText: {
     flex: 1,
     fontSize: 13,
@@ -994,57 +1917,86 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
 
-  // Result Actions
-  resultActions: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 20,
-  },
-  resultActionBtn: {
-    flex: 1,
+  // ── Retry button
+  retryBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 12,
-    borderRadius: 14,
-    backgroundColor: "#F1F5F9",
-  },
-  resultActionBtnPrimary: {
+    gap: 8,
     backgroundColor: "#22C55E",
+    borderRadius: 14,
+    paddingVertical: 13,
+    marginTop: 16,
   },
-  resultActionText: { fontSize: 13, fontWeight: "700", color: "#64748B" },
-  resultActionTextPrimary: { fontSize: 13, fontWeight: "700", color: "#fff" },
+  retryBtnText: { fontSize: 13, fontWeight: "700", color: "#fff" },
 
-  // History Preview
-  historyPreview: {
-    marginHorizontal: 16,
-    marginBottom: 16,
-    padding: 20,
+  // ── Idle state
+  idleCard: {
+    marginHorizontal: 12,
+    marginBottom: 12,
+    padding: 24,
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    alignItems: "center",
+    gap: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  idleIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: "#F0FDF4",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  idleTitle: { fontSize: 16, fontWeight: "800", color: "#1E293B" },
+  idleDesc: {
+    fontSize: 13,
+    color: "#64748B",
+    textAlign: "center",
+    lineHeight: 20,
+  },
+
+  // ── History
+  historyCard: {
+    marginHorizontal: 12,
+    marginBottom: 12,
+    padding: 18,
     backgroundColor: "#fff",
     borderRadius: 20,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
-    elevation: 2,
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 1,
   },
   historyHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  historyTitle: { fontSize: 16, fontWeight: "700", color: "#1E293B" },
+  historyTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  historyTitle: { fontSize: 15, fontWeight: "700", color: "#1E293B" },
   historyLink: { fontSize: 13, fontWeight: "700", color: "#22C55E" },
+  historyEmpty: {
+    color: "#94A3B8",
+    fontSize: 13,
+    textAlign: "center",
+    paddingVertical: 16,
+  },
   historyItem: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    padding: 12,
-    borderRadius: 14,
+    gap: 10,
+    padding: 10,
+    borderRadius: 12,
     backgroundColor: "#F8FAFC",
-    marginBottom: 8,
+    marginBottom: 7,
   },
   historyThumb: {
     width: 48,
@@ -1053,48 +2005,70 @@ const styles = StyleSheet.create({
     backgroundColor: "#F0FDF4",
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+    position: "relative",
+  },
+  historyThumbBadge: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#F59E0B",
+    alignItems: "center",
+    justifyContent: "center",
   },
   historyInfo: { flex: 1 },
-  historyDate: { fontSize: 12, fontWeight: "600", color: "#94A3B8" },
-  historyScore: { fontSize: 14, fontWeight: "700", marginTop: 2 },
+  historyDate: { fontSize: 11, fontWeight: "600", color: "#94A3B8" },
+  historyScore: { fontSize: 13, fontWeight: "700", marginTop: 2 },
 
-  // Bottom Actions
-  bottomActions: {
+  // ── Bottom bar
+  bottomBar: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
     backgroundColor: "#fff",
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingHorizontal: 12,
+    paddingTop: 12,
     flexDirection: "row",
-    gap: 12,
+    gap: 8,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
     elevation: 10,
   },
-  bottomBtnSecondary: {
+  chatBtn: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 14,
-    borderRadius: 16,
+    paddingVertical: 13,
+    borderRadius: 14,
     backgroundColor: "#F1F5F9",
   },
-  bottomBtnSecondaryText: { fontSize: 14, fontWeight: "700", color: "#64748B" },
-  bottomBtnPrimary: {
-    flex: 1,
+  chatBtnText: { fontSize: 13, fontWeight: "700", color: "#475569" },
+  resetBtn: {
+    width: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 13,
+    borderRadius: 14,
+    backgroundColor: "#F1F5F9",
+  },
+  analyzeBtn: {
+    flex: 2,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 14,
-    borderRadius: 16,
+    gap: 8,
+    paddingVertical: 13,
+    borderRadius: 14,
     backgroundColor: "#22C55E",
   },
-  bottomBtnPrimaryText: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  analyzeBtnDisabled: { backgroundColor: "#94A3B8" },
+  analyzeBtnText: { fontSize: 14, fontWeight: "800", color: "#fff" },
 });

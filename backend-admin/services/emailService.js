@@ -1,17 +1,16 @@
 // services/emailService.js
 const nodemailer = require("nodemailer");
 
-// Vérifier si les credentials email sont configurés
 const hasEmailCredentials = process.env.SMTP_USER && process.env.SMTP_PASS;
+
+const FRONTEND_URL = "https://smart-poultry-reset.vercel.app";
 
 let transporter;
 
-// Initialiser le transporter
 async function getTransporter() {
   if (transporter) return transporter;
 
   if (hasEmailCredentials) {
-    // Utiliser SMTP configuré (Gmail ou autre)
     transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || "smtp.gmail.com",
       port: process.env.SMTP_PORT || 587,
@@ -38,9 +37,9 @@ async function getTransporter() {
 exports.sendInviteEmail = async (email, token, firstName, role = "eleveur") => {
   try {
     const transport = await getTransporter();
-    const resetLink = `${process.env.FRONTEND_URL || "http://localhost:5173"}/definir-mot-de-passe/${token}`;
 
-    const roleLabel = role === "admin" ? "administrateur" : "éleveur";
+    const resetLink = `${FRONTEND_URL}/definir-mot-de-passe/${token}`;
+
     const accountType =
       role === "admin" ? "compte administrateur" : "compte élèveur";
 
@@ -67,7 +66,6 @@ exports.sendInviteEmail = async (email, token, firstName, role = "eleveur") => {
     };
 
     const info = await transport.sendMail(mailOptions);
-
     console.log(
       "[EMAIL] Email envoyé à:",
       email,
@@ -75,8 +73,52 @@ exports.sendInviteEmail = async (email, token, firstName, role = "eleveur") => {
       info.messageId,
       "- Role:",
       role,
+      "- Link:",
+      resetLink,
     );
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error("[EMAIL ERROR]", error);
+    throw error;
+  }
+};
 
+exports.sendCredentialsEmail = async (email, resetToken, firstName) => {
+  try {
+    const transport = await getTransporter();
+
+    const resetLink = `${FRONTEND_URL}/definir-mot-de-passe/${resetToken}`;
+
+    const mailOptions = {
+      from: `"Smart Poultry Admin" <${process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@smartpoultry.com"}>`,
+      to: email,
+      subject: "Vos coordonnées de connexion - Smart Poultry",
+      html: `
+        <h2>Bonjour${firstName ? " " + firstName : ""},</h2>
+        <p>Voici vos coordonnées de connexion à la plateforme Smart Poultry :</p>
+        <ul>
+          <li><strong>Email :</strong> ${email}</li>
+          <li><strong>Mot de passe :</strong> Cliquez sur le lien ci-dessous pour réinitialiser votre mot de passe</li>
+        </ul>
+        <p style="margin: 20px 0;">
+          <a href="${resetLink}" style="background:#0066cc; color:white; padding:12px 24px; text-decoration:none; border-radius:6px;">
+            Réinitialiser mon mot de passe
+          </a>
+        </p>
+        <p>Ce lien est valide pendant 24 heures.</p>
+        <p>À bientôt,<br>L'équipe Smart Poultry</p>
+      `,
+    };
+
+    const info = await transport.sendMail(mailOptions);
+    console.log(
+      "[EMAIL] Coordonnées envoyées à:",
+      email,
+      "- Message ID:",
+      info.messageId,
+      "- Link:",
+      resetLink,
+    );
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error("[EMAIL ERROR]", error);
@@ -108,14 +150,12 @@ exports.sendInvitationEmail = async ({ email, firstName, role, resetLink }) => {
     };
 
     const info = await transport.sendMail(mailOptions);
-
     console.log(
       "[EMAIL] Email envoyé à:",
       email,
       "- Message ID:",
       info.messageId,
     );
-
     return { success: true, messageId: info.messageId };
   } catch (error) {
     console.error("[EMAIL ERROR]", error);

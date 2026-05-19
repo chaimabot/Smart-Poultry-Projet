@@ -6,7 +6,7 @@ import { MaterialIcons } from "@expo/vector-icons";
 export default function SectionGestionVentilateur({
   fanOn,
   fanAuto,
-  fanAutoReason, // ✅ Nouvelle prop
+  fanAutoReason, // ✅ Raison du déclenchement AUTO (depuis backend)
   onToggleAuto,
   onFanOn,
   onFanOff,
@@ -66,11 +66,27 @@ export default function SectionGestionVentilateur({
         </TouchableOpacity>
       </View>
 
-      {/* ✅ Afficher la raison en mode AUTO */}
+      {/* ✅ Afficher la raison en mode AUTO (vient du backend) */}
       {fanAuto && fanAutoReason && (
-        <View style={styles.reasonBox}>
-          <MaterialIcons name="lightbulb-outline" size={14} color="#F59E0B" />
-          <Text style={styles.reasonText}>{fanAutoReason}</Text>
+        <View
+          style={[
+            styles.reasonBox,
+            fanOn ? styles.reasonBoxActive : styles.reasonBoxIdle,
+          ]}
+        >
+          <MaterialIcons
+            name={fanOn ? "warning-amber" : "check-circle-outline"}
+            size={14}
+            color={fanOn ? "#F59E0B" : "#22C55E"}
+          />
+          <Text
+            style={[
+              styles.reasonText,
+              { color: fanOn ? "#92400E" : "#166534" },
+            ]}
+          >
+            {fanAutoReason}
+          </Text>
         </View>
       )}
 
@@ -105,12 +121,13 @@ export default function SectionGestionVentilateur({
         </View>
       )}
 
-      {/* Info mode auto */}
+      {/* ✅ Info mode auto - mis à jour : c'est le SERVEUR qui contrôle */}
       {fanAuto && (
         <View style={styles.autoInfo}>
-          <MaterialIcons name="info-outline" size={13} color="#64748B" />
+          <MaterialIcons name="cloud-done" size={13} color="#22C55E" />
           <Text style={styles.autoInfoText}>
-            L'app surveille les seuils et commande l'ESP32 automatiquement
+            Le serveur surveille les seuils en continu et commande le
+            ventilateur automatiquement, 24h/24
           </Text>
         </View>
       )}
@@ -152,21 +169,26 @@ const styles = StyleSheet.create({
   segmentText: { fontSize: 10, fontWeight: "700", color: "#94A3B8" },
   textWhite: { color: "#fff" },
 
-  // ✅ Style pour la raison AUTO
+  // ✅ Style pour la raison AUTO - dynamique selon état
   reasonBox: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "#FEF3C7",
     borderRadius: 8,
     padding: 10,
     marginTop: 10,
     borderLeftWidth: 3,
+  },
+  reasonBoxActive: {
+    backgroundColor: "#FEF3C7",
     borderLeftColor: "#F59E0B",
+  },
+  reasonBoxIdle: {
+    backgroundColor: "#F0FDF4",
+    borderLeftColor: "#22C55E",
   },
   reasonText: {
     fontSize: 11,
-    color: "#92400E",
     fontWeight: "600",
     flex: 1,
   },
@@ -189,10 +211,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#F0FDF4",
     borderRadius: 8,
     padding: 8,
     marginTop: 8,
   },
-  autoInfoText: { fontSize: 10, color: "#64748B", flex: 1 },
+  autoInfoText: { fontSize: 10, color: "#166534", flex: 1, fontWeight: "500" },
 });

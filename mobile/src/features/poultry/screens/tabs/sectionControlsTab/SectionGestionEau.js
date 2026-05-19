@@ -1,3 +1,5 @@
+// components/SectionGestionEau.jsx
+
 import React from "react";
 import { View, Text, TouchableOpacity, Alert, StyleSheet } from "react-native";
 import { MaterialIcons } from "@expo/vector-icons";
@@ -22,44 +24,50 @@ const SectionGestionEau = ({
     }
   }, [data?.pumpOn, data?.pumpAuto]);
 
-  // ── Toggle AUTO / MANUEL ─────────────────────────────────────────────────
   const handleToggleAuto = async () => {
     if (!poultryId) {
-      Alert.alert(
-        "Poulailler introuvable",
-        "Impossible de contrôler la pompe : id du poulailler non disponible.",
-      );
+      Alert.alert("Poulailler introuvable", "...");
       return;
     }
     if (isSubmitting.current) return;
     isSubmitting.current = true;
 
-    // Mise à jour optimiste immédiate
     const newAuto = !pumpAuto;
+
+    //    Mise à jour optimiste UI
     setPumpAuto(newAuto);
+    if (!newAuto) {
+      setPumpOn(false); //    Forcer arrêt visuel immédiat
+    }
+
+    console.log(
+      "[SectionGestionEau] Toggle AUTO:",
+      newAuto ? "AUTO" : "MANUEL",
+    );
 
     try {
       if (onToggleAuto) {
         await onToggleAuto();
       } else {
-        const newMode = newAuto ? "auto" : "manual";
-        await controlPump(poultryId, newMode, pumpOn ? "on" : "off");
+        await controlPump(
+          poultryId,
+          newAuto ? "auto" : "manual",
+          null,
+          true, // changeModeOnly
+        );
         if (onUpdate) onUpdate();
       }
+      console.log("[SectionGestionEau]    Mode changé");
     } catch (error) {
       // Rollback
       setPumpAuto(!newAuto);
-      const errorMsg =
-        error.error ||
-        error.message ||
-        "Impossible de changer le mode de la pompe.";
-      console.error("[SectionGestionEau] handleToggleAuto error:", error);
+      const errorMsg = error.error || error.message || "Impossible.";
+      console.error("[SectionGestionEau] error:", error);
       Alert.alert("Erreur", errorMsg);
     } finally {
       isSubmitting.current = false;
     }
   };
-
   // ── Commande manuelle ON / OFF ───────────────────────────────────────────
   const handleToggleStatus = async (action) => {
     if (pumpAuto) {
@@ -75,9 +83,17 @@ const SectionGestionEau = ({
     // Mise à jour optimiste
     setPumpOn(action === "on");
 
+    console.log("[SectionGestionEau] Commande manuelle:", action);
+
     try {
-      await controlPump(poultryId, "manual", action);
-      // Pas de onUpdate — MQTT /status synchronise l'UI automatiquement
+      //    Appel avec changeModeOnly=false pour envoyer la commande
+      await controlPump(
+        poultryId,
+        "manual",
+        action,
+        false, //    changeModeOnly = false (envoyer la commande)
+      );
+      console.log("[SectionGestionEau]    Commande envoyée");
     } catch (error) {
       // Rollback
       setPumpOn(action !== "on");
@@ -97,6 +113,9 @@ const SectionGestionEau = ({
     }
   };
 
+  //    Détecter si la pompe tourne en mode AUTO (pour couleur)
+  const isAutoActive = pumpAuto && pumpOn;
+
   return (
     <View style={styles.card}>
       {/* ── En-tête ── */}
@@ -109,7 +128,7 @@ const SectionGestionEau = ({
           <Text style={styles.label}>Pompe à Eau</Text>
           <Text style={styles.sub}>
             {pumpAuto
-              ? `Auto — Niveau d'eau`
+              ? `Auto — ${pumpOn ? "● En marche" : "○ En attente"}`
               : `Manuel — ${pumpOn ? "● En marche" : "○ Arrêtée"}`}
           </Text>
         </View>
@@ -135,15 +154,29 @@ const SectionGestionEau = ({
         </TouchableOpacity>
       </View>
 
-      {/* ── Raison du mode automatique ── */}
-      {(pumpAuto && pumpAutoReason) || pumpAuto ? (
-        <View style={styles.reasonBox}>
-          <MaterialIcons name="water-drop" size={13} color="#0EA5E9" />
-          <Text style={styles.reasonText}>
-            {pumpAutoReason || "Auto — contrôle du niveau d'eau"}
+      {/*    ── Raison du mode automatique (dynamique selon état) ── */}
+      {pumpAuto && pumpAutoReason && (
+        <View
+          style={[
+            styles.reasonBox,
+            isAutoActive ? styles.reasonBoxActive : styles.reasonBoxIdle,
+          ]}
+        >
+          <MaterialIcons
+            name={isAutoActive ? "warning-amber" : "check-circle-outline"}
+            size={14}
+            color={isAutoActive ? "#F59E0B" : "#0EA5E9"}
+          />
+          <Text
+            style={[
+              styles.reasonText,
+              { color: isAutoActive ? "#92400E" : "#0C4A6E" },
+            ]}
+          >
+            {pumpAutoReason}
           </Text>
         </View>
-      ) : null}
+      )}
 
       {/* ── Boutons manuels ── */}
       {!pumpAuto && (
@@ -176,12 +209,13 @@ const SectionGestionEau = ({
         </View>
       )}
 
-      {/* ── Info mode auto ── */}
+      {/*    ── Info mode auto (mis à jour : serveur) ── */}
       {pumpAuto && (
         <View style={styles.autoInfo}>
-          <MaterialIcons name="info-outline" size={13} color="#64748B" />
+          <MaterialIcons name="cloud-done" size={13} color="#0EA5E9" />
           <Text style={styles.autoInfoText}>
-            L'app surveille le niveau d'eau et commande la pompe automatiquement
+            Le serveur surveille le niveau d'eau en continu et commande la pompe
+            automatiquement, 24h/24
           </Text>
         </View>
       )}
@@ -223,19 +257,33 @@ const styles = StyleSheet.create({
   segmentActive: { backgroundColor: "#0EA5E9" },
   segmentText: { fontSize: 10, fontWeight: "700", color: "#94A3B8" },
   textWhite: { color: "#fff" },
+
+  //    Reason box dynamique
   reasonBox: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    backgroundColor: "#F0F9FF",
+    gap: 6,
     borderRadius: 8,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "#BAE6FD",
+    paddingVertical: 8,
+    marginTop: 10,
+    marginBottom: 4,
+    borderLeftWidth: 3,
   },
-  reasonText: { fontSize: 11, color: "#0C4A6E", fontWeight: "500", flex: 1 },
+  reasonBoxActive: {
+    backgroundColor: "#FEF3C7",
+    borderLeftColor: "#F59E0B",
+  },
+  reasonBoxIdle: {
+    backgroundColor: "#F0F9FF",
+    borderLeftColor: "#0EA5E9",
+  },
+  reasonText: {
+    fontSize: 11,
+    fontWeight: "600",
+    flex: 1,
+  },
+
   btn: {
     flex: 1,
     padding: 11,
@@ -254,12 +302,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    backgroundColor: "#F8FAFC",
+    backgroundColor: "#F0F9FF",
     borderRadius: 8,
     padding: 8,
     marginTop: 8,
   },
-  autoInfoText: { fontSize: 10, color: "#64748B", flex: 1 },
+  autoInfoText: { fontSize: 10, color: "#0C4A6E", flex: 1, fontWeight: "500" },
 });
 
 export default SectionGestionEau;

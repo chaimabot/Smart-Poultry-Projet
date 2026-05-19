@@ -41,22 +41,28 @@ const { width } = Dimensions.get("window");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function getAirQuality(co2, nh3, dust) {
-  if (co2 === null && nh3 === null && dust === null)
-    return { label: "—", color: "#94A3B8" };
-  if (
-    (co2 !== null && co2 > 1500) ||
-    (nh3 !== null && nh3 > 25) ||
-    (dust !== null && dust > 150)
-  )
-    return { label: "Mauvaise", color: "#EF4444" };
-  if (
-    (co2 !== null && co2 > 1000) ||
-    (nh3 !== null && nh3 > 15) ||
-    (dust !== null && dust > 100)
-  )
-    return { label: "Moyenne", color: "#F97316" };
-  return { label: "Excellente", color: "#22C55E" };
+// ✅ airQualityPercent est un seuil MIN — danger si en dessous
+function getAirQuality(airQualityPercent, threshold) {
+  if (airQualityPercent === null || airQualityPercent === undefined)
+    return { label: "—", color: "#94A3B8", status: "none" };
+
+  const value = Number(airQualityPercent);
+  const min = threshold;
+
+  // Si on a un seuil configuré
+  if (min !== undefined && min !== null) {
+    if (value < min)
+      return { label: "Danger", color: "#A32D2D", status: "danger" };
+    if (value < min * 1.2)
+      return { label: "Attention", color: "#BA7517", status: "warn" };
+    return { label: "OK", color: "#639922", status: "normal" };
+  }
+
+  // Fallback sans seuil configuré
+  if (value >= 80) return { label: "OK", color: "#639922", status: "normal" };
+  if (value >= 60)
+    return { label: "Attention", color: "#BA7517", status: "warn" };
+  return { label: "Danger", color: "#A32D2D", status: "danger" };
 }
 
 function getTimeAgo(timestamp) {
@@ -66,6 +72,11 @@ function getTimeAgo(timestamp) {
   if (diff < 3600) return `${Math.floor(diff / 60)} min`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} h`;
   return `${Math.floor(diff / 86400)} j`;
+}
+
+function isDataFresh(timestamp) {
+  if (!timestamp) return false;
+  return Date.now() - new Date(timestamp) < 120_000;
 }
 
 // ─── Badge config (statuts poulailler) ──────────────────────────────────────
@@ -78,7 +89,7 @@ const BADGE_CONFIG = {
     dot: "#94A3B8",
   },
   connecte: {
-    label: "Connecté",
+    label: "Associé à un ESP32",
     bg: "rgba(255,255,255,0.9)",
     textColor: "#1E293B",
     dot: "#22C55E",
@@ -88,12 +99,6 @@ const BADGE_CONFIG = {
     bg: "#FEF2F2",
     textColor: "#EF4444",
     dot: "#EF4444",
-  },
-  maintenance: {
-    label: "Maintenance",
-    bg: "#FFF7ED",
-    textColor: "#F97316",
-    dot: "#F97316",
   },
   alerte: {
     label: "Alerte",
@@ -114,24 +119,18 @@ const getBadge = (status, isCritical) => {
 };
 
 // ─── Résolution du message d'alerte ─────────────────────────────────────────
-// Utilise le message du backend (AlertService) en priorité
-// Fallback simplifié si le message contient "undefined"
 const resolveAlertMessage = (alert) => {
   if (!alert) return "Alerte système";
 
-  // ✅ Le message du backend (AlertService) est déjà en français simple
   if (alert.message && !alert.message.includes("undefined")) {
     return alert.message;
   }
 
-  // Fallback si le message est absent ou corrompu
   const paramLabels = {
     temperature: "Température",
     humidity: "Humidité",
-    co2: "CO₂",
-    nh3: "Ammoniac",
-    dust: "Poussière",
     waterLevel: "Niveau d'eau",
+    airQualityPercent: "Qualité d'air",
   };
 
   if (alert.parameter && paramLabels[alert.parameter]) {
@@ -206,11 +205,20 @@ export default function DashboardScreen({ navigation }) {
             remarque: p.remarque || "",
             address: p.address || "",
             attachments: p.attachments || [],
-            temp: p.lastMonitoring?.temperature?.toFixed(1) || "—",
-            humid: p.lastMonitoring?.humidity?.toFixed(0) || "—",
-            co2: p.lastMonitoring?.co2 ?? null,
-            nh3: p.lastMonitoring?.nh3 ?? null,
-            dust: p.lastMonitoring?.dust ?? null,
+            temp: isDataFresh(p.lastMonitoring?.timestamp)
+              ? p.lastMonitoring?.temperature?.toFixed(1) || "—"
+              : "—",
+            humid: isDataFresh(p.lastMonitoring?.timestamp)
+              ? p.lastMonitoring?.humidity?.toFixed(0) || "—"
+              : "—",
+            isFresh: isDataFresh(p.lastMonitoring?.timestamp),
+            airQualityPercent: isDataFresh(p.lastMonitoring?.timestamp)
+              ? (p.lastMonitoring?.airQualityPercent ?? null)
+              : null,
+            airQualityDisplay: isDataFresh(p.lastMonitoring?.timestamp)
+              ? (p.lastMonitoring?.airQualityPercent ?? null)
+              : "—",
+            airQualityThreshold: p.parameters?.airQualityPercent?.min ?? null,
             lastMonitoringTimestamp: p.lastMonitoring?.timestamp || null,
             isCritical: p.isCritical || false,
             status: p.status || "en_attente_module",
@@ -227,7 +235,6 @@ export default function DashboardScreen({ navigation }) {
   }, []);
 
   // ── Charger les notifications par poulailler ────────────────────────────────
-  // Utilise GET /api/alerts/poulailler/:id (retourne { success, data: [...] })
   const loadPoultryNotifications = useCallback(async () => {
     if (poultryList.length === 0) return;
     setLoadingAlerts(true);
@@ -243,7 +250,6 @@ export default function DashboardScreen({ navigation }) {
       poultryList.forEach((poultry, i) => {
         const result = results[i];
 
-        // Support format { success, data: [...] } ET tableau direct
         let alerts = [];
         if (result.status === "fulfilled") {
           const val = result.value;
@@ -254,7 +260,6 @@ export default function DashboardScreen({ navigation }) {
               : [];
         }
 
-        // Normaliser le champ read (backend envoie read ET isRead)
         const normalized = alerts.map((a) => ({
           ...a,
           read: Boolean(a.read || a.isRead),
@@ -276,11 +281,9 @@ export default function DashboardScreen({ navigation }) {
           lastWarn: warns[0] || null,
         };
 
-        // Ajouter aux alertes globales pour le modal
         unread.forEach((alert) => {
           flatAlerts.push({
             ...alert,
-            // Le message vient du backend (AlertService) — déjà en français
             message: resolveAlertMessage(alert),
             poultryName: poultry.name,
             poultryId: poultry.id,
@@ -292,7 +295,7 @@ export default function DashboardScreen({ navigation }) {
       setAllAlerts(
         flatAlerts
           .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-          .slice(0, 30), // Limiter à 30 alertes récentes
+          .slice(0, 30),
       );
     } catch (error) {
       console.error("[Dashboard] loadPoultryNotifications error:", error);
@@ -439,7 +442,6 @@ export default function DashboardScreen({ navigation }) {
   };
 
   // ── Marquer une alerte comme lue ─────────────────────────────────────────────
-  // PATCH /api/alerts/:id/read
   const handleMarkAlertAsRead = useCallback(async (alertId) => {
     try {
       await markAlertAsRead(alertId);
@@ -457,9 +459,10 @@ export default function DashboardScreen({ navigation }) {
   const filteredPoultry = React.useMemo(() => {
     let list = poultryList;
 
-    if (activeFilter === "alerts") list = list.filter((p) => p.isCritical);
-    else if (activeFilter === "connected")
-      list = list.filter((p) => !p.isCritical);
+    if (activeFilter === "connected")
+      list = list.filter((p) => p.status !== "en_attente_module");
+    else if (activeFilter === "pending")
+      list = list.filter((p) => p.status === "en_attente_module");
 
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
@@ -501,7 +504,6 @@ export default function DashboardScreen({ navigation }) {
     });
 
     return Object.values(grouped).sort((a, b) => {
-      // Danger en premier
       if (a.hasDanger && !b.hasDanger) return -1;
       if (!a.hasDanger && b.hasDanger) return 1;
       return b.unreadCount - a.unreadCount;
@@ -543,12 +545,22 @@ export default function DashboardScreen({ navigation }) {
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.profileBtn}>
-              <Image
-                source={{
-                  uri: user?.photoUrl || "https://i.pravatar.cc/100",
-                }}
-                style={styles.avatar}
-              />
+              {user?.photoUrl ? (
+                <Image source={{ uri: user.photoUrl }} style={styles.avatar} />
+              ) : (
+                <View
+                  style={[
+                    styles.avatar,
+                    {
+                      backgroundColor: "#F0FDF4",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    },
+                  ]}
+                >
+                  <MaterialIcons name="person" size={22} color="#22C55E" />
+                </View>
+              )}
               <View style={styles.onlineStatus} />
             </TouchableOpacity>
           </View>
@@ -614,13 +626,9 @@ export default function DashboardScreen({ navigation }) {
               {
                 key: "connected",
                 icon: "pulse-outline",
-                label: `Connectés (${stats.active})`,
+                label: `Associé à un ESP32 (${stats.active})`,
               },
-              {
-                key: "alerts",
-                icon: "alert-circle-outline",
-                label: `Alertes (${stats.alerts})`,
-              },
+              { key: "pending", icon: "time-outline", label: `En attente` },
             ].map(({ key, icon, label }) => (
               <TouchableOpacity
                 key={key}
@@ -664,14 +672,6 @@ export default function DashboardScreen({ navigation }) {
               trend={`${stats.total - stats.active} inactif${stats.total - stats.active > 1 ? "s" : ""}`}
               color="#F0F9FF"
               iconColor="#0EA5E9"
-            />
-            <StatCard
-              label="ALERTES"
-              value={stats.alerts.toString().padStart(2, "0")}
-              icon="notifications-outline"
-              trend={stats.alerts > 0 ? "à traiter" : "tout va bien"}
-              color={stats.alerts > 0 ? "#FEF2F2" : "#F0FDF4"}
-              iconColor={stats.alerts > 0 ? "#EF4444" : "#22C55E"}
             />
           </View>
 
@@ -730,9 +730,12 @@ export default function DashboardScreen({ navigation }) {
           ) : (
             filteredPoultry.map((item) => {
               const badge = getBadge(item.status, item.isCritical);
-              const airQuality = getAirQuality(item.co2, item.nh3, item.dust);
+              const airQuality = getAirQuality(
+                item.airQualityDisplay !== "—" ? item.airQualityPercent : null,
+                item.airQualityThreshold,
+              );
               const notif = poultryNotifications[item.id];
-              const hasUnread = notif && notif.unreadCount > 0;
+              const hasUnread = item.isFresh && notif && notif.unreadCount > 0;
               const isDanger = hasUnread && notif.dangerCount > 0;
 
               return (
@@ -851,6 +854,43 @@ export default function DashboardScreen({ navigation }) {
                       </View>
                     )}
 
+                    {/* Boîtier hors ligne */}
+                    {item.status !== "en_attente_module" && !item.isFresh && (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          backgroundColor: "#FFF7ED",
+                          borderRadius: 12,
+                          padding: 10,
+                          marginBottom: 12,
+                          gap: 8,
+                          borderWidth: 1,
+                          borderColor: "#FED7AA",
+                        }}
+                      >
+                        <MaterialIcons
+                          name="wifi-off"
+                          size={16}
+                          color="#F97316"
+                        />
+                        <Text
+                          style={{
+                            flex: 1,
+                            fontSize: 11,
+                            fontWeight: "600",
+                            color: "#92400E",
+                            lineHeight: 16,
+                          }}
+                        >
+                          Boîtier hors ligne — dernière mesure il y a{" "}
+                          {item.lastMonitoringTimestamp
+                            ? getTimeAgo(item.lastMonitoringTimestamp)
+                            : "inconnue"}
+                        </Text>
+                      </View>
+                    )}
+
                     {/* Notification résumé */}
                     {item.status !== "en_attente_module" && hasUnread && (
                       <TouchableOpacity
@@ -915,7 +955,7 @@ export default function DashboardScreen({ navigation }) {
                       </TouchableOpacity>
                     )}
 
-                    {/* Métriques */}
+                    {/* Métriques - Température et Humidité */}
                     <View style={styles.metricsRow}>
                       <View
                         style={[
@@ -999,6 +1039,178 @@ export default function DashboardScreen({ navigation }) {
                       </View>
                     </View>
 
+                    {/* ✅ Qualité d'air - Cohérent avec OverviewTab */}
+                    <View
+                      style={[
+                        styles.airQualityBox,
+                        {
+                          backgroundColor:
+                            airQuality.status === "danger"
+                              ? "#FCEBEB"
+                              : airQuality.status === "warn"
+                                ? "#FAEEDA"
+                                : darkMode
+                                  ? "#0f172a"
+                                  : "#F0FDF4",
+                          borderColor: airQuality.color + "30",
+                        },
+                      ]}
+                    >
+                      <View style={styles.airQualityHeader}>
+                        <MaterialCommunityIcons
+                          name="air-filter"
+                          size={18}
+                          color={airQuality.color}
+                        />
+                        <Text
+                          style={[
+                            styles.airQualityLabel,
+                            {
+                              color: darkMode ? colors.slate400 : "#1E293B",
+                            },
+                          ]}
+                        >
+                          QUALITÉ D'AIR
+                        </Text>
+                      </View>
+
+                      <View style={styles.airQualityValueRow}>
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "flex-end",
+                            gap: 3,
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.airQualityValue,
+                              {
+                                color:
+                                  airQuality.color !== "#94A3B8"
+                                    ? airQuality.color
+                                    : darkMode
+                                      ? colors.white
+                                      : colors.slate900,
+                              },
+                            ]}
+                          >
+                            {item.airQualityPercent !== null &&
+                            item.airQualityPercent !== undefined
+                              ? String(item.airQualityPercent)
+                              : "—"}
+                          </Text>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              color: "#94A3B8",
+                              marginBottom: 2,
+                            }}
+                          >
+                            %
+                          </Text>
+                        </View>
+
+                        <View
+                          style={[
+                            styles.airQualityBadge,
+                            { backgroundColor: airQuality.color + "20" },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.airQualityBadgeText,
+                              { color: airQuality.color },
+                            ]}
+                          >
+                            {airQuality.label}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Messages d'alerte */}
+                      {airQuality.status === "danger" && (
+                        <View
+                          style={{
+                            backgroundColor: "#FCEBEB",
+                            borderLeftWidth: 3,
+                            borderLeftColor: "#A32D2D",
+                            borderRadius: 6,
+                            padding: 8,
+                            marginTop: 8,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: "700",
+                              color: "#A32D2D",
+                              marginBottom: 3,
+                            }}
+                          >
+                            {item.airQualityThreshold
+                              ? `Seuil critique — valeur en dessous du minimum requis (${item.airQualityThreshold}%)`
+                              : "Seuil critique — qualité d'air dangereuse"}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: "#64748B" }}>
+                            → Ventiler d'urgence — qualité de l'air en dessous
+                            du seuil critique
+                          </Text>
+                        </View>
+                      )}
+
+                      {airQuality.status === "warn" && (
+                        <View
+                          style={{
+                            backgroundColor: "#FAEEDA",
+                            borderLeftWidth: 3,
+                            borderLeftColor: "#BA7517",
+                            borderRadius: 6,
+                            padding: 8,
+                            marginTop: 8,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: "700",
+                              color: "#BA7517",
+                              marginBottom: 3,
+                            }}
+                          >
+                            {item.airQualityThreshold
+                              ? `Attention — ${item.airQualityPercent}% proche du seuil (min ${item.airQualityThreshold}%)`
+                              : "Attention — qualité d'air à surveiller"}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: "#64748B" }}>
+                            → Contrôler la ventilation — qualité de l'air
+                            approche le seuil minimum
+                          </Text>
+                        </View>
+                      )}
+
+                      {/* Barre de progression */}
+                      <View style={styles.airQualityProgressBar}>
+                        <View
+                          style={[
+                            styles.airQualityProgressFill,
+                            {
+                              width: `${
+                                item.airQualityPercent !== null &&
+                                item.airQualityPercent !== undefined
+                                  ? Math.min(
+                                      100,
+                                      Math.max(0, item.airQualityPercent),
+                                    )
+                                  : 0
+                              }%`,
+                              backgroundColor: airQuality.color,
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+
                     {/* Footer */}
                     <View
                       style={[
@@ -1020,7 +1232,10 @@ export default function DashboardScreen({ navigation }) {
                             { color: airQuality.color },
                           ]}
                         >
-                          Air : {airQuality.label}
+                          Air :{" "}
+                          {item.airQualityDisplay !== "—"
+                            ? airQuality.label
+                            : "—"}
                         </Text>
                       </View>
                       <Text
@@ -1397,7 +1612,7 @@ const styles = StyleSheet.create({
   },
   statCard: {
     backgroundColor: "#FFF",
-    width: (width - 60) / 3,
+    width: (width - 52) / 2,
     borderRadius: 20,
     padding: 16,
     shadowColor: "#000",
@@ -1496,7 +1711,7 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     lineHeight: 16,
   },
-  metricsRow: { flexDirection: "row", gap: 12, marginBottom: 20 },
+  metricsRow: { flexDirection: "row", gap: 12, marginBottom: 12 },
   metricBox: {
     flex: 1,
     flexDirection: "row",
@@ -1508,6 +1723,53 @@ const styles = StyleSheet.create({
   metricTextCol: { flex: 1 },
   metricLabel: { fontSize: 9, fontWeight: "800", color: "#64748B" },
   metricValue: { fontSize: 14, fontWeight: "800", color: "#1E293B" },
+  // Styles qualité d'air
+  airQualityBox: {
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+  },
+  airQualityHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  airQualityLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  airQualityValueRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  airQualityValue: {
+    fontSize: 22,
+    fontWeight: "800",
+  },
+  airQualityBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 20,
+  },
+  airQualityBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  airQualityProgressBar: {
+    height: 6,
+    backgroundColor: "#E2E8F0",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  airQualityProgressFill: {
+    height: "100%",
+    borderRadius: 3,
+  },
   cardFooter: {
     flexDirection: "row",
     justifyContent: "space-between",

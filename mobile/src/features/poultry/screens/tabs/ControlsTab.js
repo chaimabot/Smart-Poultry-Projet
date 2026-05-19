@@ -399,53 +399,89 @@ export default function ControlsTab({
       }}
       showsVerticalScrollIndicator={false}
     >
-      {/* ── Actionneurs ── */}
-      <SectionLabel>Actionneurs</SectionLabel>
-      <View style={{ gap: 12, marginBottom: 28 }}>
-        {/* Ventilateur */}
-        <SectionGestionVentilateur
-          fanOn={actuators.fan}
-          fanAuto={actuators.fanAuto}
-          fanAutoReason={fanAutoReason} // ← AJOUTE ÇA !
-          onToggleAuto={toggleFanAuto}
-          onFanOn={() => setFan(true)}
-          onFanOff={() => setFan(false)}
-        />
-
-        <SectionGestionLampe
-          poultryId={poultryId}
-          data={{
-            lampOn: actuators.lamp ?? false, // ← boolean extrait proprement
-            lampAuto: actuators.lampAuto ?? false, // ← boolean extrait proprement
+      {/* ── Bannière hors ligne ── */}
+      {!isConnected && (
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            backgroundColor: "#FEF2F2",
+            borderRadius: 14,
+            padding: 14,
+            marginBottom: 20,
+            gap: 10,
+            borderWidth: 1,
+            borderColor: "#FCA5A5",
           }}
-          onUpdate={onRefresh}
-          onToggleAuto={toggleLampAuto}
-          lampAutoReason={lampAutoReason}
-        />
+        >
+          <MaterialIcons name="wifi-off" size={20} color="#EF4444" />
+          <Text
+            style={{
+              flex: 1,
+              fontSize: 12,
+              fontWeight: "600",
+              color: "#B91C1C",
+              lineHeight: 18,
+            }}
+          >
+            Boîtier hors ligne — les contrôles sont désactivés. Vérifiez la
+            connexion de votre boîtier.
+          </Text>
+        </View>
+      )}
 
-        {/* Porte Automatique */}
-        <SectionGestionPorte
+      {/* ── Actionneurs ── */}
+      <View
+        style={{
+          opacity: isConnected ? 1 : 0.4,
+          pointerEvents: isConnected ? "auto" : "none",
+        }}
+      >
+        <SectionLabel>Actionneurs</SectionLabel>
+        <View style={{ gap: 12, marginBottom: 28 }}>
+          <SectionGestionVentilateur
+            fanOn={actuators.fan}
+            fanAuto={actuators.fanAuto}
+            fanAutoReason={fanAutoReason}
+            onToggleAuto={toggleFanAuto}
+            onFanOn={() => setFan(true)}
+            onFanOff={() => setFan(false)}
+          />
+          <SectionGestionLampe
+            poultryId={poultryId}
+            data={{
+              lampOn: actuators.lamp ?? false,
+              lampAuto: actuators.lampAuto ?? false,
+            }}
+            onUpdate={onRefresh}
+            onToggleAuto={toggleLampAuto}
+            lampAutoReason={lampAutoReason}
+          />
+          <SectionGestionPorte
+            poultryId={poultryId}
+            isConnected={isConnected}
+            data={actuators.door}
+            doorMoving={doorMoving}
+            doorMode={doorMode}
+            dataDoor={actuators?.door}
+            setDoorMode={setDoorMode}
+            doorSchedule={doorSchedule}
+            setDoorSchedule={setDoorSchedule}
+            toggleDoor={toggleDoor}
+            stopDoor={stopDoor}
+          />
+        </View>
+
+        {/* ── Pompe à Eau ── */}
+        <SectionLabel>Gestion de l'eau</SectionLabel>
+        <SectionGestionEau
           poultryId={poultryId}
-          isConnected={isConnected}
-          data={actuators.door}
-          doorMoving={doorMoving}
-          doorMode={doorMode}
-          setDoorMode={setDoorMode}
-          doorSchedule={doorSchedule}
-          setDoorSchedule={setDoorSchedule}
-          toggleDoor={toggleDoor}
-          stopDoor={stopDoor}
+          data={pumpData}
+          pumpAutoReason={pumpAutoReason}
+          onToggleAuto={togglePumpAuto}
+          onUpdate={onRefresh}
         />
       </View>
-      {/* ── Pompe à Eau ── */}
-      <SectionLabel>Gestion de l'eau</SectionLabel>
-      <SectionGestionEau
-        poultryId={poultryId}
-        data={pumpData}
-        pumpAutoReason={pumpAutoReason}
-        onToggleAuto={togglePumpAuto}
-        onUpdate={onRefresh}
-      />
     </ScrollView>
   );
 }

@@ -1,10 +1,4 @@
-// screens/ai/AIChatScreen.js
-// ============================================================
-// Chat Vétérinaire IA — Smart Poultry
-// Connecté à POST /api/ai/chat (Gemma 3 via Cloudflare)
-// ============================================================
-
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -23,12 +17,11 @@ import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { MaterialIcons } from "@expo/vector-icons";
-
 import { useAIAnalysis } from "../../hooks/useAIAnalysis";
+import api from "../../services/api";
 
 const { width } = Dimensions.get("window");
 
-// ── Chips de questions rapides ───────────────────────────────────────────────
 const QUICK_CHIPS = [
   {
     label: "État général",
@@ -52,7 +45,6 @@ const QUICK_CHIPS = [
   },
 ];
 
-// ── Formatteur heure ─────────────────────────────────────────────────────────
 function nowTime() {
   return new Date().toLocaleTimeString("fr-FR", {
     hour: "2-digit",
@@ -60,10 +52,8 @@ function nowTime() {
   });
 }
 
-// ── Composant : point de présence animé ─────────────────────────────────────
 function StatusDot() {
   const pulse = useRef(new Animated.Value(1)).current;
-
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
@@ -80,18 +70,15 @@ function StatusDot() {
       ]),
     ).start();
   }, []);
-
   return <Animated.View style={[styles.statusDot, { opacity: pulse }]} />;
 }
 
-// ── Composant : indicateur "en train d'écrire…" ──────────────────────────────
 function TypingIndicator() {
   const dots = [
     useRef(new Animated.Value(0)).current,
     useRef(new Animated.Value(0)).current,
     useRef(new Animated.Value(0)).current,
   ];
-
   useEffect(() => {
     const animations = dots.map((dot, i) =>
       Animated.loop(
@@ -113,7 +100,6 @@ function TypingIndicator() {
     animations.forEach((a) => a.start());
     return () => animations.forEach((a) => a.stop());
   }, []);
-
   return (
     <View style={styles.typingContainer}>
       <View style={styles.typingAvatar}>
@@ -133,7 +119,6 @@ function TypingIndicator() {
   );
 }
 
-// ── Composant : bulle de message ─────────────────────────────────────────────
 function MessageBubble({ message }) {
   const isUser = message.type === "user";
   const isWelcome = message.type === "welcome";
@@ -167,11 +152,6 @@ function MessageBubble({ message }) {
           {message.text}
         </Text>
         <View style={[styles.meta, isUser ? styles.metaUser : styles.metaAi]}>
-          {message.meta && (
-            <View style={styles.sourceTag}>
-              <Text style={styles.sourceTagText}>⏱ {message.meta}</Text>
-            </View>
-          )}
           <Text
             style={[styles.timeText, isUser ? styles.timeUser : styles.timeAi]}
           >
@@ -183,103 +163,165 @@ function MessageBubble({ message }) {
   );
 }
 
-// ── Écran principal ───────────────────────────────────────────────────────────
 export default function AIChatScreen() {
   const navigation = useNavigation();
   const route = useRoute();
+
   const {
     poultryId,
     poultryName,
     context: initialContext,
   } = route?.params || {};
 
-  const { askVet, chatLoading, latestResult } = useAIAnalysis(poultryId);
+  const { latestResult } = useAIAnalysis(poultryId);
   const context = latestResult || initialContext;
 
   const contextLabel = context
     ? `${poultryName || "Poulailler"} | Score santé: ${context.healthScore}/100`
     : `${poultryName || "Poulailler"} | Aucune analyse récente`;
 
-  const [messages, setMessages] = useState([
-    {
-      id: "welcome",
-      type: "welcome",
-      title: "🤖 Dr. Gemma — Assistant Vétérinaire",
-      text: "Spécialisé en élevage de volailles. Posez-moi vos questions sur la santé, l'alimentation ou les conditions de vos poulaillers.",
-      context: contextLabel,
-    },
-  ]);
+  const welcomeMsg = {
+    id: "welcome",
+    type: "welcome",
+    title: "🤖 Dr. Gemma — Assistant Vétérinaire",
+    text: "Spécialisé en élevage de volailles. Posez-moi vos questions sur la santé, l'alimentation ou les conditions de vos poulaillers.",
+    context: contextLabel,
+  };
 
+  const [messages, setMessages] = useState([welcomeMsg]);
   const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const scrollRef = useRef(null);
 
-  // Scroll automatique à chaque nouveau message
+  // ── Charger l'historique depuis la BD au démarrage ──────────────────────
+  useEffect(() => {
+    const loadHistory = async () => {
+      if (!poultryId) {
+        setHistoryLoading(false);
+        return;
+      }
+      try {
+        const res = await api.get(`/ai/chat/${poultryId}`);
+        const dbMessages = res.data?.data || [];
+
+
+        if (dbMessages.length > 0) {
+          const formatted = dbMessages.map((m, i) => ({
+            id: `db_${i}_${m.createdAt}`,
+            type: m.role === "user" ? "user" : "ai",
+            text: m.content,
+            time: new Date(m.createdAt).toLocaleTimeString("fr-FR", {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          }));
+          setMessages([welcomeMsg, ...formatted]);
+        }
+      } catch (e) {
+        console.warn("[Chat] Erreur chargement historique:", e.message);
+      } finally {
+        setHistoryLoading(false);
+      }
+    };
+
+    loadHistory();
+  }, [poultryId]);
+
+  // ── Scroll automatique ───────────────────────────────────────────────────
   useEffect(() => {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
   }, [messages]);
 
-  // ── Envoi d'un message ────────────────────────────────────────────────────
-  const sendMessage = useCallback(
-    async (text) => {
-      const question = (text || input).trim();
-      if (!question || chatLoading) return;
+  // ── Effacer l'historique ─────────────────────────────────────────────────
+  const clearHistory = async () => {
+    try {
+      await api.delete(`/ai/chat/${poultryId}`);
 
-      setInput("");
+      setMessages([welcomeMsg]);
+    } catch (e) {
+      console.warn("[Chat] Erreur suppression historique:", e.message);
+    }
+  };
 
-      const userMsg = {
-        id: `user-${Date.now()}`,
-        type: "user",
-        text: question,
+  // ── Envoyer un message ───────────────────────────────────────────────────
+  const sendMessage = async (questionText) => {
+    const question = questionText || input.trim();
+    if (!question || loading) return;
+
+    if (!poultryId) {
+      console.warn("[Chat] poultryId manquant");
+      return;
+    }
+
+    const userMsg = {
+      id: Date.now().toString(),
+      type: "user",
+      text: question,
+      time: nowTime(),
+    };
+
+    // Construire l'historique AVANT d'ajouter le nouveau message
+    const historyToSend = messages
+      .filter((m) => m.type !== "welcome")
+      .map((m) => ({
+        role: m.type === "user" ? "user" : "assistant",
+        content: m.text,
+      }));
+
+    setMessages((prev) => [...prev, userMsg]);
+    setInput("");
+    setLoading(true);
+
+    try {
+      const res = await api.post("/ai/chat", {
+        question,
+        poulaillerId: poultryId,
+        history: historyToSend,
+      });
+
+      const answer =
+        res.data?.data?.answer || "Je n'ai pas pu répondre. Réessayez.";
+
+      const aiMsg = {
+        id: (Date.now() + 1).toString(),
+        type: "ai",
+        text: answer,
         time: nowTime(),
       };
 
-      setMessages((prev) => [...prev, userMsg]);
-
-      try {
-        const t0 = Date.now();
-        const { answer } = await askVet(question);
-        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-
-        const aiMsg = {
-          id: `ai-${Date.now()}`,
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch (err) {
+      console.error("[Chat] Erreur:", err.message);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
           type: "ai",
-          text: answer,
-          meta: `Gemma 3 • ${elapsed}s`,
+          text: "Une erreur s'est produite. Vérifiez votre connexion et réessayez.",
           time: nowTime(),
-        };
-
-        setMessages((prev) => [...prev, aiMsg]);
-      } catch (err) {
-        const errMsg = {
-          id: `err-${Date.now()}`,
-          type: "ai",
-          text: `Désolé, une erreur est survenue : ${err.message}. Réessayez dans quelques instants.`,
-          time: nowTime(),
-        };
-        setMessages((prev) => [...prev, errMsg]);
-      }
-    },
-    [input, chatLoading, askVet],
-  );
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <StatusBar barStyle="dark-content" />
 
-      {/* ── Header ── */}
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backBtn}
           onPress={() => navigation.goBack()}
-          activeOpacity={0.7}
         >
-          <Text style={styles.backBtnText}>←</Text>
+          <MaterialIcons name="arrow-back" size={20} color="#1E293B" />
         </TouchableOpacity>
-
         <View style={styles.aiAvatar}>
           <Text style={styles.aiAvatarText}>🤖</Text>
         </View>
-
         <View style={styles.headerInfo}>
           <Text style={styles.headerName}>Dr. Gemma</Text>
           <View style={styles.headerStatus}>
@@ -287,9 +329,11 @@ export default function AIChatScreen() {
             <Text style={styles.headerStatusText}>Assistant IA actif</Text>
           </View>
         </View>
-
-        {/* Indicateur chargement en haut à droite */}
-        {chatLoading && <ActivityIndicator size="small" color="#22C55E" />}
+        {loading && <ActivityIndicator size="small" color="#22C55E" />}
+        {/* Bouton effacer l'historique */}
+        <TouchableOpacity style={styles.clearBtn} onPress={clearHistory}>
+          <MaterialIcons name="delete-outline" size={20} color="#94A3B8" />
+        </TouchableOpacity>
       </View>
 
       <KeyboardAvoidingView
@@ -297,7 +341,7 @@ export default function AIChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
       >
-        {/* ── Messages ── */}
+        {/* Messages */}
         <ScrollView
           ref={scrollRef}
           style={styles.chatContainer}
@@ -305,13 +349,19 @@ export default function AIChatScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
-          ))}
-          {chatLoading && <TypingIndicator />}
+          {historyLoading ? (
+            <ActivityIndicator
+              size="small"
+              color="#22C55E"
+              style={{ marginTop: 20 }}
+            />
+          ) : (
+            messages.map((msg) => <MessageBubble key={msg.id} message={msg} />)
+          )}
+          {loading && <TypingIndicator />}
         </ScrollView>
 
-        {/* ── Chips rapides ── */}
+        {/* Chips rapides */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -324,14 +374,14 @@ export default function AIChatScreen() {
               style={styles.chip}
               onPress={() => sendMessage(chip.question)}
               activeOpacity={0.7}
-              disabled={chatLoading}
+              disabled={loading}
             >
               <Text style={styles.chipLabel}>{chip.label}</Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
 
-        {/* ── Barre de saisie ── */}
+        {/* Barre de saisie */}
         <View style={styles.inputBar}>
           <TextInput
             style={styles.inputField}
@@ -342,16 +392,16 @@ export default function AIChatScreen() {
             multiline={false}
             returnKeyType="send"
             onSubmitEditing={() => sendMessage()}
-            editable={!chatLoading}
+            editable={!loading}
           />
           <TouchableOpacity
             style={[
               styles.sendBtn,
-              (!input.trim() || chatLoading) && styles.sendBtnDisabled,
+              (!input.trim() || loading) && styles.sendBtnDisabled,
             ]}
             onPress={() => sendMessage()}
             activeOpacity={0.8}
-            disabled={!input.trim() || chatLoading}
+            disabled={!input.trim() || loading}
           >
             <MaterialIcons name="send" size={20} color="#fff" />
           </TouchableOpacity>
@@ -361,12 +411,9 @@ export default function AIChatScreen() {
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAF9" },
   flex: { flex: 1 },
-
-  // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -385,7 +432,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  backBtnText: { fontSize: 18, color: "#1E293B" },
+  clearBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: "#F1F5F9",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   aiAvatar: {
     width: 42,
     height: 42,
@@ -410,12 +464,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#22C55E",
   },
   headerStatusText: { fontSize: 12, color: "#22C55E", fontWeight: "600" },
-
-  // Messages
   chatContainer: { flex: 1 },
   chatContent: { padding: 20, paddingBottom: 12 },
-
-  // Welcome card
   welcomeCard: {
     borderRadius: 20,
     padding: 20,
@@ -450,8 +500,6 @@ const styles = StyleSheet.create({
     borderTopColor: "rgba(255,255,255,0.2)",
   },
   welcomeContextText: { fontSize: 12, color: "rgba(255,255,255,0.9)" },
-
-  // Bulles
   messageRow: { marginBottom: 16, flexDirection: "row" },
   rowUser: { justifyContent: "flex-end" },
   rowAi: { justifyContent: "flex-start" },
@@ -484,18 +532,9 @@ const styles = StyleSheet.create({
   meta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6 },
   metaUser: { justifyContent: "flex-end" },
   metaAi: { justifyContent: "flex-start" },
-  sourceTag: {
-    paddingVertical: 2,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    backgroundColor: "#F1F5F9",
-  },
-  sourceTagText: { fontSize: 10, fontWeight: "600", color: "#64748B" },
   timeText: { fontSize: 11 },
   timeUser: { color: "rgba(255,255,255,0.7)" },
   timeAi: { color: "#94A3B8" },
-
-  // Typing
   typingContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -527,8 +566,6 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "#CBD5E1",
   },
-
-  // Chips
   chipsScroll: { maxHeight: 50 },
   chipsContent: { paddingHorizontal: 20, gap: 8, paddingBottom: 10 },
   chip: {
@@ -540,8 +577,6 @@ const styles = StyleSheet.create({
     borderColor: "#DCFCE7",
   },
   chipLabel: { fontSize: 13, fontWeight: "600", color: "#166534" },
-
-  // Input
   inputBar: {
     flexDirection: "row",
     alignItems: "center",

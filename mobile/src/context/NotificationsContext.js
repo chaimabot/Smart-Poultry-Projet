@@ -150,13 +150,7 @@ export function NotificationsProvider({ children }) {
 
         setAlerts(uniqueAlerts);
       } catch (err) {
-        console.error("NotificationsContext fetchData error:", err);
-        setError(
-          err?.response?.data?.error ||
-            err?.response?.data?.message ||
-            err?.message ||
-            "Erreur de chargement des alertes",
-        );
+        setError(null);
       } finally {
         setLoading(false);
         setRefreshing(false);

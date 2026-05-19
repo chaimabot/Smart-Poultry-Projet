@@ -5,8 +5,6 @@ import Header from "../../components/layout/Header";
 import Sidebar from "../../components/layout/Sidebar";
 import { formatDate } from "../../lib/utils";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 interface Utilisateur {
   id: string;
   firstName: string;
@@ -37,8 +35,6 @@ interface EditForm {
   email: string;
   phone: string;
 }
-
-// ─── Composant Principal ───────────────────────────────────────────────────────
 
 export default function Utilisateurs() {
   const [utilisateurs, setUtilisateurs] = useState<Utilisateur[]>([]);
@@ -75,8 +71,6 @@ export default function Utilisateurs() {
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const [editing, setEditing] = useState(false);
 
-  // ── Fetch ──────────────────────────────────────────────────────────────────
-
   const fetchUtilisateurs = async () => {
     setLoading(true);
     setError(null);
@@ -99,8 +93,6 @@ export default function Utilisateurs() {
   useEffect(() => {
     fetchUtilisateurs();
   }, [search, activeTab]);
-
-  // ── Handlers ───────────────────────────────────────────────────────────────
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -507,18 +499,17 @@ export default function Utilisateurs() {
                               )}
 
                               {/* Renvoyer invitation (éleveurs en attente) */}
-                              {user.role === "eleveur" &&
-                                user.status === "pending" && (
-                                  <button
-                                    onClick={() => handleResendInvite(user.id)}
-                                    className="p-2 text-slate-400 hover:text-amber-500 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"
-                                    title="Renvoyer l'invitation"
-                                  >
-                                    <span className="material-symbols-outlined">
-                                      send
-                                    </span>
-                                  </button>
-                                )}
+                              {user.role === "eleveur" && (
+                                <button
+                                  onClick={() => handleResendInvite(user.id)}
+                                  className="p-2 text-slate-400 hover:text-amber-500 transition-colors rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"
+                                  title="Renvoyer l'invitation"
+                                >
+                                  <span className="material-symbols-outlined">
+                                    send
+                                  </span>
+                                </button>
+                              )}
 
                               {/* Activer / Désactiver */}
                               <button

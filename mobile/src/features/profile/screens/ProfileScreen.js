@@ -305,14 +305,27 @@ export default function ProfileScreen({ navigation }) {
           <View
             style={[styles.photoContainer, { borderColor: colors.primary }]}
           >
-            <Image
-              source={{
-                uri:
-                  (isEditing ? editedUser.photoUrl : userInfo.photoUrl) ||
-                  "https://lh3.googleusercontent.com/aida-public/AB6AXuBz4XHKJiseVJJY9S9n-8H_RP_Odl9lzVbVYYPO8m8PBfQgSkX6plbKjlmNifSM6c9GiqASTE7mvqGULsl00E71-5VB7K4FYfRXg4aD9Q1rvR9ljUv70hFsZWAOefPBZpbZPkiV9X76ng308IXETLF_Z3py3htht0IAACM589ENteRfWybbOz5bR-aCACHgE4Jm_g-vN56eyW6PB7tn_rfX9yi1kiWtk-5pvaxZIpYTgMwWfvC9hKdipA0Tt0YMSZ_rPCL6MwvyAZA",
-              }}
-              style={styles.profileImage}
-            />
+            {(isEditing ? editedUser.photoUrl : userInfo.photoUrl) ? (
+              <Image
+                source={{
+                  uri: isEditing ? editedUser.photoUrl : userInfo.photoUrl,
+                }}
+                style={styles.profileImage}
+              />
+            ) : (
+              <View
+                style={[
+                  styles.profileImage,
+                  {
+                    backgroundColor: "#F0FDF4",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  },
+                ]}
+              >
+                <MaterialIcons name="person" size={50} color="#22C55E" />
+              </View>
+            )}
             <TouchableOpacity
               style={[styles.cameraBadge, { backgroundColor: colors.primary }]}
               onPress={handlePhotoPick}

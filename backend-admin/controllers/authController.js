@@ -4,7 +4,7 @@ const Joi = require("joi");
 const bcrypt = require("bcryptjs");
 const logService = require("../services/logService");
 
-// Validation Joi pour l'inscription ADMIN
+// Validation Joi pour l'inscription 
 const registerAdminSchema = Joi.object({
   firstName: Joi.string().required(),
   lastName: Joi.string().required(),
@@ -13,7 +13,7 @@ const registerAdminSchema = Joi.object({
   phone: Joi.string().allow("", null),
 });
 
-// Validation Joi pour la connexion ADMIN
+// Validation Joi pour la connexion 
 const loginAdminSchema = Joi.object({
   email: Joi.string().email().required(),
   password: Joi.string().required(),
@@ -26,9 +26,7 @@ const generateToken = (id, role) => {
   });
 };
 
-// @desc    Enregistrer un nouvel ADMINISTRATEUR
-// @route   POST /api/auth/admin/register
-// @access  Public (ou protégé selon tes besoins futurs)
+
 exports.registerAdmin = async (req, res) => {
   const { error } = registerAdminSchema.validate(req.body);
   if (error) {
@@ -49,14 +47,13 @@ exports.registerAdmin = async (req, res) => {
         .json({ success: false, error: "Cet email est déjà utilisé" });
     }
 
-    // Créer l'ADMINISTRATEUR (rôle forcé)
     user = await User.create({
       firstName,
       lastName,
       email,
       password,
       phone,
-      role: "admin", // ← Seul changement important ici
+      role: "admin", 
     });
 
     // Log user creation

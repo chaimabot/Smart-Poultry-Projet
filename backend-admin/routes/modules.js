@@ -1,12 +1,15 @@
 const express = require("express");
 const router = express.Router();
 const controller = require("../controllers/modulesController");
+const { protect, admin } = require("../middlewares/auth");
 
-router.get("/", controller.getAllModules);
-router.get("/pending-poulaillers", controller.getPendingPoulaillers);
-router.post("/", controller.createModule);
-router.post("/claim", controller.claimModule);
-router.patch("/:id/dissociate", controller.dissociateModule);
-router.delete("/:id", controller.deleteModule);
+// Toutes les routes nécessitent une authentification
+router.get("/", protect, controller.getAllModules);
+router.get("/pending-poulaillers", protect, controller.getPendingPoulaillers);
+router.post("/", protect, admin, controller.createModule);
+
+router.post("/claim", protect, controller.claimModule);
+router.patch("/:id/dissociate", protect, admin, controller.dissociateModule);
+router.delete("/:id", protect, admin, controller.deleteModule);
 
 module.exports = router;

@@ -16,7 +16,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Veuillez ajouter un mot de passe"],
       minlength: 6,
-      select: false, // Ne pas renvoyer le mot de passe par défaut
+      select: false,
     },
     firstName: {
       type: String,
@@ -43,7 +43,6 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
-    // Invitation system fields
     inviteToken: {
       type: String,
       default: null,
@@ -67,8 +66,16 @@ const userSchema = new mongoose.Schema(
   },
 );
 
-// Chiffrer le mot de passe avant de sauvegarder - REMOVED to fix toggle status
-// userSchema.pre("save", function (next) { ... }); // Commented out - causes "next is not a function" error
+// ✅ Hook pre-save corrigé — ne chiffre QUE si le mot de passe a été modifié
+// Le bug "next is not a function" venait d'un appel à .save() dans un contexte
+// où le modèle utilisait findByIdAndUpdate() — ce hook ne se déclenche pas dans ce cas.
+userSchema.pre("save", async function () {
+  // Hook async sans `next` : évite l’erreur `next is not a function`.
+  if (!this.isModified("password")) return;
+
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+});
 
 // Méthode pour vérifier le mot de passe
 userSchema.methods.matchPassword = async function (enteredPassword) {

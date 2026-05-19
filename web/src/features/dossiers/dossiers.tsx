@@ -4,8 +4,6 @@ import Header from "../../components/layout/Header";
 import Sidebar from "../../components/layout/Sidebar";
 import ContratPrint from "../../components/ContratPrint";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 interface Poulailler {
   _id: string;
   name: string;
@@ -48,8 +46,6 @@ interface Dossier {
   avanceDejaPercueALAnnulation?: boolean;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function parseSurface(description?: string): number {
   if (!description) return 0;
   const m = description.match(/Surface:\s*([\d.]+)m²/);
@@ -70,16 +66,12 @@ function densiteBadgeStyle(density: number) {
   return { bg: "#f0fdf4", color: "#00361a", label: "Optimale" };
 }
 
-// ─── Types de filtre ──────────────────────────────────────────────────────────
-
 type FilterStatus =
   | "TOUS"
   | "EN_ATTENTE"
   | "AVANCE_PAYEE"
   | "TERMINE"
   | "ANNULE";
-
-// ─── Modale de Clôture ────────────────────────────────────────────────────────
 
 interface ClotureModalProps {
   dossier: Dossier;

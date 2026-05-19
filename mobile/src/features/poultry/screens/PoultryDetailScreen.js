@@ -1,5 +1,5 @@
 // screens/PoultryDetailScreen.jsx
-import React, { useState } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import {
   View,
   Text,
@@ -21,8 +21,9 @@ import OverviewTab from "./tabs/OverviewTab";
 import ControlsTab from "./tabs/ControlsTab";
 import HistoryTab from "./tabs/HistoryTab";
 import AIAnalysisTab from "./tabs/AIAnalysisScreen";
+import api from "../../../services/api";
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ─── Config ───────────────────────────────────────────────────────────────────
 
 const TABS = [
   { key: "overview", label: "Aperçu", icon: "dashboard" },
@@ -31,7 +32,7 @@ const TABS = [
   { key: "ai", label: "IA Santé", icon: "health-and-safety" },
 ];
 
-// ── Screen ────────────────────────────────────────────────────────────────────
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function PoultryDetailScreen({ route, navigation }) {
   const { poultryId, poultryName } = route?.params || {};
@@ -39,6 +40,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
 
   const [activeTab, setActiveTab] = useState("overview");
   const [showNotifPopup, setShowNotifPopup] = useState(false);
+  const [latestAI, setLatestAI] = useState(null);
 
   const {
     loading,
@@ -46,8 +48,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
     isConnected,
     alertCount,
     alerts,
-    thresholds,
-    sensors,
+    thresholds, // ← déjà transformé par buildThresholdsForDisplay()
+    sensors, // ← live MQTT, shape { key, name, value, unit, icon, status }
     poultryInfo,
     actuators,
     feeder,
@@ -77,6 +79,83 @@ export default function PoultryDetailScreen({ route, navigation }) {
     onRefresh,
   } = usePoultryState({ poultryId, poultryName });
 
+  // ─── Dernière analyse IA ──────────────────────────────────────────────────
+
+  const loadLatestAI = useCallback(async () => {
+    if (!poultryId) return;
+    try {
+      const res = await api.get(`/ai/latest/${poultryId}`);
+      if (res.data?.success && res.data.data) {
+        setLatestAI(res.data.data);
+      }
+    } catch {
+      // silencieux
+    }
+  }, [poultryId]);
+
+  useEffect(() => {
+    loadLatestAI();
+  }, [loadLatestAI]);
+
+  useEffect(() => {
+    if (activeTab === "overview") loadLatestAI();
+  }, [activeTab, loadLatestAI]);
+
+  // ─── Capteurs pour OverviewTab ────────────────────────────────────────────
+  // ✅ On utilise directement sensors du hook (live MQTT, déjà au bon format)
+  // ✅ On filtre les capteurs sans valeur réelle ("--")
+  const formattedSensors = useMemo(() => {
+    if (!Array.isArray(sensors)) return [];
+    return sensors.filter(
+      (s) => s.value !== "--" && s.value !== null && s.value !== undefined,
+    );
+  }, [sensors]);
+
+  // ─── Seuils pour OverviewTab ──────────────────────────────────────────────
+  // ✅ thresholds du hook est déjà transformé par buildThresholdsForDisplay()
+  //    mais on doit renommer les clés pour OverviewTab :
+  //    airQualityPercent → { min } (pas max)
+  //    waterLevel        → { min }
+  const formattedThresholds = useMemo(() => {
+    if (!thresholds) return {};
+    // thresholds est déjà { temperature: {min,max}, humidity: {min,max},
+    //                        airQualityPercent: {min}, waterLevel: {min} }
+    // après le fix de THRESHOLD_MAP dans le hook — on le passe directement
+    return thresholds;
+  }, [thresholds]);
+
+  // ─── Données IA ───────────────────────────────────────────────────────────
+
+  const aiScore = latestAI?.result?.healthScore ?? null;
+  const aiInsight = latestAI?.result?.diagnostic ?? null;
+
+  const lastAnalysis = useMemo(() => {
+    if (!latestAI) return null;
+    const mortalityDetected = latestAI.result?.detections?.mortalityDetected;
+    const behaviorNormal = latestAI.result?.detections?.behaviorNormal;
+    const confidence = latestAI.result?.confidence ?? null;
+    return {
+      id: latestAI._id?.toString().slice(-4).toUpperCase() ?? "—",
+      date: latestAI.createdAt ?? null,
+      score: latestAI.result?.healthScore ?? null,
+      mortality:
+        mortalityDetected === true
+          ? "Détectée"
+          : mortalityDetected === false
+            ? "Aucune"
+            : "—",
+      behavior:
+        behaviorNormal === true
+          ? "Normal"
+          : behaviorNormal === false
+            ? "Anormal"
+            : "—",
+      confidence,
+    };
+  }, [latestAI]);
+
+  // ─── Loading ──────────────────────────────────────────────────────────────
+
   if (loading || !poultryInfo) {
     return (
       <SafeAreaView
@@ -104,6 +183,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
 
   const displayName = poultryInfo?.name || poultryName || "Poulailler";
 
+  // ─── Render ───────────────────────────────────────────────────────────────
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F8FAFC" }}>
       <StatusBar barStyle="dark-content" />
@@ -127,7 +208,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
           elevation: 3,
         }}
       >
-        {/* Back button */}
         <TouchableOpacity
           onPress={() => navigation.goBack()}
           style={{
@@ -142,7 +222,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
           <Ionicons name="arrow-back" size={20} color="#1E293B" />
         </TouchableOpacity>
 
-        {/* Title + connection status */}
         <View style={{ flex: 1, alignItems: "center", marginHorizontal: 12 }}>
           <Text
             style={{ fontSize: 16, fontWeight: "800", color: "#1E293B" }}
@@ -174,14 +253,27 @@ export default function PoultryDetailScreen({ route, navigation }) {
                 color: isConnected ? "#22C55E" : "#EF4444",
               }}
             >
-              {isConnected ? "connecté" : "Hors ligne"}
+              {isConnected ? "connecté" : "Boitier hors ligne"}
             </Text>
           </View>
         </View>
 
-        {/* Right actions */}
         <View style={{ flexDirection: "row", gap: 8 }}>
-          {/* Notifications */}
+          <TouchableOpacity
+            onPress={() => navigation.navigate("WifiSettings", { poultryId })}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 12,
+              backgroundColor: "#F0FDF4",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            activeOpacity={0.7}
+          >
+            <MaterialIcons name="wifi" size={20} color="#22C55E" />
+          </TouchableOpacity>
+
           <TouchableOpacity
             onPress={() => setShowNotifPopup(true)}
             style={{
@@ -230,7 +322,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
             )}
           </TouchableOpacity>
 
-          {/* Threshold config */}
           <TouchableOpacity
             onPress={() =>
               navigation.navigate("AlertSettingsScreen", {
@@ -264,7 +355,6 @@ export default function PoultryDetailScreen({ route, navigation }) {
       >
         {TABS.map((tab) => {
           const active = activeTab === tab.key;
-          // Highlight IA tab with a purple accent
           const activeColor = tab.key === "ai" ? "#8B5CF6" : "#22C55E";
           return (
             <TouchableOpacity
@@ -299,31 +389,41 @@ export default function PoultryDetailScreen({ route, navigation }) {
         })}
       </View>
 
-      {/* ── Tab content ── */}
+      {/* ── Contenu ── */}
       <View style={{ flex: 1 }}>
         {activeTab === "overview" && (
           <OverviewTab
             refreshing={refreshing}
-            onRefresh={onRefresh}
-            poultryInfo={poultryInfo}
-            isConnected={isConnected}
-            sensors={sensors}
-            thresholds={thresholds}
-            aiScore={null}
-            aiInsight={null}
-            lastAnalysis={null}
+            onRefresh={() => {
+              onRefresh();
+              loadLatestAI();
+            }}
+            // ✅ sensors du hook — live MQTT, filtrés (pas de "--")
+            sensors={formattedSensors}
+            // ✅ thresholds du hook — déjà transformés, noms corrects
+            thresholds={formattedThresholds}
+            // ✅ données IA réelles depuis /ai/latest
+            aiScore={aiScore}
+            aiInsight={aiInsight}
+            lastAnalysis={lastAnalysis}
             onGoToAIAnalysis={() =>
               navigation.navigate("AIAnalysis", {
                 poultryId,
                 poultryName: displayName,
               })
             }
-            onGoToChat={() => navigation.navigate("AIChat")}
+            onGoToChat={() =>
+              navigation.navigate("AIChat", {
+                poultryId,
+                poultryName: displayName,
+              })
+            }
             onGoToHistory={() =>
               navigation.navigate("AIHistory", { poultryId })
             }
           />
         )}
+
         {activeTab === "controls" && (
           <ControlsTab
             isConnected={isConnected}
@@ -355,6 +455,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             onRefresh={onRefresh}
           />
         )}
+
         {activeTab === "history" && (
           <HistoryTab
             alerts={alerts}
@@ -366,6 +467,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
             poultryName={displayName}
           />
         )}
+
         {activeTab === "ai" && (
           <AIAnalysisTab
             poultryId={poultryId}
@@ -381,7 +483,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
         )}
       </View>
 
-      {/* ── Notification popup ── */}
+      {/* ── Popup notifications ── */}
       {showNotifPopup && (
         <NotificationPopup
           alerts={alerts}

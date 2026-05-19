@@ -1,7 +1,7 @@
 const Module = require("../models/Module");
 const Poulailler = require("../models/Poulailler");
 
-// GET ALL
+// ─── GET ALL ─────────────────────────────────────────────────────────────────
 exports.getAllModules = async (req, res) => {
   try {
     const { status, search, page = 1, limit = 10 } = req.query;
@@ -20,7 +20,7 @@ exports.getAllModules = async (req, res) => {
     const [modules, total] = await Promise.all([
       Module.find(query)
         .populate("poulailler", "name")
-        .populate("owner", "name email")
+        .populate("owner", "firstName lastName email")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(Number(limit)),
@@ -36,13 +36,17 @@ exports.getAllModules = async (req, res) => {
       status: m.status,
       lastPing: m.lastPing,
       lastPingFormatted: m.lastPing
-        ? new Date(m.lastPing).toLocaleString()
+        ? new Date(m.lastPing).toLocaleString("fr-FR")
         : null,
       poulailler: m.poulailler
         ? { id: m.poulailler._id, name: m.poulailler.name }
         : null,
       owner: m.owner
-        ? { id: m.owner._id, name: m.owner.name, email: m.owner.email }
+        ? {
+            id: m.owner._id,
+            name: `${m.owner.firstName} ${m.owner.lastName}`,
+            email: m.owner.email,
+          }
         : null,
       dissociationReason: m.dissociationReason,
       dissociatedAt: m.dissociatedAt,
@@ -50,84 +54,133 @@ exports.getAllModules = async (req, res) => {
     }));
 
     res.json({
+      success: true,
       data: formatted,
-      pagination: { pages: Math.ceil(total / limit) },
+      pagination: {
+        total,
+        page: Number(page),
+        pages: Math.ceil(total / limit),
+      },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[getAllModules]", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// CREATE MODULE (admin ajoute manuellement)
+// ─── CREATE MODULE (admin) ────────────────────────────────────────────────────
 exports.createModule = async (req, res) => {
   try {
     const { macAddress, serialNumber, deviceName, firmwareVersion } = req.body;
 
+    if (!macAddress) {
+      return res
+        .status(400)
+        .json({ success: false, error: "L'adresse MAC est requise" });
+    }
+
     const normalizedMac = Module.normalizeMac(macAddress);
     if (!normalizedMac) {
-      return res.status(400).json({ error: "Adresse MAC invalide" });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Adresse MAC invalide (format: XX:XX:XX:XX:XX:XX)",
+        });
     }
 
     const existing = await Module.findOne({ macAddress: normalizedMac });
     if (existing) {
-      return res.status(400).json({ error: "Adresse MAC déjà utilisée" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Adresse MAC déjà utilisée" });
     }
 
     const module = await Module.create({
       macAddress: normalizedMac,
-      serialNumber: serialNumber || null,
-      deviceName: deviceName || null,
-      firmwareVersion: firmwareVersion || null,
+      serialNumber: serialNumber?.trim().toUpperCase() || null,
+      deviceName: deviceName?.trim() || null,
+      firmwareVersion: firmwareVersion?.trim() || null,
       status: "pending",
     });
 
-    res
-      .status(201)
-      .json({ message: "Module créé avec succès", id: module._id });
+    res.status(201).json({
+      success: true,
+      message: "Module créé avec succès",
+      id: module._id,
+      data: {
+        id: module._id,
+        macAddress: module.macAddress,
+        serialNumber: module.serialNumber,
+        deviceName: module.deviceName,
+        firmwareVersion: module.firmwareVersion,
+        status: module.status,
+        createdAt: module.createdAt,
+      },
+    });
   } catch (err) {
-    // Gestion spécifique des erreurs MongoDB
     if (err.code === 11000) {
       const field = Object.keys(err.keyValue || {})[0] || "champ";
       return res
         .status(400)
-        .json({ error: `Conflit sur le ${field}: valeur déjà utilisée` });
+        .json({ success: false, error: `Conflit : ${field} déjà utilisé` });
     }
     if (err.name === "ValidationError") {
       const messages = Object.values(err.errors).map((e) => e.message);
-      return res.status(400).json({ error: messages.join(", ") });
+      return res
+        .status(400)
+        .json({ success: false, error: messages.join(", ") });
     }
     console.error("[createModule]", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// CLAIM (associer à un poulailler)
+// ─── CLAIM (associer à un poulailler) ────────────────────────────────────────
 exports.claimModule = async (req, res) => {
   try {
     const { macAddress, poulaillerId } = req.body;
 
+    if (!macAddress || !poulaillerId) {
+      return res.status(400).json({
+        success: false,
+        error: "macAddress et poulaillerId sont requis",
+      });
+    }
+
     const normalizedMac = Module.normalizeMac(macAddress);
     if (!normalizedMac) {
-      return res.status(400).json({ error: "Adresse MAC invalide" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Adresse MAC invalide" });
     }
 
     const module = await Module.findOne({ macAddress: normalizedMac });
     if (!module) {
-      return res.status(404).json({ error: "Module introuvable" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Module introuvable" });
     }
 
-    if (module.status === "associated" || module.status === "offline") {
-      return res.status(400).json({
-        error:
-          module.status === "associated"
-            ? "Module déjà associé"
-            : "Module hors ligne — dissociez-le d'abord",
-      });
+    if (module.status === "associated") {
+      return res
+        .status(400)
+        .json({ success: false, error: "Module déjà associé à un poulailler" });
+    }
+    if (module.status === "offline") {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Module hors ligne — dissociez-le d'abord",
+        });
     }
 
     const poulailler = await Poulailler.findById(poulaillerId);
     if (!poulailler) {
-      return res.status(404).json({ error: "Poulailler introuvable" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Poulailler introuvable" });
     }
 
     module.poulailler = poulaillerId;
@@ -137,31 +190,46 @@ exports.claimModule = async (req, res) => {
     module.dissociatedAt = null;
     await module.save();
 
-    res.json({ message: "Module associé avec succès" });
+    res.json({ success: true, message: "Module associé avec succès" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[claimModule]", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// DISSOCIATE
+// ─── DISSOCIATE ───────────────────────────────────────────────────────────────
 exports.dissociateModule = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason, confirm } = req.body;
 
-    if (!confirm)
-      return res.status(400).json({ error: "Confirmation requise" });
-    if (!reason || reason.length < 10) {
+    if (!confirm) {
       return res
         .status(400)
-        .json({ error: "Motif invalide (min 10 caractères)" });
+        .json({
+          success: false,
+          error: "Confirmation requise (confirm: true)",
+        });
+    }
+    if (!reason || reason.trim().length < 10) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Motif invalide (minimum 10 caractères)",
+        });
     }
 
     const module = await Module.findById(id);
-    if (!module) return res.status(404).json({ error: "Module introuvable" });
+    if (!module) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Module introuvable" });
+    }
 
     if (module.status !== "associated" && module.status !== "offline") {
       return res.status(400).json({
+        success: false,
         error: "Seul un module associé ou hors ligne peut être dissocié",
       });
     }
@@ -169,28 +237,34 @@ exports.dissociateModule = async (req, res) => {
     module.status = "dissociated";
     module.poulailler = null;
     module.owner = null;
-    module.dissociationReason = reason;
+    module.dissociationReason = reason.trim();
     module.dissociatedAt = new Date();
     await module.save();
 
-    res.json({ message: "Module dissocié avec succès" });
+    res.json({ success: true, message: "Module dissocié avec succès" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[dissociateModule]", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// DELETE
+// ─── DELETE ───────────────────────────────────────────────────────────────────
 exports.deleteModule = async (req, res) => {
   try {
     const module = await Module.findByIdAndDelete(req.params.id);
-    if (!module) return res.status(404).json({ error: "Module introuvable" });
-    res.json({ message: "Module supprimé" });
+    if (!module) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Module introuvable" });
+    }
+    res.json({ success: true, message: "Module supprimé avec succès" });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[deleteModule]", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };
 
-// POULAILLERS DISPONIBLES
+// ─── POULAILLERS DISPONIBLES (sans module associé) ───────────────────────────
 exports.getPendingPoulaillers = async (req, res) => {
   try {
     const occupied = await Module.find({
@@ -202,20 +276,26 @@ exports.getPendingPoulaillers = async (req, res) => {
 
     const poulaillers = await Poulailler.find({
       _id: { $nin: occupiedIds },
-    }).populate("owner", "name email");
+    }).populate("owner", "firstName lastName email");
 
     res.json({
+      success: true,
       data: poulaillers.map((p) => ({
         id: p._id,
         name: p.name,
         type: p.type,
         animalCount: p.animalCount,
         owner: p.owner
-          ? { id: p.owner._id, name: p.owner.name, email: p.owner.email }
+          ? {
+              id: p.owner._id,
+              name: `${p.owner.firstName} ${p.owner.lastName}`,
+              email: p.owner.email,
+            }
           : null,
       })),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[getPendingPoulaillers]", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 };

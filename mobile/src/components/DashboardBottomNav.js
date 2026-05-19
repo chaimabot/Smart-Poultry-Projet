@@ -36,11 +36,6 @@ export default function DashboardBottomNav({ navigation, alertCount = 0 }) {
           <Text style={styles.navText}>Notification</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.navItem}>
-          <Ionicons name="settings-outline" size={24} color="#94A3B8" />
-          <Text style={styles.navText}>Parametres</Text>
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => navigation && navigation.navigate("Profile")}

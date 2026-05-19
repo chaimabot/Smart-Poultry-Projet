@@ -24,7 +24,6 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem("adminToken");
       localStorage.removeItem("adminUser");
-      // Redirect to root (login page) instead of /login
       window.location.href = "/";
     }
     return Promise.reject(error);
@@ -49,43 +48,39 @@ export const dashboardAPI = {
 };
 
 export const eleveursAPI = {
-  // Inviter un nouvel eleveur
   invite: (data) => api.post("/admin/eleveurs/invite", data),
-
-  // Obtenir la liste des eleveurs
   getAll: (params) => api.get("/admin/eleveurs", { params }),
-
-  // Obtenir un eleveur par ID
   getById: (id) => api.get(`/admin/eleveurs/${id}`),
-
-  // Mettre a jour un eleveur
   update: (id, data) => api.put(`/admin/eleveurs/${id}`, data),
-
-  // Basculer le statut (activer/desactiver)
   toggleStatus: (id) => api.put(`/admin/eleveurs/${id}/toggle-status`),
-
-  // Supprimer un eleveur
   delete: (id) => api.delete(`/admin/eleveurs/${id}`),
-
-  // Renoyer l'invitation
   resendInvite: (id) => api.post(`/admin/eleveurs/${id}/resend-invite`),
 };
 
 export const modulesAPI = {
-  // GET
   getAll: (params) => api.get("/admin/modules", { params }),
   getPendingPoulaillers: () => api.get("/admin/modules/pending-poulaillers"),
   getById: (id) => api.get(`/admin/modules/${id}`),
-
-  // CREATE / UPDATE / DELETE
   create: (data) => api.post("/admin/modules", data),
   update: (id, data) => api.put(`/admin/modules/${id}`, data),
   delete: (id) => api.delete(`/admin/modules/${id}`),
-
-  // BUSINESS LOGIC
   claim: (data) => api.post("/admin/modules/claim", data),
   dissociate: (moduleId, data) =>
     api.patch(`/admin/modules/${moduleId}/dissociate`, data),
+};
+
+// ─── CAMERAS API (ESP32-CAM) ──────────────────────────────────────────────────
+export const camerasAPI = {
+  getAll: (params) => api.get("/admin/cameras", { params }),
+  getPendingPoulaillers: () => api.get("/admin/cameras/pending-poulaillers"),
+  getById: (id) => api.get(`/admin/cameras/${id}`),
+  create: (data) => api.post("/admin/cameras", data),
+  delete: (id) => api.delete(`/admin/cameras/${id}`),
+  claim: (data) => api.post("/admin/cameras/claim", data),
+  dissociate: (cameraId, data) =>
+    api.patch(`/admin/cameras/${cameraId}/dissociate`, data),
+  updateStreamUrl: (cameraId, streamUrl) =>
+    api.patch(`/admin/cameras/${cameraId}/stream`, { streamUrl }),
 };
 
 export const poulaillersAPI = {
@@ -150,15 +145,12 @@ export const utilisateursAPI = {
   delete: (id) => api.delete(`/admin/utilisateurs/${id}`),
   inviteAdmin: (data) => api.post("/admin/utilisateurs/invite-admin", data),
 };
+
 export const dossiersAPI = {
   getAll: (params) => api.get("/admin/dossiers", { params }),
-
   getById: (id) => api.get(`/admin/dossiers/${id}`),
-
   validate: (id) => api.patch(`/admin/dossiers/validate/${id}`),
-
   updateAmounts: (id, data) => api.put(`/admin/dossiers/${id}/finance`, data),
-
   clore: (id, body) => api.patch(`/admin/dossiers/clore/${id}`, body),
   annuler: (id, body) => api.patch(`/admin/dossiers/annuler/${id}`, body),
   delete: (id) => api.delete(`/admin/dossiers/${id}`),

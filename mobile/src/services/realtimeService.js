@@ -8,14 +8,13 @@ let socket = null;
 const connect = async (token) => {
   if (!token) throw new Error("Token required");
 
-  // Supprime /api pour avoir l'URL de base du serveur (ex: http://192.168.1.3:5000)
   const url = API_URL.replace("/api", "");
 
   console.log("[SOCKET] Attempting connection to:", url);
 
+  // Socket.IO doit utiliser l’origin du backend (http/https), pas un ws direct.
   socket = io(url, {
     auth: { token },
-    transports: ["websocket"], // Vous pouvez garder "websocket" ici, Socket.io gérera le protocole tout seul
     reconnection: true,
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,

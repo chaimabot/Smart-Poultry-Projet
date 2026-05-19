@@ -53,7 +53,7 @@ exports.inviteEleveur = async (req, res) => {
     const existingUser = await User.findOne({ email });
 
     if (existingUser) {
-      // Si l'utilisateur est archivé, on le réactive et on renvoie une invitation
+      // Si l'utilisateur on le réactive et on renvoie une invitation
       if (existingUser.status === "archived") {
         // Générer un nouveau token d'invitation
         const inviteToken = generateInviteToken();
@@ -168,19 +168,41 @@ exports.resendInvite = async (req, res) => {
     }
 
     if (user.role !== "eleveur") {
-      return res.status(400).json({
-        success: false,
-        error: "Cet utilisateur n'est pas un élèveur",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Cet utilisateur n'est pas un élèveur",
+        });
     }
 
     if (user.status === "active") {
-      return res
-        .status(400)
-        .json({ success: false, error: "Cet élèveur est déjà actif" });
+      // Envoyer un email avec les coordonnées de connexion (reset password link)
+      const crypto = require("crypto");
+      const resetToken = crypto.randomBytes(32).toString("hex");
+      const resetExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
+      user.inviteToken = resetToken;
+      user.inviteTokenExpires = resetExpires;
+      await user.save();
+
+      try {
+        await emailService.sendCredentialsEmail(
+          user.email,
+          resetToken,
+          user.firstName,
+        );
+      } catch (emailError) {
+        console.error("[EMAIL ERROR]", emailError);
+      }
+
+      return res.json({
+        success: true,
+        message: "Coordonnées envoyées avec succès",
+      });
     }
 
-    // Générer un nouveau token
+    // Cas pending : logique existante
     const inviteToken = generateInviteToken();
     const inviteTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
@@ -188,7 +210,6 @@ exports.resendInvite = async (req, res) => {
     user.inviteTokenExpires = inviteTokenExpires;
     await user.save();
 
-    // Envoyer l'email
     try {
       await emailService.sendInviteEmail(
         user.email,
@@ -199,15 +220,10 @@ exports.resendInvite = async (req, res) => {
       console.error("[EMAIL ERROR]", emailError);
     }
 
-    res.json({
-      success: true,
-      message: "Invitation rechargée avec succès",
-    });
+    res.json({ success: true, message: "Invitation renvoyée avec succès" });
   } catch (err) {
     console.error("[RESEND INVITE ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors du renvoi de l'invitation" });
+    res.status(500).json({ success: false, error: "Erreur lors du renvoi" });
   }
 };
 

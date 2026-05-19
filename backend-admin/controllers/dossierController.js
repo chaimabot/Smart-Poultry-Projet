@@ -208,7 +208,8 @@ const validateDossier = async (req, res) => {
     // =========================================================
     dossier.status = "AVANCE_PAYEE";
     dossier.dateValidation = new Date();
-    dossier.validatedBy = req.user.id;
+    // decoded token may contain either `id` or `_id`
+    dossier.validatedBy = req.user.id || req.user._id;
 
     // =========================================================
     // 2. ACTIVER / PRÉPARER POULAILLER
@@ -317,7 +318,7 @@ const cloreDossier = async (req, res) => {
     dossier.status = "TERMINE";
     dossier.dateCloture = Date.now();
     dossier.motifCloture = motifCloture.trim();
-    dossier.cloreBy = req.user.id;
+    dossier.cloreBy = req.user.id || req.user._id;
 
     const eleveurId = getEleveurId(dossier);
     if (eleveurId)

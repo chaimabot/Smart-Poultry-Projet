@@ -20,6 +20,7 @@ import { BlurView } from "expo-blur";
 import { requestAccess } from "../../../services/auth"; // <-- renommée (voir note)
 import Toast from "../../../components/Toast";
 
+
 export default function RegisterScreen() {
   const navigation = useNavigation();
   const [loading, setLoading] = useState(false);
