@@ -19,49 +19,80 @@ const getMacAddress = async (poulaillerId) => {
 const pompeService = {
   // ============================================================================
   // Envoyer une commande pompe à l'ESP32 et logger en BD
-  // @param {string} id     — ObjectId MongoDB du poulailler
-  // @param {string} mode   — "auto" | "manual"
-  // @param {string} action — "on" | "off"
+  // @param {string} id             — ObjectId MongoDB du poulailler
+  // @param {string} mode           — "auto" | "manual"
+  // @param {string} action         — "on" | "off"
+  // @param {boolean} changeModeOnly — Si true, ne change que le mode
   // ============================================================================
-  async sendPumpCommand(id, mode, action) {
+  async sendPumpCommand(id, mode, action, changeModeOnly = false) {
     const poulailler = await Poulailler.findById(id);
     if (!poulailler) throw new Error("Poulailler introuvable");
 
-    console.log(`[pompeService] Envoi commande pompe:`, {
+    const previousMode = poulailler.actuatorStates.pump.mode;
+    const previousState = poulailler.actuatorStates.pump.status;
+
+    console.log(`[pompeService] Commande reçue:`, {
       poulaillerId: id,
       mode,
       action,
+      changeModeOnly,
+      previousMode,
+      previousState,
     });
 
+    // ✅ Si changeModeOnly, on ne change que le mode
+    if (changeModeOnly && mode) {
+      poulailler.actuatorStates.pump.mode = mode;
+      console.log(
+        `[pompeService] Mode changé: ${previousMode} → ${mode} (état conservé: ${previousState})`,
+      );
+    } else {
+      // ✅ Changement normal : mode + état
+      if (mode) {
+        poulailler.actuatorStates.pump.mode = mode;
+      }
+      if (action) {
+        poulailler.actuatorStates.pump.status = action;
+      }
+      console.log(
+        `[pompeService] État changé: ${previousState} → ${action || previousState}, Mode: ${previousMode} → ${mode || previousMode}`,
+      );
+    }
+
+    await poulailler.save();
+
+    // ✅ Publication MQTT avec l'état ACTUEL
     const client = getMqttClient();
     if (!client || !client.connected) {
       console.error("[pompeService] MQTT client non connecté");
       throw new Error("MQTT client non connecté");
     }
 
-    // ✅ Résoudre la MAC pour le topic
     const macAddress = await getMacAddress(id);
     const topic = `poulailler/${macAddress}/cmd/pump`;
 
-    // Format correct : ESP32 attend {"on": true/false, "mode": "auto"/"manual"}
+    // ✅ Utiliser l'état actuel (pas forcé à action)
+    const currentState = poulailler.actuatorStates.pump.status;
+    const currentMode = poulailler.actuatorStates.pump.mode;
+
     const payload = JSON.stringify({
-      on: action === "on",
-      mode: mode || "manual",
+      on: currentState === "on",
+      mode: currentMode,
     });
 
     client.publish(topic, payload, { qos: 1 });
-    console.log(`[pompeService] Message MQTT publié sur ${topic}:`, payload);
+    console.log(`[pompeService] MQTT publié sur ${topic}:`, payload);
 
-    // Archivage de la commande pour l'historique
+    // Archivage de la commande
     const command = await Command.create({
       poulailler: id,
       typeActionneur: "pompe",
-      action,
-      mode,
+      action: changeModeOnly ? "changer_mode" : action || previousState,
+      mode: currentMode,
       status: "sent",
     });
 
-    console.log(`[pompeService] Commande sauvegardée en BD:`, command._id);
+    console.log(`[pompeService] Commande sauvegardée:`, command._id);
     return command;
   },
 
@@ -69,7 +100,6 @@ const pompeService = {
   // Mettre à jour les seuils eau et synchroniser avec l'ESP32
   // ============================================================================
   async updateAndSyncThresholds(id, waterLevelMin, waterHysteresis) {
-    // Mise à jour dans MongoDB
     const poulailler = await Poulailler.findByIdAndUpdate(
       id,
       {
@@ -87,7 +117,6 @@ const pompeService = {
       waterHysteresis,
     });
 
-    // ✅ Envoi immédiat de la nouvelle config à l'ESP32 via MAC
     const client = getMqttClient();
     if (client && client.connected) {
       try {
@@ -111,9 +140,9 @@ const pompeService = {
     return poulailler.thresholds;
   },
 
-  // Sécurité : vérifie si la pompe tourne depuis trop longtemps (prévention surchauffe)
+  // Sécurité : vérifie si la pompe tourne depuis trop longtemps
   isRuntimeSafe(startTime) {
-    const MAX_SECONDS = 30; // Sécurité pour petite pompe 5V
+    const MAX_SECONDS = 30;
     const duration = (Date.now() - startTime) / 1000;
     return duration < MAX_SECONDS;
   },
