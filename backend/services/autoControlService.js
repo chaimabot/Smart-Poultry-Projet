@@ -66,8 +66,6 @@ function shouldLampBeOn(measures, thresholds) {
   return { shouldBeOn: false, reason: "Conditions normales" };
 }
 
-// ─── Logique AUTO pompe ──────────────────────────────────────────────────────
-// Déclenche si : Niveau d'eau < waterLevelMin (avec hystérésis 10%)
 function shouldPumpBeOn(measures, thresholds, currentlyOn = false) {
   if (!thresholds)
     return { shouldBeOn: false, reason: "Seuils non configurés" };
@@ -80,20 +78,28 @@ function shouldPumpBeOn(measures, thresholds, currentlyOn = false) {
     thresholds.waterLevelMin != null ? Number(thresholds.waterLevelMin) : null;
   const hysteresis = 10;
 
+  console.log(
+    `[shouldPumpBeOn] water=${water}, waterMin=${waterMin}, currentlyOn=${currentlyOn}`,
+  );
+
   if (water !== null && waterMin !== null) {
-    if (!currentlyOn && water < waterMin)
+    if (!currentlyOn && water < waterMin) {
       return {
         shouldBeOn: true,
-        reason: `Niveau d'eau < ${waterMin}% (${water}%)`,
+        reason: `Niveau d'eau < ${waterMin}% (${water.toFixed(0)}%)`,
       };
-    if (currentlyOn && water < waterMin + hysteresis)
-      return { shouldBeOn: true, reason: "Remplissage en cours..." };
+    }
+    if (currentlyOn && water < waterMin + hysteresis) {
+      return {
+        shouldBeOn: true,
+        reason: `Remplissage en cours... (${water.toFixed(0)}%)`,
+      };
+    }
   }
 
   return { shouldBeOn: false, reason: "Niveau d'eau normal" };
 }
 
-// ─── Évaluation principale ───────────────────────────────────────────────────
 async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
   if (!poulailler) {
     console.warn("[AUTO] Poulailler manquant");
@@ -112,16 +118,31 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
   const thresholds = poulailler.thresholds || {};
   const actuators = poulailler.actuatorStates || {};
 
+  console.log(`\n[AUTO] ═══════════════════════════════════════════════════`);
   console.log(`[AUTO] Évaluation pour ${macAddress}`);
   console.log(
     `[AUTO] Modes: fan=${actuators.ventilation?.mode}, lamp=${actuators.lamp?.mode}, pump=${actuators.pump?.mode}`,
   );
+  console.log(`[AUTO] Mesures :`, {
+    temp: measures.temperature,
+    hum: measures.humidity,
+    air: measures.airQualityPercent,
+    water: measures.waterLevel,
+  });
+  console.log(`[AUTO] Seuils :`, {
+    tempMin: thresholds.temperatureMin,
+    tempMax: thresholds.temperatureMax,
+    airMin: thresholds.airQualityMin,
+    waterMin: thresholds.waterLevelMin,
+  });
 
   // Helper pour publier une commande MQTT
   const publishCmd = (type, on) => {
     return new Promise((resolve) => {
       const topic = `poulailler/${macAddress}/cmd/${type}`;
       const payload = JSON.stringify({ on, mode: "auto" });
+
+      console.log(`[AUTO ${type.toUpperCase()}] 📤 Publish: ${topic} → ${payload}`);
 
       mqttClient.publish(topic, payload, { qos: 1 }, (err) => {
         if (err) {
@@ -137,7 +158,9 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
     });
   };
 
+  //   : on sauvegarde TOUJOURS, même sans changement de status
   let stateChanged = false;
+  let reasonChanged = false;
 
   // ════════════════════════════════════════════════════════════════════════
   // VENTILATEUR
@@ -151,13 +174,18 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
       `[AUTO FAN] État: ${currentlyOn ? "ON" : "OFF"} → Décision: ${result.shouldBeOn ? "ON" : "OFF"}`,
     );
 
+    //   1 : Sauvegarder la raison TOUJOURS (même sans changement)
+    if (poulailler.actuatorStates.ventilation.lastAutoReason !== result.reason) {
+      poulailler.actuatorStates.ventilation.lastAutoReason = result.reason;
+      reasonChanged = true;
+    }
+
     if (result.shouldBeOn !== currentlyOn) {
       const sent = await publishCmd("fan", result.shouldBeOn);
       if (sent) {
         poulailler.actuatorStates.ventilation.status = result.shouldBeOn
           ? "on"
           : "off";
-        poulailler.actuatorStates.ventilation.lastAutoReason = result.reason;
         poulailler.actuatorStates.ventilation.lastAutoChange = new Date();
         stateChanged = true;
       }
@@ -176,13 +204,17 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
       `[AUTO LAMP] État: ${currentlyOn ? "ON" : "OFF"} → Décision: ${result.shouldBeOn ? "ON" : "OFF"}`,
     );
 
+    if (poulailler.actuatorStates.lamp.lastAutoReason !== result.reason) {
+      poulailler.actuatorStates.lamp.lastAutoReason = result.reason;
+      reasonChanged = true;
+    }
+
     if (result.shouldBeOn !== currentlyOn) {
       const sent = await publishCmd("lamp", result.shouldBeOn);
       if (sent) {
         poulailler.actuatorStates.lamp.status = result.shouldBeOn
           ? "on"
           : "off";
-        poulailler.actuatorStates.lamp.lastAutoReason = result.reason;
         poulailler.actuatorStates.lamp.lastAutoChange = new Date();
         stateChanged = true;
       }
@@ -201,24 +233,42 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
       `[AUTO PUMP] État: ${currentlyOn ? "ON" : "OFF"} → Décision: ${result.shouldBeOn ? "ON" : "OFF"}`,
     );
 
+    if (poulailler.actuatorStates.pump.lastAutoReason !== result.reason) {
+      poulailler.actuatorStates.pump.lastAutoReason = result.reason;
+      reasonChanged = true;
+    }
+
     if (result.shouldBeOn !== currentlyOn) {
+      console.log(`[AUTO PUMP] 🚨 CHANGEMENT DÉTECTÉ ! Envoi commande...`);
       const sent = await publishCmd("pump", result.shouldBeOn);
       if (sent) {
         poulailler.actuatorStates.pump.status = result.shouldBeOn
           ? "on"
           : "off";
-        poulailler.actuatorStates.pump.lastAutoReason = result.reason;
         poulailler.actuatorStates.pump.lastAutoChange = new Date();
         stateChanged = true;
+        console.log(`[AUTO PUMP] ✅ État sauvegardé: ${result.shouldBeOn ? "ON" : "OFF"}`);
+      } else {
+        console.error(`[AUTO PUMP] ❌ Échec envoi MQTT`);
       }
+    } else {
+      console.log(`[AUTO PUMP] Aucun changement nécessaire`);
+    }
+  } else {
+    console.log(`[AUTO PUMP] Mode non-auto (${actuators.pump?.mode}), ignoré`);
+  }
+
+  //   2 : Sauvegarder si état OU raison a changé
+  if (stateChanged || reasonChanged) {
+    try {
+      await poulailler.save();
+      console.log("[AUTO] ✅ Sauvegardé en BD");
+    } catch (err) {
+      console.error("[AUTO] ❌ Erreur sauvegarde:", err.message);
     }
   }
 
-  // Sauvegarde si changements
-  if (stateChanged) {
-    await poulailler.save();
-    console.log("[AUTO] ✅ États sauvegardés");
-  }
+  console.log(`[AUTO] ═══════════════════════════════════════════════════\n`);
 }
 
 module.exports = {

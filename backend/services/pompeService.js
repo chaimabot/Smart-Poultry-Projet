@@ -1,11 +1,10 @@
+// services/pompeService.js (BACKEND)
+
 const Poulailler = require("../models/Poulailler");
 const Command = require("../models/Command");
 const Module = require("../models/Module");
 const { getMqttClient } = require("./mqttService");
 
-// ============================================================================
-// HELPER : obtenir la macAddress du device associé au poulailler
-// ============================================================================
 const getMacAddress = async (poulaillerId) => {
   const device = await Module.findOne({ poulailler: poulaillerId });
   if (!device?.macAddress) {
@@ -17,51 +16,44 @@ const getMacAddress = async (poulaillerId) => {
 };
 
 const pompeService = {
-  // ============================================================================
-  // Envoyer une commande pompe à l'ESP32 et logger en BD
-  // @param {string} id             — ObjectId MongoDB du poulailler
-  // @param {string} mode           — "auto" | "manual"
-  // @param {string} action         — "on" | "off"
-  // @param {boolean} changeModeOnly — Si true, ne change que le mode
-  // ============================================================================
+  /**
+   * Envoie une commande pompe à l'ESP32 et met à jour la BD
+   * @param {string} id - ObjectId MongoDB du poulailler
+   * @param {string} mode - "auto" | "manual"
+   * @param {string} action - "on" | "off" (ignoré si changeModeOnly=true)
+   * @param {boolean} changeModeOnly - Si true, ne change que le mode (pas l'état)
+   */
   async sendPumpCommand(id, mode, action, changeModeOnly = false) {
     const poulailler = await Poulailler.findById(id);
     if (!poulailler) throw new Error("Poulailler introuvable");
 
-    const previousMode = poulailler.actuatorStates.pump.mode;
-    const previousState = poulailler.actuatorStates.pump.status;
-
-    console.log(`[pompeService] Commande reçue:`, {
+    console.log(`[pompeService] Commande:`, {
       poulaillerId: id,
       mode,
       action,
       changeModeOnly,
-      previousMode,
-      previousState,
     });
 
-    // ✅ Si changeModeOnly, on ne change que le mode
-    if (changeModeOnly && mode) {
+    // ✅ 1. Mettre à jour la BD
+    if (mode) {
       poulailler.actuatorStates.pump.mode = mode;
-      console.log(
-        `[pompeService] Mode changé: ${previousMode} → ${mode} (état conservé: ${previousState})`,
-      );
-    } else {
-      // ✅ Changement normal : mode + état
-      if (mode) {
-        poulailler.actuatorStates.pump.mode = mode;
-      }
-      if (action) {
-        poulailler.actuatorStates.pump.status = action;
-      }
-      console.log(
-        `[pompeService] État changé: ${previousState} → ${action || previousState}, Mode: ${previousMode} → ${mode || previousMode}`,
-      );
+    }
+
+    if (!changeModeOnly && action) {
+      poulailler.actuatorStates.pump.status = action;
+    }
+
+    // Si on passe en AUTO, reset la raison
+    if (mode === "auto") {
+      poulailler.actuatorStates.pump.lastAutoReason = "";
     }
 
     await poulailler.save();
+    console.log(
+      `[pompeService] ✅ BD: mode=${poulailler.actuatorStates.pump.mode}, status=${poulailler.actuatorStates.pump.status}`,
+    );
 
-    // ✅ Publication MQTT avec l'état ACTUEL
+    // ✅ 2. Envoi MQTT (seulement si action explicite OU mode manuel)
     const client = getMqttClient();
     if (!client || !client.connected) {
       console.error("[pompeService] MQTT client non connecté");
@@ -69,36 +61,54 @@ const pompeService = {
     }
 
     const macAddress = await getMacAddress(id);
-    const topic = `poulailler/${macAddress}/cmd/pump`;
 
-    // ✅ Utiliser l'état actuel (pas forcé à action)
-    const currentState = poulailler.actuatorStates.pump.status;
-    const currentMode = poulailler.actuatorStates.pump.mode;
+    // ⚠️ Si changeModeOnly et mode=auto : ne pas envoyer de commande MQTT
+    // (le serveur va évaluer juste après et envoyer la bonne commande)
+    if (!changeModeOnly && action) {
+      const topic = `poulailler/${macAddress}/cmd/pump`;
+      const payload = JSON.stringify({
+        on: action === "on",
+        mode: mode || "manual",
+      });
 
-    const payload = JSON.stringify({
-      on: currentState === "on",
-      mode: currentMode,
-    });
+      client.publish(topic, payload, { qos: 1 }, (err) => {
+        if (err) {
+          console.error("[pompeService] ❌ Erreur publish:", err.message);
+        } else {
+          console.log(`[pompeService] ✅ MQTT: ${topic} → ${payload}`);
+        }
+      });
+    }
 
-    client.publish(topic, payload, { qos: 1 });
-    console.log(`[pompeService] MQTT publié sur ${topic}:`, payload);
+    // ✅ 3. Si on passe en AUTO, déclencher immédiatement une évaluation
+    if (mode === "auto") {
+      console.log(`[pompeService] 🤖 Déclenchement évaluation AUTO immédiate`);
+      try {
+        const { evaluateAutoControls } = require("./autoControlService");
+        // Récupérer la version fraîche
+        const freshPoulailler = await Poulailler.findById(id);
+        await evaluateAutoControls(freshPoulailler, macAddress, client);
+      } catch (e) {
+        console.error("[pompeService] Erreur évaluation AUTO:", e.message);
+      }
+    }
 
-    // Archivage de la commande
-    const command = await Command.create({
+    // ✅ 4. Archiver la commande
+    await Command.create({
       poulailler: id,
       typeActionneur: "pompe",
-      action: changeModeOnly ? "changer_mode" : action || previousState,
-      mode: currentMode,
+      action: changeModeOnly
+        ? "changement_mode"
+        : action === "on"
+          ? "demarrer"
+          : "arreter",
+      mode,
       status: "sent",
     });
 
-    console.log(`[pompeService] Commande sauvegardée:`, command._id);
-    return command;
+    return poulailler;
   },
 
-  // ============================================================================
-  // Mettre à jour les seuils eau et synchroniser avec l'ESP32
-  // ============================================================================
   async updateAndSyncThresholds(id, waterLevelMin, waterHysteresis) {
     const poulailler = await Poulailler.findByIdAndUpdate(
       id,
@@ -128,19 +138,21 @@ const pompeService = {
         });
 
         client.publish(configTopic, configPayload, { qos: 1 });
-        console.log(`[pompeService] Config MQTT publiée sur ${configTopic}`);
+        console.log(`[pompeService] Config publiée: ${configTopic}`);
+
+        // ✅ Re-évaluer si en mode AUTO
+        if (poulailler.actuatorStates.pump.mode === "auto") {
+          const { evaluateAutoControls } = require("./autoControlService");
+          await evaluateAutoControls(poulailler, macAddress, client);
+        }
       } catch (err) {
-        console.warn(
-          "[pompeService] Impossible d'envoyer la config MQTT:",
-          err.message,
-        );
+        console.warn("[pompeService] Erreur config:", err.message);
       }
     }
 
     return poulailler.thresholds;
   },
 
-  // Sécurité : vérifie si la pompe tourne depuis trop longtemps
   isRuntimeSafe(startTime) {
     const MAX_SECONDS = 30;
     const duration = (Date.now() - startTime) / 1000;
