@@ -8,9 +8,6 @@ const Joi = require("joi");
 const mqttService = require("../services/mqttService");
 const { createActuatorAlert } = require("../services/alertService");
 
-// ============================================================
-// SYNC CONFIG → ESP32
-// ============================================================
 async function syncConfig(poulaillerId, mqttSvc) {
   try {
     const poulailler = await Poulailler.findById(poulaillerId);
@@ -22,16 +19,21 @@ async function syncConfig(poulaillerId, mqttSvc) {
       return;
     }
 
-    const id = poulailler.uniqueCode || poulailler._id.toString();
-    const topic = `poulailler/${id}/config`;
+    //     Utiliser la MAC, pas uniqueCode
+    const macAddress = await mqttSvc.resolveMacByPoulaillerId(poulaillerId);
 
-    // FIX #2 : opérateur || avec valeur 0 — si un seuil est volontairement 0,
-    //          `|| 20` l'écrase par le fallback. Utilisation de ?? (nullish coalescing)
-    //          pour ne tomber sur le fallback que si la valeur est null/undefined.
+    if (!macAddress) {
+      console.warn(`[SYNC CONFIG] Aucune MAC pour poulailler ${poulaillerId}`);
+      return;
+    }
+
+    const topic = `poulailler/${macAddress}/config`;
+
     const config = {
       tempMin: poulailler.thresholds.temperatureMin ?? 20,
       tempMax: poulailler.thresholds.temperatureMax ?? 30,
       waterMin: poulailler.thresholds.waterLevelMin ?? 25,
+      airQualityMin: poulailler.thresholds.airQualityMin ?? 20,
       waterHysteresis: 10,
       lampMode: poulailler.actuatorStates?.lamp?.mode ?? "auto",
       pumpMode: poulailler.actuatorStates?.pump?.mode ?? "auto",
@@ -42,21 +44,12 @@ async function syncConfig(poulaillerId, mqttSvc) {
       qos: 1,
       retain: false,
     });
-    console.log(`[SYNC CONFIG] Envoyé sur ${topic}:`, config);
+    console.log(`[SYNC CONFIG]   Envoyé sur ${topic}:`, config);
   } catch (err) {
     console.error("[SYNC CONFIG] Erreur:", err.message);
   }
 }
 
-// ============================================================
-// VALIDATION JOI
-// Options communes :
-//   stripUnknown : ignore les champs inconnus au lieu de les rejeter
-//                  (évite les 400 sur des champs mobiles supplémentaires)
-//   abortEarly   : remonte toutes les erreurs en une seule réponse
-//   convert      : caste "12" → 12, "true" → true automatiquement
-//                  (fréquent depuis FormData React Native / multipart)
-// ============================================================
 const JOI_OPTS = { stripUnknown: true, abortEarly: false, convert: true };
 
 const poulaillerSchema = Joi.object({
@@ -678,17 +671,6 @@ exports.getArchivedPoulaillers = async (req, res) => {
     res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 };
-
-// ============================================================
-// @desc    Monitoring complet (historique 24h)
-// @route   GET /api/poulaillers/:id/monitoring
-// @access  Private
-// FIX #14 : fallback avec Math.random() — si aucune mesure n'existe,
-//           le contrôleur renvoyait des données aléatoires inventées
-//           comme si c'était de vraies mesures. Le client ne peut pas
-//           distinguer un vrai 0 d'un fallback. Remplacé par une réponse
-//           explicite indiquant l'absence de données.
-// ============================================================
 exports.getMonitoringData = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
@@ -751,11 +733,6 @@ exports.getMonitoringData = async (req, res) => {
   }
 };
 
-// ============================================================
-// @desc    Contrôler un actionneur
-// @route   PATCH /api/poulaillers/:id/actuators
-// @access  Private
-// ============================================================
 exports.controlActuator = async (req, res) => {
   try {
     const { actuator, state, mode } = req.body;
@@ -800,39 +777,62 @@ exports.controlActuator = async (req, res) => {
         .json({ success: false, error: "Accès non autorisé" });
     }
 
+    // 1. Mettre à jour en BD
     poulailler.actuatorStates[actuator].status = state;
     if (mode && ["auto", "manual"].includes(mode)) {
       poulailler.actuatorStates[actuator].mode = mode;
     }
     await poulailler.save();
 
-    // Publication MQTT
+    //   2.   Récupérer la VRAIE adresse MAC de l'ESP32
     const mqttClient = mqttService.getMqttClient();
     if (mqttClient && mqttClient.connected) {
-      const poulaillerId = poulailler.uniqueCode || poulailler._id.toString();
-      const topicMap = {
-        door: "door",
-        ventilation: "fan",
-        lamp: "lamp",
-        pump: "pump",
-      };
-      const espTopic = `poulailler/${poulaillerId}/cmd/${topicMap[actuator]}`;
+      //   Utiliser resolveMacByPoulaillerId pour obtenir la MAC réelle
+      const macAddress = await mqttService.resolveMacByPoulaillerId(
+        req.params.id,
+      );
 
-      const mqttPayload =
-        actuator === "door"
-          ? { action: state === "open" ? "open" : "stop" }
-          : { on: state === "on", mode: mode ?? "manual" };
-      // FIX #15 : `mode || "manual"` remplacé par `mode ?? "manual"` — si mode
-      //           est une chaîne vide "", || bascule sur "manual" ce qui est
-      //           trompeur. ?? ne bascule que sur null/undefined.
+      if (!macAddress) {
+        console.error(
+          `[CONTROL] ❌ Aucune MAC trouvée pour poulailler ${req.params.id}`,
+        );
+        // Continuer quand même pour sauvegarder en BD, mais l'ESP32 ne recevra rien
+      } else {
+        const topicMap = {
+          door: "door",
+          ventilation: "fan",
+          lamp: "lamp",
+          pump: "pump",
+        };
+        const espTopic = `poulailler/${macAddress}/cmd/${topicMap[actuator]}`;
 
-      mqttClient.publish(espTopic, JSON.stringify(mqttPayload), { qos: 1 });
-      console.log(`[MQTT→ESP32] ${espTopic}: ${JSON.stringify(mqttPayload)}`);
+        const mqttPayload =
+          actuator === "door"
+            ? { action: state === "open" ? "open" : "stop" }
+            : { on: state === "on", mode: mode ?? "manual" };
+
+        console.log(`[CONTROL] 📤 Envoi MQTT à l'ESP32:`);
+        console.log(`[CONTROL]    Topic: ${espTopic}`);
+        console.log(`[CONTROL]    Payload: ${JSON.stringify(mqttPayload)}`);
+
+        mqttClient.publish(
+          espTopic,
+          JSON.stringify(mqttPayload),
+          { qos: 1 },
+          (err) => {
+            if (err) {
+              console.error(`[CONTROL] ❌ Erreur publish:`, err.message);
+            } else {
+              console.log(`[CONTROL]   Commande envoyée à l'ESP32`);
+            }
+          },
+        );
+      }
     } else {
-      console.warn("[MQTT] Client non connecté pour commande", actuator);
+      console.warn("[MQTT] ⚠️ Client non connecté pour commande", actuator);
     }
 
-    // Enregistrement commande en base
+    // 3. Enregistrement commande en base
     const typeMap = {
       door: "porte",
       ventilation: "ventilateur",
@@ -850,8 +850,7 @@ exports.controlActuator = async (req, res) => {
       poulailler: poulailler._id,
       typeActionneur: typeMap[actuator],
       action: actionMapFr[actuator][state],
-      issuedBy: req.user.id, // FIX #16 : "user" (string littérale) remplacé par
-      // req.user.id pour traçabilité réelle de l'auteur.
+      issuedBy: req.user.id,
       source: "mobile-app",
       status: "sent",
     });
@@ -872,12 +871,6 @@ exports.controlActuator = async (req, res) => {
     res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 };
-
-// ============================================================
-// @desc    Historique des mesures par capteur et période
-// @route   GET /api/poulaillers/:id/history?sensor=temperature&period=24h
-// @access  Private
-// ============================================================
 exports.getMeasureHistory = async (req, res) => {
   try {
     const poulailler = await Poulailler.findById(req.params.id);
