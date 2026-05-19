@@ -39,6 +39,23 @@ const handleControlPorte = async (req, res) => {
 
     await porteService.updatePorte(id, action);
 
+    // ✅ Si on ouvre : arrêter automatiquement après 8 secondes (backend → MQTT stop)
+    if (action === "open") {
+      setTimeout(async () => {
+        try {
+          await porteService.updatePorte(id, "stop");
+          console.log("[PORTE][API] Auto-stop porte après 8s", {
+            poulaillerId: id,
+          });
+        } catch (e) {
+          console.error("[PORTE][API] Auto-stop porte échoué", {
+            poulaillerId: id,
+            error: e.message,
+          });
+        }
+      }, 8000);
+    }
+
     console.log("[PORTE][API] Commande envoyee avec succes", {
       poulaillerId: id,
       action,
