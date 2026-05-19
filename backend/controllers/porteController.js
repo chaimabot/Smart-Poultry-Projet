@@ -1,6 +1,7 @@
 const porteService = require("../services/porteService");
 const Command = require("../models/Command");
 const Poulailler = require("../models/Poulailler");
+const mqttService = require("../services/mqttService");
 
 // Délai en ms avant l'envoi automatique du stop après une ouverture
 const AUTO_STOP_DELAY_MS = 7000;
@@ -44,6 +45,15 @@ const handleControlPorte = async (req, res) => {
     });
 
     await porteService.updatePorte(id, action);
+
+    // Marquer la commande manuelle porte pour éviter l'override par les status ESP32 transitoires
+    // (même si la porte n'a pas encore complètement bougé / status UNKNOWN).
+    try {
+      const macAddress = await mqttService.resolveMacByPoulaillerId(id);
+      mqttService.markManualCommand(macAddress, "door");
+    } catch (e) {
+      // pas bloquant
+    }
 
     // ✅ Auto-stop uniquement après "open" (pas "close"), délai cohérent avec AUTO_STOP_DELAY_MS
     if (action === "open") {

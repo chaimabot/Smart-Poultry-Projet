@@ -41,6 +41,7 @@ function hasRecentManualCommand(macAddress, type, withinMs = 3000) {
   return Date.now() - entry[type] < withinMs;
 }
 
+
 // ─── RÉSOLUTION MAC / POULAILLER ─────────────────────────────────────────────
 
 /**
@@ -509,20 +510,38 @@ const handleMqttMessage = async (topic, message) => {
           OPENING: "open",
           CLOSING: "closed",
           BLOCKED: "closed",
-          UNKNOWN: "closed",
+          // Important: ne pas forcer "closed" sur UNKNOWN.
+          // Sinon DB repasse closed dès qu'un ESP32 envoie UNKNOWN.
+          UNKNOWN: null,
         };
-        const newDoorStatus = doorStateMap[data.doorState] || "closed";
-        const prevDoorStatus = poulailler.actuatorStates.door?.status;
-        poulailler.actuatorStates.door.status = newDoorStatus;
 
-        if (prevDoorStatus !== newDoorStatus) {
-          await DoorEvent.create({
-            poulailler: poulailler._id,
-            action: newDoorStatus === "open" ? "open" : "close",
-            source: "esp32",
-            doorState: data.doorState,
-            timestamp: new Date(),
-          });
+        const mapped = doorStateMap[data.doorState];
+        const prevDoorStatus = poulailler.actuatorStates.door?.status;
+
+        // Anti-override : si commande manuelle porte récente, on ignore les états ESP32
+        // qui peuvent transitoirement annoncer CLOSED/UNKNOWN.
+        if (hasRecentManualCommand(macAddress, "door", 3000)) {
+          console.log(
+            `[STATUS DOOR] 🛑 Ignoré pendant commande manuelle (${macAddress}).`,
+            {
+              receivedDoorState: data.doorState,
+              prevDoorStatus,
+              prevDoorMode: poulailler.actuatorStates.door?.mode,
+            },
+          );
+        } else {
+          const newDoorStatus = mapped ?? prevDoorStatus ?? "closed";
+          poulailler.actuatorStates.door.status = newDoorStatus;
+
+          if (prevDoorStatus !== newDoorStatus) {
+            await DoorEvent.create({
+              poulailler: poulailler._id,
+              action: newDoorStatus === "open" ? "open" : "close",
+              source: "esp32",
+              doorState: data.doorState,
+              timestamp: new Date(),
+            });
+          }
         }
 
         if (data.doorState === "BLOCKED") {
@@ -532,6 +551,7 @@ const handleMqttMessage = async (topic, message) => {
           } catch (err) {}
         }
       }
+
 
       await poulailler.save();
 
