@@ -23,6 +23,24 @@ let doorTimeoutIntervalId = null;
 let doorClockIntervalId = null;
 let connectionAttempt = 0;
 
+// ✅ Cache pour ignorer certains effets pendant une courte fenêtre après une commande manuelle
+// macAddress -> { type: timestamp }
+const recentManualCommands = new Map();
+
+function markManualCommand(macAddress, type) {
+  if (!macAddress || !type) return;
+  if (!recentManualCommands.has(macAddress)) {
+    recentManualCommands.set(macAddress, {});
+  }
+  recentManualCommands.get(macAddress)[type] = Date.now();
+}
+
+function hasRecentManualCommand(macAddress, type, withinMs = 3000) {
+  const entry = recentManualCommands.get(macAddress);
+  if (!entry || !entry[type]) return false;
+  return Date.now() - entry[type] < withinMs;
+}
+
 // ─── RÉSOLUTION MAC / POULAILLER ─────────────────────────────────────────────
 
 /**
@@ -440,26 +458,43 @@ const handleMqttMessage = async (topic, message) => {
 
       // ── Synchronisation des états réels depuis l'ESP32 ──────────────────
       //   Ne pas écraser si en mode AUTO (le serveur a déjà décidé)
+      //   + Protection temporelle : ignorer les status pendant 3s après une commande manuelle
       if (data.fanOn !== undefined) {
         const fanMode = poulailler.actuatorStates.ventilation?.mode;
-        if (fanMode !== "auto") {
+
+        if (hasRecentManualCommand(macAddress, "fan")) {
+          console.log(`[STATUS FAN] ⏭️ Ignoré (commande manuelle récente)`);
+        } else if (fanMode !== "auto") {
           poulailler.actuatorStates.ventilation.status = data.fanOn
             ? "on"
             : "off";
+          console.log(`[STATUS FAN] Mis à jour: ${data.fanOn ? "on" : "off"}`);
         }
       }
 
       if (data.lampOn !== undefined) {
         const lampMode = poulailler.actuatorStates.lamp?.mode;
-        if (lampMode !== "auto") {
+
+        if (hasRecentManualCommand(macAddress, "lamp")) {
+          console.log(`[STATUS LAMP] ⏭️ Ignoré (commande manuelle récente)`);
+        } else if (lampMode !== "auto") {
           poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
+          console.log(
+            `[STATUS LAMP] Mis à jour: ${data.lampOn ? "on" : "off"}`,
+          );
         }
       }
 
       if (data.pumpOn !== undefined) {
         const pumpMode = poulailler.actuatorStates.pump?.mode;
-        if (pumpMode !== "auto") {
+
+        if (hasRecentManualCommand(macAddress, "pump")) {
+          console.log(`[STATUS PUMP] ⏭️ Ignoré (commande manuelle récente)`);
+        } else if (pumpMode !== "auto") {
           poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
+          console.log(
+            `[STATUS PUMP] Mis à jour: ${data.pumpOn ? "on" : "off"}`,
+          );
         }
       }
 
@@ -500,11 +535,19 @@ const handleMqttMessage = async (topic, message) => {
 
       await poulailler.save();
 
-      try {
-        const { evaluateAutoControls } = require("./autoControlService");
-        await evaluateAutoControls(poulailler, macAddress, client);
-      } catch (autoErr) {
-        console.error("[AUTO STATUS] Erreur:", autoErr.message);
+      // ⚠️ NE PAS appeler evaluateAutoControls ici si commande manuelle récente
+      // (sinon risque d'override de la commande)
+      if (
+        !hasRecentManualCommand(macAddress, "pump") &&
+        !hasRecentManualCommand(macAddress, "fan") &&
+        !hasRecentManualCommand(macAddress, "lamp")
+      ) {
+        try {
+          const { evaluateAutoControls } = require("./autoControlService");
+          await evaluateAutoControls(poulailler, macAddress, client);
+        } catch (autoErr) {
+          console.error("[AUTO STATUS] Erreur:", autoErr.message);
+        }
       }
 
       return;
