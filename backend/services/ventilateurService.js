@@ -1,79 +1,109 @@
 // services/ventilateurService.js
 
 const Poulailler = require("../models/Poulailler");
-const mqttService = require("./mqttService");
+const Command = require("../models/Command");
+const Module = require("../models/Module");
+const { getMqttClient } = require("./mqttService");
 
-/**
- * Met à jour le ventilateur (mode + état)
- * Envoie la commande MQTT à l'ESP32 si en mode manuel
- */
-async function updateVentilateur(poulaillerId, mode, action) {
-  console.log(`[VENTILATEUR] Update:`, { poulaillerId, mode, action });
-
-  // 1. Trouver le poulailler
-  const poulailler = await Poulailler.findById(poulaillerId);
-  if (!poulailler) {
-    throw new Error("Poulailler non trouvé");
+const getMacAddress = async (poulaillerId) => {
+  const device = await Module.findOne({ poulailler: poulaillerId });
+  if (!device?.macAddress) {
+    throw new Error(`Aucun device/MAC trouvé pour ${poulaillerId}`);
   }
+  return device.macAddress;
+};
 
-  // 2. Mettre à jour le mode
+async function updateVentilateur(id, mode, action) {
+  const poulailler = await Poulailler.findById(id);
+  if (!poulailler) throw new Error("Poulailler introuvable");
+
+  console.log(`[ventilateurService] Update:`, { id, mode, action });
+
+  // ✅ Détecter AUTO → MANUEL
+  const previousMode = poulailler.actuatorStates.ventilation.mode;
+  const isAutoToManual = previousMode === "auto" && mode === "manual";
+
+  // Mettre à jour la BD
   poulailler.actuatorStates.ventilation.mode = mode;
 
-  // 3. Mettre à jour le status (seulement en mode manuel)
-  // En mode AUTO, c'est autoControlService qui décide
-  if (mode === "manual") {
+  if (isAutoToManual) {
+    console.log(`[ventilateurService] 🛑 AUTO → MANUEL : arrêt forcé`);
+    poulailler.actuatorStates.ventilation.status = "off";
+    poulailler.actuatorStates.ventilation.lastAutoReason = "";
+  } else if (mode === "manual") {
     poulailler.actuatorStates.ventilation.status = action;
   } else if (mode === "auto") {
-    // En passant en AUTO, reset à "off" et laisser le serveur décider
     poulailler.actuatorStates.ventilation.status = "off";
     poulailler.actuatorStates.ventilation.lastAutoReason = "";
   }
 
   await poulailler.save();
   console.log(
-    `[VENTILATEUR]   BD mise à jour: mode=${mode}, status=${poulailler.actuatorStates.ventilation.status}`,
+    `[ventilateurService] ✅ BD: mode=${mode}, status=${poulailler.actuatorStates.ventilation.status}`,
   );
 
-  // 4.   ENVOYER LA COMMANDE MQTT À L'ESP32
-  const mqttClient = mqttService.getMqttClient();
-
-  if (!mqttClient || !mqttClient.connected) {
-    console.warn("[VENTILATEUR]   MQTT non connecté, commande non envoyée");
-    return poulailler;
+  // Envoi MQTT
+  const client = getMqttClient();
+  if (!client || !client.connected) {
+    throw new Error("MQTT client non connecté");
   }
 
-  //     Utiliser la MAC, pas uniqueCode
-  const macAddress = await mqttService.resolveMacByPoulaillerId(poulaillerId);
-
-  if (!macAddress) {
-    console.warn(`[VENTILATEUR]   Aucune MAC pour poulailler ${poulaillerId}`);
-    return poulailler;
-  }
-
-  // Construire le topic et le payload
+  const macAddress = await getMacAddress(id);
   const topic = `poulailler/${macAddress}/cmd/fan`;
-  const payload = JSON.stringify({
-    on: action === "on",
-    mode: mode,
-  });
 
-  console.log(`[VENTILATEUR]   Envoi MQTT:`);
-  console.log(`[VENTILATEUR]    Topic: ${topic}`);
-  console.log(`[VENTILATEUR]    Payload: ${payload}`);
-
-  // Publier la commande
-  return new Promise((resolve, reject) => {
-    mqttClient.publish(topic, payload, { qos: 1 }, (err) => {
+  // ✅ Si AUTO → MANUEL : forcer OFF
+  if (isAutoToManual) {
+    const payload = JSON.stringify({ on: false, mode: "manual" });
+    client.publish(topic, payload, { qos: 1 }, (err) => {
       if (err) {
-        console.error(`[VENTILATEUR]   Erreur publish:`, err.message);
-        // On résout quand même car la BD est à jour
-        resolve(poulailler);
+        console.error("[ventilateurService] ❌ Erreur:", err.message);
       } else {
-        console.log(`[VENTILATEUR]   Commande envoyée à l'ESP32`);
-        resolve(poulailler);
+        console.log(
+          `[ventilateurService] ✅ Arrêt forcé: ${topic} → ${payload}`,
+        );
       }
     });
+  } else {
+    const payload = JSON.stringify({
+      on: action === "on",
+      mode: mode || "manual",
+    });
+
+    client.publish(topic, payload, { qos: 1 }, (err) => {
+      if (err) {
+        console.error("[ventilateurService] ❌ Erreur:", err.message);
+      } else {
+        console.log(`[ventilateurService] ✅ MQTT: ${topic} → ${payload}`);
+      }
+    });
+  }
+
+  // Déclencher évaluation AUTO immédiate
+  if (mode === "auto") {
+    console.log(`[ventilateurService] 🤖 Évaluation AUTO immédiate`);
+    try {
+      const { evaluateAutoControls } = require("./autoControlService");
+      const freshPoulailler = await Poulailler.findById(id);
+      await evaluateAutoControls(freshPoulailler, macAddress, client);
+    } catch (e) {
+      console.error("[ventilateurService] Erreur évaluation:", e.message);
+    }
+  }
+
+  // Archive
+  await Command.create({
+    poulailler: id,
+    typeActionneur: "ventilateur",
+    action: isAutoToManual
+      ? "arret_changement_mode"
+      : action === "on"
+        ? "demarrer"
+        : "arreter",
+    mode,
+    status: "sent",
   });
+
+  return poulailler;
 }
 
 module.exports = {

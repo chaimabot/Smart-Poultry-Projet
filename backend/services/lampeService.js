@@ -1,118 +1,104 @@
+// services/lampeService.js (BACKEND)
+
 const Poulailler = require("../models/Poulailler");
 const Command = require("../models/Command");
 const Module = require("../models/Module");
 const { getMqttClient } = require("./mqttService");
 
-// ============================================================================
-// HELPER : obtenir la macAddress du device associé au poulailler
-// ============================================================================
 const getMacAddress = async (poulaillerId) => {
   const device = await Module.findOne({ poulailler: poulaillerId });
   if (!device?.macAddress) {
-    throw new Error(
-      `Aucun device/MAC trouvé pour le poulailler ${poulaillerId}`,
-    );
+    throw new Error(`Aucun device/MAC trouvé pour ${poulaillerId}`);
   }
   return device.macAddress;
 };
 
-const lampeService = {
-  // ============================================================================
-  // Envoyer une commande lampe à l'ESP32 et logger en BD
-  // @param {string} id     — ObjectId MongoDB du poulailler
-  // @param {string} mode   — "auto" | "manual"
-  // @param {string} action — "on" | "off"
-  // ============================================================================
-  async sendLampCommand(id, mode, action) {
-    const poulailler = await Poulailler.findById(id);
-    if (!poulailler) throw new Error("Poulailler introuvable");
+async function updateLampe(id, mode, action) {
+  const poulailler = await Poulailler.findById(id);
+  if (!poulailler) throw new Error("Poulailler introuvable");
 
-    const client = getMqttClient();
-    if (!client || !client.connected) throw new Error("MQTT non connecté");
+  console.log(`[lampeService] Update:`, { id, mode, action });
 
-    // ✅ Résoudre la MAC pour le topic
-    const macAddress = await getMacAddress(id);
-    const topic = `poulailler/${macAddress}/cmd/lamp`;
+  // ✅ Détecter AUTO → MANUEL
+  const previousMode = poulailler.actuatorStates.lamp.mode;
+  const isAutoToManual = previousMode === "auto" && mode === "manual";
 
-    // Format correct : ESP32 attend {"on": true/false, "mode": "auto"/"manual"}
+  poulailler.actuatorStates.lamp.mode = mode;
+
+  if (isAutoToManual) {
+    console.log(`[lampeService] 🛑 AUTO → MANUEL : arrêt forcé`);
+    poulailler.actuatorStates.lamp.status = "off";
+    poulailler.actuatorStates.lamp.lastAutoReason = "";
+  } else if (mode === "manual") {
+    poulailler.actuatorStates.lamp.status = action;
+  } else if (mode === "auto") {
+    poulailler.actuatorStates.lamp.status = "off";
+    poulailler.actuatorStates.lamp.lastAutoReason = "";
+  }
+
+  await poulailler.save();
+  console.log(
+    `[lampeService] ✅ BD: mode=${mode}, status=${poulailler.actuatorStates.lamp.status}`,
+  );
+
+  const client = getMqttClient();
+  if (!client || !client.connected) {
+    throw new Error("MQTT client non connecté");
+  }
+
+  const macAddress = await getMacAddress(id);
+  const topic = `poulailler/${macAddress}/cmd/lamp`;
+
+  // ✅ Si AUTO → MANUEL : forcer OFF
+  if (isAutoToManual) {
+    const payload = JSON.stringify({ on: false, mode: "manual" });
+    client.publish(topic, payload, { qos: 1 }, (err) => {
+      if (err) {
+        console.error("[lampeService] ❌ Erreur:", err.message);
+      } else {
+        console.log(`[lampeService] ✅ Arrêt forcé: ${topic} → ${payload}`);
+      }
+    });
+  } else {
     const payload = JSON.stringify({
       on: action === "on",
       mode: mode || "manual",
     });
 
-    client.publish(topic, payload, { qos: 1 });
-    console.log(`[MQTT→ESP32] ${topic}: ${payload}`);
-
-    // =========================================================================
-    // ✅ CORRECTION CRITIQUE : sauvegarder le mode ET le statut en base
-    // Sans ça, fetchPoultryInfo lit toujours actuatorStates.lamp = undefined
-    // → lampAutoRef reste false → le mobile croit toujours être en mode manuel
-    // =========================================================================
-    await Poulailler.findByIdAndUpdate(id, {
-      $set: {
-        "actuatorStates.lamp.mode": mode, // "auto" ou "manual"
-        "actuatorStates.lamp.status": action, // "on" ou "off"
-        "actuatorStates.lamp.updatedAt": new Date(),
-      },
-    });
-
-    console.log(
-      `[DB] actuatorStates.lamp mis à jour → mode: ${mode}, status: ${action}`,
-    );
-
-    // Garder une trace de la commande en base
-    return await Command.create({
-      poulailler: id,
-      typeActionneur: "lampe",
-      action,
-      mode,
-      status: "sent",
-    });
-  },
-
-  // ============================================================================
-  // Mettre à jour les seuils température et synchroniser avec l'ESP32
-  // ============================================================================
-  async updateAndSyncThresholds(id, temperatureMin, temperatureMax) {
-    // Mise à jour dans MongoDB
-    const poulailler = await Poulailler.findByIdAndUpdate(
-      id,
-      {
-        "thresholds.temperatureMin": Number(temperatureMin),
-        "thresholds.temperatureMax": Number(temperatureMax),
-      },
-      { new: true },
-    );
-
-    if (!poulailler)
-      throw new Error("Poulailler introuvable en base de données");
-
-    // ✅ Synchronisation avec l'ESP32 via MAC
-    const client = getMqttClient();
-    if (client && client.connected) {
-      try {
-        const macAddress = await getMacAddress(id);
-        const configTopic = `poulailler/${macAddress}/config`;
-        const configPayload = JSON.stringify({
-          tempMin: Number(temperatureMin),
-          tempMax: Number(temperatureMax),
-        });
-
-        client.publish(configTopic, configPayload, { qos: 1, retain: false });
-        console.log(
-          `[MQTT] Config lampe envoyée sur ${configTopic}:`,
-          configPayload,
-        );
-      } catch (err) {
-        console.warn(
-          "[lampeService] Impossible d'envoyer la config MQTT:",
-          err.message,
-        );
+    client.publish(topic, payload, { qos: 1 }, (err) => {
+      if (err) {
+        console.error("[lampeService] ❌ Erreur:", err.message);
+      } else {
+        console.log(`[lampeService] ✅ MQTT: ${topic} → ${payload}`);
       }
+    });
+  }
+
+  if (mode === "auto") {
+    try {
+      const { evaluateAutoControls } = require("./autoControlService");
+      const freshPoulailler = await Poulailler.findById(id);
+      await evaluateAutoControls(freshPoulailler, macAddress, client);
+    } catch (e) {
+      console.error("[lampeService] Erreur évaluation:", e.message);
     }
+  }
 
-    return poulailler.thresholds;
-  },
+  await Command.create({
+    poulailler: id,
+    typeActionneur: "lampe",
+    action: isAutoToManual
+      ? "arret_changement_mode"
+      : action === "on"
+        ? "allumer"
+        : "eteindre",
+    mode,
+    status: "sent",
+  });
+
+  return poulailler;
+}
+
+module.exports = {
+  updateLampe,
 };
-
-module.exports = lampeService;

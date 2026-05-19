@@ -1,4 +1,4 @@
-// services/pompeService.js (BACKEND)
+// services/pompeService.js
 
 const Poulailler = require("../models/Poulailler");
 const Command = require("../models/Command");
@@ -16,13 +16,6 @@ const getMacAddress = async (poulaillerId) => {
 };
 
 const pompeService = {
-  /**
-   * Envoie une commande pompe à l'ESP32 et met à jour la BD
-   * @param {string} id - ObjectId MongoDB du poulailler
-   * @param {string} mode - "auto" | "manual"
-   * @param {string} action - "on" | "off" (ignoré si changeModeOnly=true)
-   * @param {boolean} changeModeOnly - Si true, ne change que le mode (pas l'état)
-   */
   async sendPumpCommand(id, mode, action, changeModeOnly = false) {
     const poulailler = await Poulailler.findById(id);
     if (!poulailler) throw new Error("Poulailler introuvable");
@@ -34,12 +27,23 @@ const pompeService = {
       changeModeOnly,
     });
 
-    // ✅ 1. Mettre à jour la BD
+    // ✅ Détecter si on passe d'AUTO à MANUEL
+    const previousMode = poulailler.actuatorStates.pump.mode;
+    const isAutoToManual = previousMode === "auto" && mode === "manual";
+
+    // ── 1. Mettre à jour la BD ──────────────────────────────────────────
     if (mode) {
       poulailler.actuatorStates.pump.mode = mode;
     }
 
-    if (!changeModeOnly && action) {
+    // ✅ Si AUTO → MANUEL : forcer status=off
+    if (isAutoToManual) {
+      console.log(
+        `[pompeService] 🛑 Passage AUTO → MANUEL : arrêt forcé de la pompe`,
+      );
+      poulailler.actuatorStates.pump.status = "off";
+      poulailler.actuatorStates.pump.lastAutoReason = "";
+    } else if (!changeModeOnly && action) {
       poulailler.actuatorStates.pump.status = action;
     }
 
@@ -53,7 +57,7 @@ const pompeService = {
       `[pompeService] ✅ BD: mode=${poulailler.actuatorStates.pump.mode}, status=${poulailler.actuatorStates.pump.status}`,
     );
 
-    // ✅ 2. Envoi MQTT (seulement si action explicite OU mode manuel)
+    // ── 2. Envoi MQTT ───────────────────────────────────────────────────
     const client = getMqttClient();
     if (!client || !client.connected) {
       console.error("[pompeService] MQTT client non connecté");
@@ -61,11 +65,24 @@ const pompeService = {
     }
 
     const macAddress = await getMacAddress(id);
+    const topic = `poulailler/${macAddress}/cmd/pump`;
 
-    // ⚠️ Si changeModeOnly et mode=auto : ne pas envoyer de commande MQTT
-    // (le serveur va évaluer juste après et envoyer la bonne commande)
-    if (!changeModeOnly && action) {
-      const topic = `poulailler/${macAddress}/cmd/pump`;
+    // ✅ Si AUTO → MANUEL : envoyer OFF immédiatement à l'ESP32
+    if (isAutoToManual) {
+      const payload = JSON.stringify({ on: false, mode: "manual" });
+
+      client.publish(topic, payload, { qos: 1 }, (err) => {
+        if (err) {
+          console.error("[pompeService] ❌ Erreur publish arrêt:", err.message);
+        } else {
+          console.log(
+            `[pompeService] ✅ Arrêt forcé MQTT: ${topic} → ${payload}`,
+          );
+        }
+      });
+    }
+    // ✅ Sinon : envoi normal si action explicite
+    else if (!changeModeOnly && action) {
       const payload = JSON.stringify({
         on: action === "on",
         mode: mode || "manual",
@@ -80,12 +97,11 @@ const pompeService = {
       });
     }
 
-    // ✅ 3. Si on passe en AUTO, déclencher immédiatement une évaluation
+    // ── 3. Si on passe en AUTO, déclencher évaluation immédiate ──────────
     if (mode === "auto") {
       console.log(`[pompeService] 🤖 Déclenchement évaluation AUTO immédiate`);
       try {
         const { evaluateAutoControls } = require("./autoControlService");
-        // Récupérer la version fraîche
         const freshPoulailler = await Poulailler.findById(id);
         await evaluateAutoControls(freshPoulailler, macAddress, client);
       } catch (e) {
@@ -93,15 +109,17 @@ const pompeService = {
       }
     }
 
-    // ✅ 4. Archiver la commande
+    // ── 4. Archiver la commande ─────────────────────────────────────────
     await Command.create({
       poulailler: id,
       typeActionneur: "pompe",
-      action: changeModeOnly
-        ? "changement_mode"
-        : action === "on"
-          ? "demarrer"
-          : "arreter",
+      action: isAutoToManual
+        ? "arret_changement_mode"
+        : changeModeOnly
+          ? "changement_mode"
+          : action === "on"
+            ? "demarrer"
+            : "arreter",
       mode,
       status: "sent",
     });
@@ -121,12 +139,6 @@ const pompeService = {
 
     if (!poulailler) throw new Error("Erreur mise à jour DB");
 
-    console.log(`[pompeService] Seuils mis à jour:`, {
-      poulaillerId: id,
-      waterLevelMin,
-      waterHysteresis,
-    });
-
     const client = getMqttClient();
     if (client && client.connected) {
       try {
@@ -140,7 +152,6 @@ const pompeService = {
         client.publish(configTopic, configPayload, { qos: 1 });
         console.log(`[pompeService] Config publiée: ${configTopic}`);
 
-        // ✅ Re-évaluer si en mode AUTO
         if (poulailler.actuatorStates.pump.mode === "auto") {
           const { evaluateAutoControls } = require("./autoControlService");
           await evaluateAutoControls(poulailler, macAddress, client);
