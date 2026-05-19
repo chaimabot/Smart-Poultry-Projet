@@ -5,6 +5,10 @@ const Poulailler = require("../models/Poulailler");
 // Délai en ms avant l'envoi automatique du stop après une ouverture
 const AUTO_STOP_DELAY_MS = 7000;
 
+// Durcissement : stop auto seulement après une commande "open".
+// NOTE: la logique actuelle déclenche un stop dès AUTO_STOP_DELAY_MS après open.
+// Si tu observes que la porte ne s’ouvre pas, la cause est généralement dans l’ESP32 ou dans la réception status.
+
 const handleControlPorte = async (req, res) => {
   try {
     const { id } = req.params;
