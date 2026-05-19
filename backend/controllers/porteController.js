@@ -2,6 +2,9 @@ const porteService = require("../services/porteService");
 const Command = require("../models/Command");
 const Poulailler = require("../models/Poulailler");
 
+// Délai en ms avant l'envoi automatique du stop après une ouverture
+const AUTO_STOP_DELAY_MS = 7000;
+
 const handleControlPorte = async (req, res) => {
   try {
     const { id } = req.params;
@@ -29,7 +32,6 @@ const handleControlPorte = async (req, res) => {
         .json({ success: false, message: "Poulailler introuvable" });
     }
 
-    // Create Command record like lampeService
     const command = await Command.create({
       poulailler: id,
       typeActionneur: "porte",
@@ -39,21 +41,24 @@ const handleControlPorte = async (req, res) => {
 
     await porteService.updatePorte(id, action);
 
-    // ✅ Si on ouvre : arrêter automatiquement après 8 secondes (backend → MQTT stop)
+    // ✅ Auto-stop uniquement après "open" (pas "close"), délai cohérent avec AUTO_STOP_DELAY_MS
     if (action === "open") {
       setTimeout(async () => {
         try {
           await porteService.updatePorte(id, "stop");
-          console.log("[PORTE][API] Auto-stop porte après 8s", {
-            poulaillerId: id,
-          });
+          console.log(
+            `[PORTE][API] Auto-stop porte après ${AUTO_STOP_DELAY_MS}ms`,
+            {
+              poulaillerId: id,
+            },
+          );
         } catch (e) {
           console.error("[PORTE][API] Auto-stop porte échoué", {
             poulaillerId: id,
             error: e.message,
           });
         }
-      }, 7000);
+      }, AUTO_STOP_DELAY_MS);
     }
 
     console.log("[PORTE][API] Commande envoyee avec succes", {

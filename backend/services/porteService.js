@@ -4,7 +4,6 @@ const { getMqttClient } = require("./mqttService");
 
 // ============================================================================
 // HELPER : obtenir la macAddress du device associé au poulailler
-// ✅ La MAC est désormais l'identifiant MQTT — pas uniqueCode ni _id
 // ============================================================================
 const getMacAddress = async (poulaillerId) => {
   const device = await Module.findOne({ poulailler: poulaillerId });
@@ -36,8 +35,6 @@ const getDoorTimeParts = () => {
 
 // ============================================================================
 // Commande manuelle porte (open / close / stop)
-// @param {string} poulaillerId  — ObjectId MongoDB du poulailler
-// @param {string} action        — "open" | "close" | "stop"
 // ============================================================================
 const updatePorte = async (poulaillerId, action) => {
   const poulailler = await Poulailler.findById(poulaillerId);
@@ -48,7 +45,6 @@ const updatePorte = async (poulaillerId, action) => {
     throw new Error("Le serveur MQTT est déconnecté");
   }
 
-  // ✅ Résoudre la MAC pour construire le topic correct
   const macAddress = await getMacAddress(poulaillerId);
   const topic = `poulailler/${macAddress}/cmd/door`;
   const payload = JSON.stringify({ action });
@@ -59,8 +55,6 @@ const updatePorte = async (poulaillerId, action) => {
 
 // ============================================================================
 // Publier la configuration du planning porte vers l'ESP32
-// @param {string} poulaillerId
-// @param {object} schedule — { openHour, openMinute, closeHour, closeMinute, enabled }
 // ============================================================================
 const publishDoorConfig = async (poulaillerId, schedule) => {
   const poulailler = await Poulailler.findById(poulaillerId);
@@ -71,7 +65,6 @@ const publishDoorConfig = async (poulaillerId, schedule) => {
     throw new Error("Le serveur MQTT est déconnecté");
   }
 
-  // ✅ Résoudre la MAC
   const macAddress = await getMacAddress(poulaillerId);
   const topic = `poulailler/${macAddress}/config`;
 
@@ -92,23 +85,22 @@ const publishDoorConfig = async (poulaillerId, schedule) => {
 
 // ============================================================================
 // Synchroniser l'horloge de l'ESP32 (appelé toutes les 60s par mqttService)
-// @param {string} poulaillerId
-// @param {string} macAddress   — passé directement par mqttService pour éviter
-//                                un double lookup DB à chaque tick
 // ============================================================================
 const syncDoorClock = async (poulaillerId, macAddress) => {
   try {
-    // Si la MAC n'est pas passée (appel direct), la récupérer
-    if (!macAddress) {
+    // ✅ Utiliser une variable locale au lieu de réassigner le paramètre
+    let resolvedMac = macAddress;
+
+    if (!resolvedMac) {
       const device = await Module.findOne({ poulailler: poulaillerId });
       if (!device?.macAddress) return false;
-      macAddress = device.macAddress;
+      resolvedMac = device.macAddress;
     }
 
     const client = getMqttClient();
     if (!client || !client.connected) return false;
 
-    const topic = `poulailler/${macAddress}/config`; // ✅ MAC
+    const topic = `poulailler/${resolvedMac}/config`;
     const payload = JSON.stringify({
       currentTime: getDoorTimeParts(),
     });
