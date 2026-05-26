@@ -374,6 +374,8 @@ async function processImageAsync(
             healthScore: aiResult.healthScore,
             urgencyLevel: aiResult.urgencyLevel,
             diagnostic: aiResult.diagnostic,
+            // En mode TEST galerie, on force le statut image à ok pour éviter l'écran "floue".
+            imageQuality: isTestImage ? { status: "ok" } : undefined,
             stade_croissance: aiResult.stade_croissance,
             comptage: aiResult.comptage,
             maladie_suspectee: aiResult.maladie_suspectee,
