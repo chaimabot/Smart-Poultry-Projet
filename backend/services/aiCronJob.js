@@ -1,20 +1,28 @@
 // jobs/aiCronJob.js
 // Smart Poultry — Analyse automatique toutes les 2 heures
-// Pour chaque poulailler actif : capture ESP32 → analyse Gemma → alerte si critique
+//
+// CORRECTIONS v2 :
+//   1. Utilise CaptureRequest (MongoDB) au lieu de pendingImages (Map en mémoire)
+//      → compatible avec le flow receiveImageFromESP du controller
+//   2. waitForImage fait du polling sur CaptureRequest.status
+//   3. publishCaptureTrigger appelé depuis aiService (inchangé)
+//   4. L'image est récupérée depuis CaptureRequest.result.analysis après complétion
+//   5. Délai inter-poulaillers configurable depuis INTER_ANALYSIS_DELAY_MS
 
 "use strict";
 
 const cron = require("node-cron");
+const mongoose = require("mongoose");
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
 const Alert = require("../models/Alert");
 const Camera = require("../models/Camera");
+const CaptureRequest = require("../models/Capturerequest");
 
 const {
   analyzeWithCloudflareAI,
   extractFreshSensors,
   publishCaptureTrigger,
-  pendingImages,
   INTER_ANALYSIS_DELAY_MS,
 } = require("../services/aiService");
 
@@ -23,7 +31,6 @@ const {
 // ════════════════════════════════════════════════════════════════════════════════
 
 function startAiCronJob() {
-  // Toutes les 2 heures
   cron.schedule("0 */2 * * *", runCronCycle);
   console.log("[CRON IA] Planificateur démarré (toutes les 2 heures)");
 }
@@ -50,8 +57,6 @@ async function runCronCycle() {
     await analyzeOnePoulailler(poulailler).catch((err) =>
       console.error(`[CRON IA] ✗ ${poulailler.name} :`, err.message),
     );
-
-    // Délai entre poulaillers pour ne pas saturer l'API Cloudflare
     await delay(INTER_ANALYSIS_DELAY_MS);
   }
 
@@ -66,32 +71,98 @@ async function analyzeOnePoulailler(poulailler) {
   const id = poulailler._id.toString();
   const name = poulailler.name;
 
-  // ── Vérifie qu'une caméra est associée ────────────────────────────────────
   const camera = await Camera.findOne({ poulailler: id, status: "associated" });
-
-  // ── Capteurs frais (utilise extractFreshSensors pour valider la fraîcheur) ─
   const sensorData = extractFreshSensors(poulailler);
   const thresholds = poulailler.thresholds ?? {};
 
   let imageBase64 = null;
+  let captureRequestId = null;
 
-  // ── Tentative de capture ESP32 si caméra disponible ──────────────────────
+  // ── Tentative de capture ESP32 via CaptureRequest (MongoDB) ───────────────
   if (camera) {
     const requestId = `cron-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+    captureRequestId = requestId;
 
     let mqttSent = false;
     try {
+      // Crée le CaptureRequest avant d'envoyer la commande MQTT
+      // → receiveImageFromESP pourra trouver le document et le passer à "uploading"
+      await CaptureRequest.create({
+        requestId,
+        poulaillerId: new mongoose.Types.ObjectId(id),
+        status: "pending",
+      });
+
       mqttSent = await publishCaptureTrigger(id, requestId);
-      console.log(`[CRON IA] MQTT → ${name} (${requestId})`);
+      console.log(
+        `[CRON IA] MQTT → ${name} (${requestId}), envoyé: ${mqttSent}`,
+      );
     } catch (err) {
-      console.warn(`[CRON IA] MQTT échoué pour ${name} : ${err.message}`);
+      console.warn(
+        `[CRON IA] MQTT/création échoué pour ${name} : ${err.message}`,
+      );
+      // Nettoyage si la création CaptureRequest a réussi mais MQTT a échoué
+      if (captureRequestId) {
+        await CaptureRequest.deleteOne({ requestId: captureRequestId }).catch(
+          () => {},
+        );
+        captureRequestId = null;
+      }
     }
 
-    if (mqttSent) {
-      imageBase64 = await waitForImage(id, 30_000);
-      if (!imageBase64) {
+    // ── Attente de complétion via polling CaptureRequest ──────────────────
+    if (mqttSent && captureRequestId) {
+      const completed = await waitForCaptureCompletion(
+        captureRequestId,
+        60_000,
+      );
+
+      if (completed?.status === "completed" && completed.result?.analysis) {
+        // L'analyse a déjà été faite par processImageAsync dans le controller
+        // → on sauvegarde directement les résultats sans rappeler analyzeWithCloudflareAI
+        const analysis = completed.result.analysis;
+        console.log(
+          `[CRON IA] ✓ ${name} (via controller) — score: ${analysis.healthScore}, urgence: ${analysis.urgencyLevel}`,
+        );
+
+        // Sauvegarde en base avec triggeredBy = "cron-auto"
+        await AiAnalysis.create({
+          poultryId: new mongoose.Types.ObjectId(id),
+          triggeredBy: "cron-auto",
+          sensors: sensorData,
+          result: {
+            healthScore: analysis.healthScore ?? null,
+            urgencyLevel: analysis.urgencyLevel ?? "inconnu",
+            confidence: analysis.confidence ?? null,
+            diagnostic: analysis.diagnostic ?? "",
+            stade_croissance: analysis.stade_croissance ?? "indéterminé",
+            comptage: analysis.comptage ?? {
+              estimation: null,
+              fiabilite: null,
+            },
+            maladie_suspectee: analysis.maladie_suspectee ?? {
+              suspicion: false,
+            },
+            detections: analysis.detections ?? {},
+            advices: Array.isArray(analysis.advices) ? analysis.advices : [],
+            sensors: sensorData,
+            imageAvailable: analysis.imageAvailable ?? true,
+            imageUsable: analysis.imageUsable ?? true,
+          },
+          imageQuality: completed.result.imageQuality ?? { status: "ok" },
+          image: {
+            url: completed.result.imageUrl ?? null,
+            thumbnailUrl: completed.result.thumbnailUrl ?? null,
+            publicId: null,
+          },
+          cameraMac: camera?.macAddress ?? null,
+        });
+
+        await maybeCreateAlert(id, name, analysis, sensorData, thresholds);
+        return; // Sortie anticipée — pas besoin de refaire l'analyse
+      } else {
         console.warn(
-          `[CRON IA] Pas d'image reçue pour ${name} — analyse capteurs`,
+          `[CRON IA] Capture non complétée pour ${name} (status: ${completed?.status ?? "timeout"}) — fallback capteurs`,
         );
       }
     }
@@ -101,16 +172,15 @@ async function analyzeOnePoulailler(poulailler) {
     );
   }
 
-  // ── Analyse IA ────────────────────────────────────────────────────────────
+  // ── Fallback : analyse capteurs uniquement (pas d'image) ─────────────────
   const aiResult = await analyzeWithCloudflareAI(
     imageBase64 || "",
     sensorData,
     thresholds,
   );
 
-  // ── Sauvegarde ────────────────────────────────────────────────────────────
   await AiAnalysis.create({
-    poultryId: id,
+    poultryId: new mongoose.Types.ObjectId(id),
     triggeredBy: "cron-auto",
     sensors: sensorData,
     result: {
@@ -131,11 +201,61 @@ async function analyzeOnePoulailler(poulailler) {
   });
 
   console.log(
-    `[CRON IA] ✓ ${name} — score: ${aiResult.healthScore}, urgence: ${aiResult.urgencyLevel}`,
+    `[CRON IA] ✓ ${name} (capteurs) — score: ${aiResult.healthScore}, urgence: ${aiResult.urgencyLevel}`,
   );
 
-  // ── Alerte si nécessaire ──────────────────────────────────────────────────
   await maybeCreateAlert(id, name, aiResult, sensorData, thresholds);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ATTENTE COMPLÉTION VIA CAPTUREREQUEST (MongoDB polling)
+// Remplace pendingImages (Map en mémoire) — compatible avec receiveImageFromESP
+// ════════════════════════════════════════════════════════════════════════════════
+
+async function waitForCaptureCompletion(requestId, timeoutMs = 60_000) {
+  const start = Date.now();
+  const POLL_INTERVAL = 1000; // 1s entre chaque vérification
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const doc = await CaptureRequest.findOne({ requestId });
+
+      if (!doc) {
+        // Document supprimé (TTL ou suppression manuelle)
+        console.warn(`[CRON IA] CaptureRequest ${requestId} introuvable`);
+        return null;
+      }
+
+      if (doc.status === "completed") {
+        return doc;
+      }
+
+      if (doc.status === "failed") {
+        console.warn(`[CRON IA] Capture ${requestId} échouée : ${doc.error}`);
+        return doc;
+      }
+
+      // pending / capturing / uploading / analyzing → on attend
+      await delay(POLL_INTERVAL);
+    } catch (err) {
+      console.error(
+        `[CRON IA] Erreur polling CaptureRequest ${requestId} :`,
+        err.message,
+      );
+      await delay(POLL_INTERVAL);
+    }
+  }
+
+  // Timeout — marque la capture comme échouée pour nettoyage
+  await CaptureRequest.findOneAndUpdate(
+    { requestId, status: { $ne: "completed" } },
+    { status: "failed", error: "Timeout CRON (60s)" },
+  ).catch(() => {});
+
+  console.warn(
+    `[CRON IA] Timeout (${timeoutMs / 1000}s) pour CaptureRequest ${requestId}`,
+  );
+  return null;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -180,44 +300,6 @@ async function maybeCreateAlert(
   console.warn(
     `[CRON IA] ⚠ ALERTE ${severity.toUpperCase()} pour ${name} : ${message}`,
   );
-}
-
-// ════════════════════════════════════════════════════════════════════════════════
-// ATTENTE IMAGE ESP32 (pendingImages Map)
-// ════════════════════════════════════════════════════════════════════════════════
-
-function waitForImage(poulaillerId, timeoutMs) {
-  const key = poulaillerId.toString().trim();
-
-  return new Promise((resolve) => {
-    // Vérification synchrone immédiate
-    const existing = pendingImages.get(key);
-    if (existing?.image) {
-      pendingImages.delete(key);
-      return resolve(existing.image);
-    }
-
-    const start = Date.now();
-    const interval = setInterval(() => {
-      try {
-        const entry = pendingImages.get(key);
-        if (entry?.image) {
-          clearInterval(interval);
-          pendingImages.delete(key);
-          return resolve(entry.image);
-        }
-        if (Date.now() - start >= timeoutMs) {
-          clearInterval(interval);
-          pendingImages.delete(key);
-          resolve(null);
-        }
-      } catch {
-        clearInterval(interval);
-        pendingImages.delete(key);
-        resolve(null);
-      }
-    }, 500);
-  });
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
