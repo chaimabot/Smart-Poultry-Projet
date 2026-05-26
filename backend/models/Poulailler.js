@@ -64,7 +64,7 @@ const poulaillerSchema = new mongoose.Schema(
       temperatureMax: { type: Number, default: 28 },
       humidityMin: { type: Number, default: 40 },
       humidityMax: { type: Number, default: 70 },
-      airQualityMin: { type: Number, default: 20 }, // % bon = danger si trop bas
+      airQualityMin: { type: Number, default: 20 }, 
       waterLevelMin: { type: Number, default: 20 },
     },
     actuatorStates: {
@@ -75,23 +75,19 @@ const poulaillerSchema = new mongoose.Schema(
       ventilation: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
-        // ✅ NOUVEAU : Raison de la dernière décision AUTO
         lastAutoReason: { type: String, default: "" },
-        // ✅ NOUVEAU : Date du dernier changement AUTO
         lastAutoChange: { type: Date, default: null },
       },
       lamp: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "manual" },
-        // ✅ NOUVEAU
         lastAutoReason: { type: String, default: "" },
         lastAutoChange: { type: Date, default: null },
       },
       pump: {
         status: { type: String, enum: ["on", "off"], default: "off" },
         mode: { type: String, enum: ["auto", "manual"], default: "auto" },
-        // ✅ NOUVEAU
-        lastAutoReason: { type: String, default: "" },
+       lastAutoReason: { type: String, default: "" },
         lastAutoChange: { type: Date, default: null },
       },
     },
