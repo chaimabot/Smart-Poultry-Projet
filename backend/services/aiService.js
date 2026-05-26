@@ -30,7 +30,7 @@ const TIMEOUT_CHAT = 20000; // 20s — chat vétérinaire
 // ─── Qualité image ────────────────────────────────────────────────────────────
 const IMG_MIN_BRIGHTNESS = 20;
 const IMG_MAX_BRIGHTNESS = 235;
-const IMG_MIN_VARIANCE = 80;
+const IMG_MIN_VARIANCE = 40; // Réduit de 80 pour éviter faux positifs sur images uniformes
 const IMG_TARGET_KB = 400; // Taille cible après compression
 const IMG_MAX_WIDTH = 1024; // Largeur max envoyée à Gemma
 
