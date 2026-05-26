@@ -191,6 +191,7 @@ async function receiveImageFromESP(req, res) {
       image,
       poulaillerId: directId,
       imageBase64,
+      isTestImage,
     } = req.body;
     const rawImage = image || imageBase64;
 
@@ -275,12 +276,16 @@ async function receiveImageFromESP(req, res) {
     if (!analysisLocks.has(poulaillerId)) analysisLocks.add(poulaillerId);
 
     // Fire-and-forget — réponse immédiate à l'ESP32
-    processImageAsync(finalRequestId, poulaillerId, cleanB64, camera).catch(
-      (err) => {
-        console.error(`[AI] processImageAsync non-catchée : ${err.message}`);
-        releaseLock(poulaillerId);
-      },
-    );
+    processImageAsync(
+      finalRequestId,
+      poulaillerId,
+      cleanB64,
+      camera,
+      !!isTestImage,
+    ).catch((err) => {
+      console.error(`[AI] processImageAsync non-catchée : ${err.message}`);
+      releaseLock(poulaillerId);
+    });
 
     return res.status(200).json({ success: true });
   } catch (err) {
@@ -293,7 +298,13 @@ async function receiveImageFromESP(req, res) {
 // TRAITEMENT ASYNCHRONE DE L'IMAGE
 // ════════════════════════════════════════════════════════════════════════════════
 
-async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
+async function processImageAsync(
+  requestId,
+  poulaillerId,
+  imageBase64,
+  camera,
+  isTestImage = false,
+) {
   try {
     await CaptureRequest.findOneAndUpdate(
       { requestId },
@@ -307,7 +318,13 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
 
     // ── Analyse IA + Upload Cloudinary en parallèle ──────────────────────────
     const [aiResult, cloudImage] = await Promise.all([
-      analyzeWithCloudflareAI(imageBase64, sensorData, poulailler?.thresholds),
+      analyzeWithCloudflareAI(
+        imageBase64,
+        sensorData,
+        poulailler?.thresholds,
+        undefined,
+        true,
+      ),
       cloudinary.uploadImage(imageBase64, poulaillerId),
     ]);
 

@@ -679,6 +679,7 @@ async function analyzeWithCloudflareAI(
   imageBase64,
   sensorData = {},
   thresholds = {},
+  isTestImage = false,
 ) {
   try {
     if (!USE_CLOUDFLARE) {
@@ -695,7 +696,11 @@ async function analyzeWithCloudflareAI(
     }
 
     // ── Qualité image ────────────────────────────────────────────────────────
-    const quality = await assessImageQuality(clean);
+    // En mode test (upload galerie), on bypass les checks de qualité flou/sombre.
+    // Objectif: permettre de récupérer un résultat cohérent même sur une image non optimale.
+    const quality = isTestImage
+      ? { usable: true, reason: "bypass" }
+      : await assessImageQuality(clean);
     if (!quality.usable) {
       console.warn(
         `[AI] Image inexploitable (${quality.reason}) — fallback capteurs`,
