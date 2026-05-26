@@ -374,7 +374,7 @@ async function processImageAsync(
             healthScore: aiResult.healthScore,
             urgencyLevel: aiResult.urgencyLevel,
             diagnostic: aiResult.diagnostic,
-            // En mode TEST galerie, on force le statut image à ok pour éviter l'écran "floue".
+            // En mode TEST galerie: bypass total du statut floue.
             // Important: le front se base aussi sur imageAvailable/imageUsable.
             imageQuality: isTestImage ? { status: "ok" } : undefined,
             imageAvailable: isTestImage ? true : undefined,
