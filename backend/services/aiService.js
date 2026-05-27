@@ -370,7 +370,7 @@ async function callCF(model, payload, timeout) {
 // SECTION 6 — PARSING RÉPONSE IA
 // ════════════════════════════════════════════════════════════════════════════════
 
-function parseAnalysisResponse(text, sensorData = {}) {
+function parseAnalysisResponse(text, sensorData = {}, isTestImage = false) {
   try {
     // Extrait le bloc JSON de la réponse
     const match = text.match(/\{[\s\S]*\}/);
@@ -757,7 +757,7 @@ async function analyzeWithCloudflareAI(
     );
 
     console.log("[AI] Réponse Gemma reçue ✓");
-    const result = parseAnalysisResponse(rawResponse, sensorData);
+    const result = parseAnalysisResponse(rawResponse, sensorData, isTestImage);
 
     return {
       ...result,
