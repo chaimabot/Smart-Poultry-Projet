@@ -17,7 +17,6 @@ const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const USE_CLOUDFLARE = !!(CF_ACCOUNT_ID && CF_API_TOKEN);
 
-// Debug env (temporaire) — permet de vérifier si le process backend voit bien Cloudflare
 console.log(
   "[AI ENV] CLOUDFLARE_ACCOUNT_ID set?",
   !!process.env.CLOUDFLARE_ACCOUNT_ID,
@@ -31,21 +30,21 @@ console.log("[AI ENV] USE_CLOUDFLARE=", USE_CLOUDFLARE);
 const CF_BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run`;
 
 // ─── Modèles ─────────────────────────────────────────────────────────────────
-const MODEL_VISION = "@cf/google/gemma-3-12b-it"; // Vision + texte
-const MODEL_CHAT = "@cf/google/gemma-3-12b-it"; // Chat vétérinaire
+const MODEL_VISION = "@cf/google/gemma-3-12b-it";
+const MODEL_CHAT = "@cf/google/gemma-3-12b-it";
 
 // ─── Timeouts ────────────────────────────────────────────────────────────────
-const TIMEOUT_VISION = 25000; // 25s — analyse image
-const TIMEOUT_CHAT = 20000; // 20s — chat vétérinaire
+const TIMEOUT_VISION = 25000;
+const TIMEOUT_CHAT = 20000;
 
 // ─── Qualité image ────────────────────────────────────────────────────────────
 const IMG_MIN_BRIGHTNESS = 20;
 const IMG_MAX_BRIGHTNESS = 235;
-const IMG_TARGET_KB = 400; // Taille cible après compression
-const IMG_MAX_WIDTH = 1024; // Largeur max envoyée à Gemma
+const IMG_TARGET_KB = 400;
+const IMG_MAX_WIDTH = 1024;
 
 // ─── Fraîcheur capteurs ───────────────────────────────────────────────────────
-const SENSOR_STALE_MS = 10 * 60 * 1000; // 10 minutes
+const SENSOR_STALE_MS = 10 * 60 * 1000;
 
 // ─── Délai inter-analyses (cron) ──────────────────────────────────────────────
 const INTER_ANALYSIS_DELAY_MS = 5000;
@@ -123,10 +122,6 @@ function normalizeUrgency(val) {
 // SECTION 2 — CAPTEURS
 // ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Extrait les capteurs frais du poulailler.
- * Retourne null pour chaque valeur si données > 10 min ou absentes.
- */
 function extractFreshSensors(poulailler) {
   const monitoring = poulailler?.lastMonitoring;
   const timestamp = monitoring?.timestamp
@@ -161,7 +156,7 @@ function extractFreshSensors(poulailler) {
     temperature: safe(monitoring.temperature, -10, 60),
     humidity: safe(monitoring.humidity, 0, 100),
     airQualityPercent: safe(monitoring.airQualityPercent, 0, 100),
-    waterLevel: safe(monitoring.waterLevel, 1, 100), // 0 = capteur déconnecté
+    waterLevel: safe(monitoring.waterLevel, 1, 100),
     animalCount: poulailler?.animalCount ?? null,
     surface: poulailler?.surface ?? null,
   };
@@ -183,12 +178,8 @@ async function assessImageQuality(b64) {
     const pixels = Array.from(data);
     const n = pixels.length;
     const brightness = pixels.reduce((s, p) => s + p, 0) / n;
-    const variance =
-      pixels.reduce((s, p) => s + Math.pow(p - brightness, 2), 0) / n;
 
-    console.log(
-      `[AI] Image — luminosité: ${brightness.toFixed(1)}, variance: ${variance.toFixed(1)}`,
-    );
+    console.log(`[AI] Image — luminosité: ${brightness.toFixed(1)}`);
 
     if (brightness < IMG_MIN_BRIGHTNESS)
       return { usable: false, reason: "image trop sombre" };
@@ -198,7 +189,7 @@ async function assessImageQuality(b64) {
     return { usable: true, reason: "ok" };
   } catch (err) {
     console.warn("[AI] assessImageQuality:", err.message);
-    return { usable: true, reason: "ok" }; // on tente quand même
+    return { usable: true, reason: "ok" };
   }
 }
 
@@ -241,19 +232,19 @@ Surface        : ${sensorData.surface ?? "N/A"} m²
 ═══════════════════════════════════════
 ANALYSIS RULES:
 ═══════════════════════════════════════
-1. imageUsable = false if image is: blurry, too dark, overexposed, shows no animals, or is unrecognizable
-2. If imageUsable = false → all vision fields must be null, score based ONLY on sensors
-3. mortalityDetected = true ONLY with ≥90% certainty of visible dead birds on ground (sleeping ≠ dead)
-4. Disease suspicion based ONLY on visible clinical signs
-5. Count only clearly visible birds (estimate if partially hidden)
+1. Set imageUsable = false ONLY if the image is completely unrecognizable (pure black, pure white, entirely corrupted). A dark, blurry, or low-quality image where animals are partially visible IS usable — set imageUsable = true.
+2. ALWAYS fill comptage, detections, maladie_suspectee with your best estimate, even for low-quality images. Only use null for a field if it is truly impossible to determine anything.
+3. mortalityDetected = true ONLY with ≥90% certainty of visible dead birds lying motionless on the ground (sleeping birds ≠ dead).
+4. Disease suspicion based ONLY on visible clinical signs (ruffled feathers, swollen head, lameness, respiratory distress, etc.).
+5. Count all visible birds; estimate if partially hidden. If uncertain, give a range as a single rounded number.
 6. urgencyLevel must be exactly: "normal" | "attention" | "critique"
 7. All French text. Diagnostic: max 2 sentences. Be precise, not generic.
-8. NEVER include raw numeric sensor values in diagnostic or advices text
-9. Only advise on sensors with real values (not N/A)
+8. NEVER include raw numeric sensor values in diagnostic or advices text.
+9. Only advise on sensors with real values (not N/A).
 10. Known diseases: ${KNOWN_DISEASES.join(", ")}
 
 ═══════════════════════════════════════
-REQUIRED JSON FORMAT:
+REQUIRED JSON FORMAT (always use this format):
 ═══════════════════════════════════════
 {
   "imageUsable": true,
@@ -292,24 +283,9 @@ REQUIRED JSON FORMAT:
   ]
 }
 
-IF imageUsable = false, use this format instead:
-{
-  "imageUsable": false,
-  "healthScore": <based only on sensors, null if no sensor data>,
-  "urgencyLevel": "<based only on sensors>",
-  "diagnostic": "Image inexploitable — <raison>. <diagnostic capteurs>.",
-  "comptage": { "estimation": null, "fiabilite": null, "note": "Image inexploitable" },
-  "stade_croissance": "indéterminé",
-  "detections": {
-    "mortalityDetected": null, "behaviorNormal": null, "densityOk": null,
-    "cleanEnvironment": null, "ventilationAdequate": null, "predateurDetecte": null
-  },
-  "maladie_suspectee": {
-    "suspicion": false, "maladie_probable": null, "signes_observes": [],
-    "urgence_veterinaire": false, "confiance": "faible"
-  },
-  "advices": ["Conseil basé uniquement sur les capteurs disponibles"]
-}`.trim();
+IMPORTANT: Even if image quality is poor, always attempt to fill ALL fields above.
+Only set imageUsable = false when the image is completely unrecognizable (solid black/white/corrupted).
+Never return null for mortalityDetected, behaviorNormal, comptage.estimation, etc., unless truly impossible.`.trim();
 }
 
 function buildChatSystemPrompt(context) {
@@ -372,8 +348,6 @@ async function callCF(model, payload, timeout) {
 
   const result = response.data?.result;
   if (!result) throw new Error("Réponse Cloudflare vide");
-
-  // Gemma retourne result.response
   return result.response ?? result;
 }
 
@@ -381,37 +355,43 @@ async function callCF(model, payload, timeout) {
 // SECTION 6 — PARSING RÉPONSE IA
 // ════════════════════════════════════════════════════════════════════════════════
 
-function parseAnalysisResponse(text, sensorData = {}, isTestImage = false) {
+function parseAnalysisResponse(text, sensorData = {}) {
   try {
-    // Extrait le bloc JSON de la réponse
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) throw new Error("Aucun JSON trouvé dans la réponse IA");
 
     const p = JSON.parse(match[0]);
 
-    // ── Image inexploitable signalée par le modèle ──────────────────────────
-    // ACCEPTER QUAND MÊME les détections — ne rejeter que si aucune donnée
-    const hasVisionData =
-      p.comptage?.estimation != null ||
-      p.detections?.mortalityDetected != null ||
-      p.maladie_suspectee?.suspicion != null;
+    // ── Image signalée inexploitable par le modèle ──────────────────────────
+    // On ne fait un vrai fallback QUE si absolument aucune donnée vision n'est
+    // présente. Sinon on continue le parsing et on force imageUsable = true.
+    if (p.imageUsable === false) {
+      const hasAnyVisionData =
+        p.comptage?.estimation != null ||
+        p.detections?.mortalityDetected != null ||
+        p.detections?.behaviorNormal != null ||
+        p.maladie_suspectee?.suspicion != null ||
+        p.stade_croissance != null;
 
-    if (p.imageUsable === false && !hasVisionData) {
-      console.warn("[AI] Modèle → image inexploitable (no vision data)");
-      const fallback = buildSensorOnlyResult(sensorData);
-      return {
-        ...fallback,
-        diagnostic: p.diagnostic || fallback.diagnostic,
-        imageAvailable: true,
-        imageUsable: false,
-        imageQuality: { status: "poor", reason: "signalé par le modèle" },
-      };
-    }
+      if (!hasAnyVisionData) {
+        console.warn(
+          "[AI] Modèle → imageUsable=false ET aucune donnée vision — fallback capteurs",
+        );
+        const fallback = buildSensorOnlyResult(sensorData);
+        return {
+          ...fallback,
+          diagnostic: p.diagnostic || fallback.diagnostic,
+          imageAvailable: true,
+          imageUsable: false,
+          imageQuality: { status: "poor", reason: "signalé par le modèle" },
+        };
+      }
 
-    if (p.imageUsable === false && hasVisionData) {
+      // Des données vision sont présentes malgré imageUsable=false → on les garde
       console.warn(
-        "[AI] Image marquée inexploitable MAIS données vision présentes — accepter",
+        "[AI] imageUsable=false MAIS données vision présentes — on force imageUsable=true",
       );
+      p.imageUsable = true;
     }
 
     // ── Score & urgence ─────────────────────────────────────────────────────
@@ -426,8 +406,9 @@ function parseAnalysisResponse(text, sensorData = {}, isTestImage = false) {
     const temp = sensorData.temperature;
     const wl = sensorData.waterLevel;
 
-    if (isValid(aq, 0, 100) && aq < 20) urgencyLevel = "critique";
-    else if (
+    if (isValid(aq, 0, 100) && aq < 20) {
+      urgencyLevel = "critique";
+    } else if (
       (isValid(temp, -10, 60) && (temp < 15 || temp > 31)) ||
       (isValid(wl, 1, 100) && wl < 20)
     ) {
@@ -435,7 +416,7 @@ function parseAnalysisResponse(text, sensorData = {}, isTestImage = false) {
     }
 
     // ── Mortalité — double vérification ────────────────────────────────────
-    let mortalityDetected = p.detections?.mortalityDetected ?? null;
+    let mortalityDetected = p.detections?.mortalityDetected ?? false;
     if (mortalityDetected === true) {
       const diagText = (p.diagnostic || "").toLowerCase();
       if (!mentionsDeath(diagText)) {
@@ -445,8 +426,14 @@ function parseAnalysisResponse(text, sensorData = {}, isTestImage = false) {
     }
 
     // ── Comptage ────────────────────────────────────────────────────────────
+    // Valeur par défaut à 0 si null pour éviter "N/A" côté client quand le
+    // modèle a quand même analysé l'image.
+    const rawEstimation = p.comptage?.estimation;
     const comptage = {
-      estimation: p.comptage?.estimation ?? null,
+      estimation:
+        rawEstimation !== null && rawEstimation !== undefined
+          ? rawEstimation
+          : null,
       fiabilite: p.comptage?.fiabilite ?? "faible",
       note: p.comptage?.note ?? null,
     };
@@ -468,29 +455,28 @@ function parseAnalysisResponse(text, sensorData = {}, isTestImage = false) {
         ? p.advices
         : buildSensorAdvices(sensorData);
 
-    // ── CORRECTION : forcer imageUsable: true si on a des données vision ────
-    const forceImageUsable =
-      comptage.estimation != null ||
-      mortalityDetected != null ||
-      maladie.suspicion != null;
+    // ── Détections avec valeurs par défaut sûres ────────────────────────────
+    // On préfère false à null pour mortalityDetected et predateurDetecte
+    // pour éviter l'affichage "Non évalué" quand l'image était analysable.
+    const detections = {
+      mortalityDetected,
+      behaviorNormal: p.detections?.behaviorNormal ?? null,
+      densityOk: p.detections?.densityOk ?? null,
+      cleanEnvironment: p.detections?.cleanEnvironment ?? null,
+      ventilationAdequate: p.detections?.ventilationAdequate ?? null,
+      predateurDetecte: p.detections?.predateurDetecte ?? false,
+    };
 
     return {
       healthScore,
       urgencyLevel,
       diagnostic: p.diagnostic || "Analyse effectuée.",
       imageAvailable: true,
-      imageUsable: forceImageUsable ? true : (p.imageUsable ?? true),
+      imageUsable: true,
       stade_croissance: p.stade_croissance ?? "indéterminé",
       comptage,
       maladie_suspectee: maladie,
-      detections: {
-        mortalityDetected,
-        behaviorNormal: p.detections?.behaviorNormal ?? null,
-        densityOk: p.detections?.densityOk ?? null,
-        cleanEnvironment: p.detections?.cleanEnvironment ?? null,
-        ventilationAdequate: p.detections?.ventilationAdequate ?? null,
-        predateurDetecte: p.detections?.predateurDetecte ?? null,
-      },
+      detections,
       advices,
     };
   } catch (err) {
@@ -697,10 +683,6 @@ function buildSensorOnlyResult(sensorData = {}) {
 // SECTION 8 — ANALYSE PRINCIPALE
 // ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Analyse une image de poulailler avec Gemma 3 Vision.
- * Retourne un objet structuré avec : santé, mortalité, maladie, comptage, conseils.
- */
 async function analyzeWithCloudflareAI(
   imageBase64,
   sensorData = {},
@@ -715,18 +697,16 @@ async function analyzeWithCloudflareAI(
 
     const clean = cleanBase64(imageBase64);
 
-    // ── Pas d'image ──────────────────────────────────────────────────────────
     if (!clean || clean.length < 100) {
       console.warn("[AI] Image absente — fallback capteurs");
       return buildSensorOnlyResult(sensorData);
     }
 
-    // ── Qualité image ────────────────────────────────────────────────────────
-    // En mode test (upload galerie), on bypass les checks de qualité flou/sombre.
-    // Objectif: permettre de récupérer un résultat cohérent même sur une image non optimale.
+    // Vérification luminosité uniquement (pas de vérification flou/variance)
     const quality = isTestImage
       ? { usable: true, reason: "bypass" }
       : await assessImageQuality(clean);
+
     if (!quality.usable) {
       console.warn(
         `[AI] Image inexploitable (${quality.reason}) — fallback capteurs`,
@@ -741,12 +721,10 @@ async function analyzeWithCloudflareAI(
       };
     }
 
-    // ── Compression ──────────────────────────────────────────────────────────
     const compressed = await compressImage(clean);
     const kb = sizeKb(compressed);
     console.log(`[AI] Image envoyée à Gemma : ${kb} Ko`);
 
-    // ── Appel Gemma 3 Vision ─────────────────────────────────────────────────
     console.log("[AI] Appel Gemma 3 Vision...");
     const rawResponse = await callCF(
       MODEL_VISION,
@@ -768,7 +746,7 @@ async function analyzeWithCloudflareAI(
     );
 
     console.log("[AI] Réponse Gemma reçue ✓");
-    const result = parseAnalysisResponse(rawResponse, sensorData, isTestImage);
+    const result = parseAnalysisResponse(rawResponse, sensorData);
 
     return {
       ...result,
@@ -785,9 +763,6 @@ async function analyzeWithCloudflareAI(
 // SECTION 9 — CHAT VÉTÉRINAIRE
 // ════════════════════════════════════════════════════════════════════════════════
 
-/**
- * Chat vétérinaire IA avec contexte poulailler + historique conversation.
- */
 async function chatWithGemma(question, context, history = []) {
   try {
     if (!USE_CLOUDFLARE) {
@@ -803,11 +778,9 @@ async function chatWithGemma(question, context, history = []) {
 
     const response = await callCF(MODEL_CHAT, { messages }, TIMEOUT_CHAT);
 
-    if (!response || response.trim().length < 5) {
+    if (!response || response.trim().length < 5)
       return "Je n'ai pas pu générer une réponse. Veuillez reformuler votre question.";
-    }
 
-    // Nettoie les éventuels blocs JSON ou markdown dans la réponse
     return response
       .replace(/```[\s\S]*?```/g, "")
       .replace(/\{[\s\S]*?\}/g, "")
@@ -837,7 +810,6 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
     pendingImages.set(key, { image: clean, receivedAt: Date.now() });
     console.log(`[AI] Image stockée pour ${poulaillerId} (${kb} Ko)`);
 
-    // Expire après 60s si non consommée
     setTimeout(() => {
       if (pendingImages.has(key)) {
         pendingImages.delete(key);
@@ -873,20 +845,13 @@ async function publishCaptureTrigger(poulaillerId, requestId) {
 // ════════════════════════════════════════════════════════════════════════════════
 
 module.exports = {
-  // Analyse principale
   analyzeWithCloudflareAI,
-  // Chat vétérinaire
   chatWithGemma,
-  // Capteurs
   extractFreshSensors,
-  // Helpers
   buildSensorAdvices,
   buildSensorOnlyResult,
-  // Image ESP32
   handleCameraImage,
   pendingImages,
-  // MQTT
   publishCaptureTrigger,
-  // Config
   INTER_ANALYSIS_DELAY_MS,
 };
