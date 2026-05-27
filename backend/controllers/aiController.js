@@ -1,5 +1,3 @@
-// controllers/aiController.js
-
 const mongoose = require("mongoose");
 const Poulailler = require("../models/Poulailler");
 const Camera = require("../models/Camera");
@@ -9,7 +7,6 @@ const Alert = require("../models/Alert");
 const CaptureRequest = require("../models/Capturerequest");
 const cloudinary = require("../services/cloudinaryService");
 
-// ✅ Import statique — pas de require() local dans processImageAsync
 const {
   analyzeWithCloudflareAI,
   chatWithGemma,
@@ -198,7 +195,6 @@ async function receiveImageFromESP(req, res) {
           .json({ success: false, error: "Caméra non enregistrée" });
 
       poulaillerId = camera.poulailler.toString();
-
       await Camera.findByIdAndUpdate(camera._id, {
         lastPing: new Date(),
         status: "associated",
@@ -231,9 +227,7 @@ async function receiveImageFromESP(req, res) {
           { requestId },
           { status: "uploading" },
         );
-        if (!analysisLocks.has(poulaillerId)) {
-          analysisLocks.add(poulaillerId);
-        }
+        if (!analysisLocks.has(poulaillerId)) analysisLocks.add(poulaillerId);
         processImageAsync(requestId, poulaillerId, cleanB64, camera);
       } else {
         const orphanId = `orphan-${Date.now()}`;
@@ -242,9 +236,7 @@ async function receiveImageFromESP(req, res) {
           poulaillerId,
           status: "uploading",
         });
-        if (!analysisLocks.has(poulaillerId)) {
-          analysisLocks.add(poulaillerId);
-        }
+        if (!analysisLocks.has(poulaillerId)) analysisLocks.add(poulaillerId);
         processImageAsync(orphanId, poulaillerId, cleanB64, camera);
       }
     } else {
@@ -254,9 +246,7 @@ async function receiveImageFromESP(req, res) {
         poulaillerId,
         status: "uploading",
       });
-      if (!analysisLocks.has(poulaillerId)) {
-        analysisLocks.add(poulaillerId);
-      }
+      if (!analysisLocks.has(poulaillerId)) analysisLocks.add(poulaillerId);
       processImageAsync(autoId, poulaillerId, cleanB64, camera);
     }
 
@@ -279,11 +269,7 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       { requestId },
       { status: "analyzing" },
     );
-
     const poulailler = await Poulailler.findById(poulaillerId);
-
-    // ✅ extractFreshSensors importé statiquement en haut du fichier
-    //    Vérifie lastMonitoring.timestamp — nullifie si > 10 min ou capteur déconnecté
     const sensorData = extractFreshSensors(poulailler);
 
     console.log(
@@ -302,7 +288,6 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       captureRequestId: mongoose.isValidObjectId(requestId)
         ? new mongoose.Types.ObjectId(requestId)
         : null,
-      // ✅ sensors = sensorData extrait et validé (jamais de vieilles valeurs)
       sensors: sensorData,
       result: {
         healthScore: aiResult?.healthScore ?? null,
@@ -316,13 +301,21 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
         detections: {
           behaviorNormal: aiResult?.detections?.behaviorNormal ?? null,
           mortalityDetected: aiResult?.detections?.mortalityDetected ?? null,
-          densityOk: aiResult?.detections?.densityOk ?? null,
-          cleanEnvironment: aiResult?.detections?.cleanEnvironment ?? null,
-          ventilationAdequate:
-            aiResult?.detections?.ventilationAdequate ?? null,
+          nombreMorts: aiResult?.detections?.nombreMorts ?? null,
+        },
+        comptage: aiResult?.comptage ?? {
+          estimation: null,
+          fiabilite: null,
+          note: null,
+        },
+        maladie_suspectee: aiResult?.maladie_suspectee ?? {
+          suspicion: false,
+          maladie_probable: null,
+          signes_observes: [],
+          urgence_veterinaire: false,
+          confiance: null,
         },
         advices: Array.isArray(aiResult?.advices) ? aiResult.advices : [],
-        // ✅ sensors dans result aussi (pour le frontend qui lit result.sensors)
         sensors: sensorData,
         imageAvailable: aiResult?.imageAvailable ?? false,
         imageUsable: aiResult?.imageUsable ?? false,
@@ -352,8 +345,9 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
             urgencyLevel: aiResult?.urgencyLevel,
             diagnostic: aiResult?.diagnostic,
             detections: aiResult?.detections,
+            comptage: aiResult?.comptage,
+            maladie_suspectee: aiResult?.maladie_suspectee,
             advices: aiResult?.advices,
-            // ✅ sensors dans le résultat de polling aussi
             sensors: sensorData,
             imageAvailable: aiResult?.imageAvailable,
             imageUsable: aiResult?.imageUsable,
@@ -465,7 +459,9 @@ async function getLatestAnalysis(req, res) {
   try {
     const analysis = await AiAnalysis.findOne({
       poultryId: req.params.poulaillerId,
-    }).sort({ createdAt: -1 });
+    }).sort({
+      createdAt: -1,
+    });
     if (!analysis)
       return res.json({ success: true, data: null, message: "Aucune analyse" });
     return res.json({ success: true, data: analysis });
@@ -561,7 +557,6 @@ async function chatWithVet(req, res) {
       .sort({ createdAt: -1 })
       .select("result sensors createdAt");
 
-    // ✅ Capteurs frais pour le contexte du chat
     const freshSensors = extractFreshSensors(poulailler);
 
     const context = {

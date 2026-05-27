@@ -1,4 +1,3 @@
-// models/AiAnalysis.js
 // Smart Poultry — Schéma Mongoose pour les analyses IA
 
 "use strict";
@@ -40,10 +39,8 @@ const DetectionsSchema = new mongoose.Schema(
   {
     mortalityDetected: { type: Boolean, default: null },
     behaviorNormal: { type: Boolean, default: null },
-    densityOk: { type: Boolean, default: null },
-    cleanEnvironment: { type: Boolean, default: null },
-    ventilationAdequate: { type: Boolean, default: null },
     predateurDetecte: { type: Boolean, default: null },
+    nombreMorts: { type: Number, default: null },
   },
   { _id: false },
 );

@@ -1,12 +1,9 @@
-// jobs/aiCronJob.js
-
 const cron = require("node-cron");
 const Poulailler = require("../models/Poulailler");
 const AiAnalysis = require("../models/AiAnalysis");
 const Alert = require("../models/Alert");
 const CaptureRequest = require("../models/Capturerequest");
 
-// ✅ FIX : import depuis aiService (source unique de vérité), plus depuis aiController
 const {
   pendingImages,
   publishCaptureTrigger,
@@ -41,8 +38,6 @@ function startAiCronJob() {
         };
 
         const thresholds = poulailler.thresholds;
-
-        // ✅ FIX : génération d'un requestId avant l'appel (était undefined avant)
         const requestId = `cron-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
         let mqttSent = false;
@@ -52,16 +47,13 @@ function startAiCronJob() {
             `[CRON IA] Trigger MQTT → ${poulailler.name} (requestId: ${requestId})`,
           );
         } catch (mqttErr) {
-          // La caméra est peut-être absente ou déconnectée — on continue en mode capteurs
           console.warn(
             `[CRON IA] MQTT échoué pour ${poulailler.name} : ${mqttErr.message}`,
           );
         }
 
         let image = null;
-
         if (mqttSent) {
-          // Attente de l'image envoyée par l'ESP32 (30s max)
           image = await waitForCronImage(id, 30000);
         }
 
@@ -123,7 +115,6 @@ function startAiCronJob() {
         console.error(`[CRON IA] ✗ ${poulailler.name} :`, err.message);
       }
 
-      // Délai entre deux poulaillers pour ne pas saturer l'API Cloudflare
       await new Promise((r) => setTimeout(r, INTER_ANALYSIS_DELAY_MS));
     }
 
@@ -132,8 +123,6 @@ function startAiCronJob() {
 
   console.log("[CRON IA] Planificateur démarré (toutes les 2 heures)");
 }
-
-// ─── Création d'alerte si critique ─────────────────────────────────────────
 
 async function maybeCreateAlert(
   poulaillerId,
@@ -162,15 +151,11 @@ async function maybeCreateAlert(
   }
 }
 
-// ─── Attente de l'image (pendingImages) ─────────────────────────────────────
-// Interroge la Map toutes les 500ms jusqu'à réception ou timeout.
-
 async function waitForCronImage(poulaillerId, timeoutMs) {
   const key = poulaillerId.toString().trim();
   const start = Date.now();
 
   return new Promise((resolve) => {
-    // Vérification synchrone immédiate avant de démarrer l'interval
     const existing = pendingImages.get(key);
     if (existing?.image) {
       pendingImages.delete(key);
@@ -180,17 +165,15 @@ async function waitForCronImage(poulaillerId, timeoutMs) {
     const interval = setInterval(() => {
       try {
         const entry = pendingImages.get(key);
-
         if (entry?.image) {
           clearInterval(interval);
           pendingImages.delete(key);
           return resolve(entry.image);
         }
-
         if (Date.now() - start >= timeoutMs) {
           clearInterval(interval);
           pendingImages.delete(key);
-          resolve(null); // continue sans image
+          resolve(null);
         }
       } catch (err) {
         clearInterval(interval);
