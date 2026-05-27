@@ -283,17 +283,18 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
       cloudinary.uploadImage(imageBase64, poulaillerId),
     ]);
 
+    // IMPORTANT DEBUG: dump minimal mais complet de la sortie IA
     console.log("[AI] aiResult reçu:", {
       imageUsable: aiResult?.imageUsable,
       imageAvailable: aiResult?.imageAvailable,
       healthScore: aiResult?.healthScore,
       urgencyLevel: aiResult?.urgencyLevel,
+      confidence: aiResult?.confidence,
       detections: aiResult?.detections,
       comptage: aiResult?.comptage,
       maladie_suspectee: aiResult?.maladie_suspectee,
       imageQuality: aiResult?.imageQuality,
     });
-
 
     const analysisPayload = {
       poultryId: new mongoose.Types.ObjectId(poulaillerId),
