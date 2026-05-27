@@ -379,8 +379,14 @@ function parseAnalysisResponse(text, sensorData = {}) {
     const p = JSON.parse(match[0]);
 
     // ── Image inexploitable signalée par le modèle ──────────────────────────
-    if (p.imageUsable === false) {
-      console.warn("[AI] Modèle → image inexploitable");
+    // ACCEPTER QUAND MÊME les détections — ne rejeter que si aucune donnée
+    const hasVisionData =
+      p.comptage?.estimation != null ||
+      p.detections?.mortalityDetected != null ||
+      p.maladie_suspectee?.suspicion != null;
+
+    if (p.imageUsable === false && !hasVisionData) {
+      console.warn("[AI] Modèle → image inexploitable (no vision data)");
       const fallback = buildSensorOnlyResult(sensorData);
       return {
         ...fallback,
@@ -389,6 +395,12 @@ function parseAnalysisResponse(text, sensorData = {}) {
         imageUsable: false,
         imageQuality: { status: "poor", reason: "signalé par le modèle" },
       };
+    }
+
+    if (p.imageUsable === false && hasVisionData) {
+      console.warn(
+        "[AI] Image marquée inexploitable MAIS données vision présentes — accepter",
+      );
     }
 
     // ── Score & urgence ─────────────────────────────────────────────────────
@@ -445,12 +457,18 @@ function parseAnalysisResponse(text, sensorData = {}) {
         ? p.advices
         : buildSensorAdvices(sensorData);
 
+    // ── CORRECTION : forcer imageUsable: true si on a des données vision ────
+    const forceImageUsable =
+      comptage.estimation != null ||
+      mortalityDetected != null ||
+      maladie.suspicion != null;
+
     return {
       healthScore,
       urgencyLevel,
       diagnostic: p.diagnostic || "Analyse effectuée.",
       imageAvailable: true,
-      imageUsable: true,
+      imageUsable: forceImageUsable ? true : (p.imageUsable ?? true),
       stade_croissance: p.stade_croissance ?? "indéterminé",
       comptage,
       maladie_suspectee: maladie,
