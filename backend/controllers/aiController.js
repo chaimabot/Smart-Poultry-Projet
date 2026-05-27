@@ -380,8 +380,6 @@ async function processImageAsync(requestId, poulaillerId, imageBase64, camera) {
   }
 }
 
-// ─── ROUTE 4 : POST /api/ai/analyze/:poulaillerId ────────────────────────────
-
 async function analyzePoultry(req, res) {
   const { poulaillerId } = req.params;
 
@@ -394,15 +392,29 @@ async function analyzePoultry(req, res) {
   const { error, status } = await checkAccess(poulaillerId, req.user.id);
   if (error) return res.status(status).json({ success: false, error });
 
+  // ✅ NOUVEAU : Si un requestId est fourni (depuis receive-image), on l'utilise
+  const existingRequestId = req.body?.requestId;
+
   if (req.body?.imageBase64) {
     analysisLocks.add(poulaillerId);
     try {
-      const requestId = `manual-${Date.now()}`;
-      await CaptureRequest.create({
-        requestId,
-        poulaillerId,
-        status: "analyzing",
-      });
+      const requestId = existingRequestId || `manual-${Date.now()}`;
+
+      // Si pas de requestId existant, on crée le document
+      if (!existingRequestId) {
+        await CaptureRequest.create({
+          requestId,
+          poulaillerId,
+          status: "analyzing",
+        });
+      } else {
+        // On met à jour le statut si le document existe déjà
+        await CaptureRequest.findOneAndUpdate(
+          { requestId },
+          { status: "analyzing" },
+          { upsert: true },
+        );
+      }
 
       const camera = await Camera.findOne({ poulailler: poulaillerId });
       await processImageAsync(
@@ -427,7 +439,6 @@ async function analyzePoultry(req, res) {
 
   return triggerCapture(req, res);
 }
-
 // ─── Historique ───────────────────────────────────────────────────────────────
 
 async function getAnalysisHistory(req, res) {
