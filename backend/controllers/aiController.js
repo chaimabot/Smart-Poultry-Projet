@@ -458,6 +458,7 @@ async function analyzePoultry(req, res) {
         poulaillerId,
         req.body.imageBase64,
         camera,
+        true,
       );
 
       const capture = await CaptureRequest.findOne({ requestId });
