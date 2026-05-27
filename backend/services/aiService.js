@@ -17,6 +17,17 @@ const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const USE_CLOUDFLARE = !!(CF_ACCOUNT_ID && CF_API_TOKEN);
 
+// Debug env (temporaire) — permet de vérifier si le process backend voit bien Cloudflare
+console.log(
+  "[AI ENV] CLOUDFLARE_ACCOUNT_ID set?",
+  !!process.env.CLOUDFLARE_ACCOUNT_ID,
+);
+console.log(
+  "[AI ENV] CLOUDFLARE_API_TOKEN set?",
+  !!process.env.CLOUDFLARE_API_TOKEN,
+);
+console.log("[AI ENV] USE_CLOUDFLARE=", USE_CLOUDFLARE);
+
 const CF_BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/ai/run`;
 
 // ─── Modèles ─────────────────────────────────────────────────────────────────
