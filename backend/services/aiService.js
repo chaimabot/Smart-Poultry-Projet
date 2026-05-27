@@ -620,7 +620,7 @@ function tryRepairJsonLike(text) {
   if (candidate) cleaned = candidate;
 
   // Retire une éventuelle virgule avant une accolade/une liste (JSON trailing comma).
-  cleaned = cleaned.replace(/,\s*(\}))/g, "$1");
+  cleaned = cleaned.replace(/,\s*(\})/g, "$1");
   cleaned = cleaned.replace(/,\s*(\])/g, "$1");
 
   return cleaned;
