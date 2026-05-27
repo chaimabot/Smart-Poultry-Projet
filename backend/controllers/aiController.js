@@ -287,7 +287,14 @@ async function receiveImageFromESP(req, res) {
       releaseLock(poulaillerId);
     });
 
-    return res.status(200).json({ success: true });
+    return res.status(200).json({
+      success: true,
+      data: {
+        requestId: finalRequestId,
+        status: "uploading",
+        imageUsable: null,
+      },
+    });
   } catch (err) {
     console.error("[AI] receiveImageFromESP :", err.message);
     return res.status(500).json({ success: false, error: "Erreur serveur" });
