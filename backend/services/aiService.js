@@ -563,12 +563,79 @@ function mentionsDeath(text) {
 
 // ─── Parse réponse IA ───────────────────────────────────────────────────────
 
-function parseAIResponse(text, sensorData = {}) {
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("Aucun JSON trouvé dans la réponse IA");
+function extractJsonCandidate(text) {
+  if (!text) return null;
 
-    const parsed = JSON.parse(match[0]);
+  // 1) Tente d'extraire un bloc JSON complet basé sur les accolades.
+  const firstBrace = text.indexOf("{");
+  if (firstBrace === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = firstBrace; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(firstBrace, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function tryRepairJsonLike(text) {
+  // Réparation minimaliste : enlève du texte après le dernier '}' du candidat,
+  // et nettoie quelques erreurs fréquentes (virgules en trop/trailling).
+  if (!text || typeof text !== "string") return text;
+
+  // Retire les backticks/markdown potentiels.
+  let cleaned = text
+    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```/g, ""))
+    .trim();
+
+  // Si le texte contient plusieurs objets, garde le premier.
+  const candidate = extractJsonCandidate(cleaned);
+  if (candidate) cleaned = candidate;
+
+  // Retire une éventuelle virgule avant une accolade/une liste (JSON trailing comma).
+  cleaned = cleaned.replace(/,\s*(\}))/g, "$1");
+  cleaned = cleaned.replace(/,\s*(\])/g, "$1");
+
+  return cleaned;
+}
+
+function parseAIResponse(text, sensorData = {}) {
+  // Supporte les réponses JSON mal formatées (Gemma peut renvoyer ponctuation/texte parasite)
+  // Objectif : extraire un objet JSON valide autant que possible.
+
+  try {
+    const candidate0 = extractJsonCandidate(text);
+    if (!candidate0) throw new Error("Aucun JSON trouvé dans la réponse IA");
+
+    const candidate = tryRepairJsonLike(candidate0);
+    const parsed = JSON.parse(candidate);
 
     if (parsed.imageUsable === false) {
       console.warn(
