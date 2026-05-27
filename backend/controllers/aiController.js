@@ -230,14 +230,15 @@ async function receiveImageFromESP(req, res) {
         if (!analysisLocks.has(poulaillerId)) analysisLocks.add(poulaillerId);
         processImageAsync(requestId, poulaillerId, cleanB64, camera);
       } else {
-        const orphanId = `orphan-${Date.now()}`;
+        // Correction clé : si le client envoie un requestId, on doit
+        // forcément utiliser EXACTEMENT ce requestId pour éviter un 404 au polling.
         await CaptureRequest.create({
-          requestId: orphanId,
+          requestId,
           poulaillerId,
           status: "uploading",
         });
         if (!analysisLocks.has(poulaillerId)) analysisLocks.add(poulaillerId);
-        processImageAsync(orphanId, poulaillerId, cleanB64, camera);
+        processImageAsync(requestId, poulaillerId, cleanB64, camera);
       }
     } else {
       const autoId = `auto-${Date.now()}`;
