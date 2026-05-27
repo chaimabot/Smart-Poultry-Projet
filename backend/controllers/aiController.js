@@ -322,8 +322,7 @@ async function processImageAsync(
         imageBase64,
         sensorData,
         poulailler?.thresholds,
-        undefined,
-        true,
+        isTestImage,
       ),
       cloudinary.uploadImage(imageBase64, poulaillerId),
     ]);
@@ -368,25 +367,20 @@ async function processImageAsync(
         result: {
           imageUrl: cloudImage?.url,
           thumbnailUrl: cloudImage?.thumbnailUrl,
-          imageQuality: aiResult.imageQuality,
+          imageQuality: isTestImage ? { status: "ok" } : aiResult.imageQuality,
           analysis: {
             _id: analysis._id,
             healthScore: aiResult.healthScore,
             urgencyLevel: aiResult.urgencyLevel,
             diagnostic: aiResult.diagnostic,
-            // En mode TEST galerie: bypass total du statut floue.
-            // Important: le front se base aussi sur imageAvailable/imageUsable.
-            imageQuality: isTestImage ? { status: "ok" } : undefined,
-            imageAvailable: isTestImage ? true : undefined,
-            imageUsable: isTestImage ? true : undefined,
+            imageAvailable: aiResult.imageAvailable,
+            imageUsable: aiResult.imageUsable,
             stade_croissance: aiResult.stade_croissance,
             comptage: aiResult.comptage,
             maladie_suspectee: aiResult.maladie_suspectee,
             detections: aiResult.detections,
             advices: aiResult.advices,
             sensors: sensorData,
-            imageAvailable: aiResult.imageAvailable,
-            imageUsable: aiResult.imageUsable,
           },
         },
       },
