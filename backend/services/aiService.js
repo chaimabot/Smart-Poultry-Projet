@@ -632,7 +632,13 @@ function parseAIResponse(text, sensorData = {}) {
 
   try {
     const candidate0 = extractJsonCandidate(text);
-    if (!candidate0) throw new Error("Aucun JSON trouvé dans la réponse IA");
+    if (!candidate0) {
+      console.warn(
+        "[AI] Réponse IA non-JSON — fallback capteurs",
+        text.substring(0, 100),
+      );
+      return buildPoorImageResult(sensorData, "modèle a renvoyé du texte");
+    }
 
     const candidate = tryRepairJsonLike(candidate0);
     const parsed = JSON.parse(candidate);
@@ -765,8 +771,12 @@ function parseAIResponse(text, sensorData = {}) {
       advices: aiAdvices || buildSensorAdvices(sensorData),
     };
   } catch (err) {
-    console.error("[AI] parseAIResponse error:", err.message);
-    return analyzeWithSensorsOnly(sensorData);
+    console.warn(
+      "[AI] Erreur parsing JSON :",
+      err.message,
+      "— fallback capteurs",
+    );
+    return buildPoorImageResult(sensorData, "parsing JSON échoué");
   }
 }
 
@@ -791,6 +801,7 @@ async function callGemma(imageBase64, sensorData) {
     },
     GEMMA_TIMEOUT,
   );
+  console.log("[AI] Réponse Gemma (premiers 150 chars):", response.substring(0, 150));
   return parseAIResponse(response, sensorData);
 }
 
@@ -804,6 +815,7 @@ async function callLlava(imageBase64, sensorData) {
     },
     LLAVA_TIMEOUT,
   );
+  console.log("[AI] Réponse LLaVA (premiers 150 chars):", response.substring(0, 150));
   return parseAIResponse(response, sensorData);
 }
 
