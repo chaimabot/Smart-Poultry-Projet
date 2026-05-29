@@ -649,51 +649,7 @@ const createActuatorAlert = async (
 // 4. ALERTES MQTT
 // ─────────────────────────────────────────────────────────────────────────────
 const createMqttAlert = async (poultryId, eventType) => {
-  try {
-    if (eventType === "connect" || eventType === "reconnect") {
-      console.log(`[AlertService] MQTT — ${eventType} (pas d'alerte)`);
-      return null;
-    }
-
-    const key = `mqtt_${eventType}`;
-    const severity = "danger";
-
-    const messageMap = {
-      disconnect:
-        "Le boîtier du poulailler ne répond plus. Vérifiez qu'il est bien branché et que votre connexion internet fonctionne.",
-    };
-
-    const { shouldCreate, existingAlertId } = shouldCreateAlert(
-      poultryId,
-      "mqtt",
-      key,
-      severity,
-    );
-
-    if (!shouldCreate) {
-      console.log(`[AlertService] Doublon MQTT bloqué — ${key}`);
-      return existingAlertId;
-    }
-
-    const alert = await Alert.create({
-      poulailler: poultryId,
-      type: "mqtt",
-      key,
-      severity,
-      icon: ICONS.mqtt_lost,
-      message:
-        messageMap[eventType] ??
-        `Problème de connexion avec le boîtier du poulailler (${eventType}).`,
-      read: false,
-    });
-
-    cacheAlert(poultryId, "mqtt", key, severity, alert._id, DEFAULT_TTL_MS);
-    console.log(`[AlertService] MQTT Disconnect — alerte créée`);
-    return alert._id;
-  } catch (err) {
-    console.error("[AlertService] createMqttAlert :", err.message);
-    return null;
-  }
+  return null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -536,7 +536,6 @@ OUTPUT THIS JSON EXACTLY:
 },
 
 DISEASE RULES:
-// APRÈS
 - If suspicion=true, signes_observes MUST contain only symptoms CLEARLY VISIBLE in the image.
 - If you cannot find 2 real visible symptoms → set suspicion=false instead of inventing them.
 - Listing invented symptoms is a critical error. Zero symptoms = suspicion=false.- If suspicion=true, maladie_probable MUST be filled with a disease name from the list
