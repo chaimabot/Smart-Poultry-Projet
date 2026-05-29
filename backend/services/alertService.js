@@ -645,12 +645,7 @@ const createActuatorAlert = async (
   }
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. ALERTES MQTT
-// ─────────────────────────────────────────────────────────────────────────────
-const createMqttAlert = async (poultryId, eventType) => {
-  return null;
-};
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. RÉSOLUTION D'ALERTES
@@ -736,7 +731,6 @@ module.exports = {
   resolveAlerts,
   createDoorAlert,
   createActuatorAlert,
-  createMqttAlert,
   shouldCreateAlert,
   createSensorAlert,
 };

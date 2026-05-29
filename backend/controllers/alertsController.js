@@ -21,7 +21,6 @@ const {
   createSensorAlert,
   createDoorAlert,
   createActuatorAlert,
-  createMqttAlert,
 } = require("../services/alertService");
 
 // ─── Labels et unités ────────────────────────────────────────────────────────
@@ -391,7 +390,6 @@ exports.createAlert = async (req, res) => {
           .status(400)
           .json({ success: false, error: "eventType requis pour type=mqtt" });
       }
-      alertId = await createMqttAlert(pid, eventType);
     } else {
       return res.status(400).json({
         success: false,

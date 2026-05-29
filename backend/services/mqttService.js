@@ -10,7 +10,6 @@ const DoorEvent = require("../models/DoorEvent");
 const {
   checkSensorThresholds,
   resolveNormalValues,
-  createMqttAlert,
   createActuatorAlert,
 } = require("./alertService");
 
