@@ -15,7 +15,7 @@ const GEMMA_MAX_KB = 80;
 const INTER_ANALYSIS_DELAY_MS = 5000;
 
 const IMAGE_MIN_BRIGHTNESS = 20;
-const IMAGE_MAX_BRIGHTNESS = 235;
+const IMAGE_MAX_BRIGHTNESS = 245;
 const IMAGE_MIN_VARIANCE = 80;
 
 const SENSOR_STALE_MS = 10 * 60 * 1000;
@@ -513,6 +513,19 @@ function analyzeWithSensorsOnly(sensorData = {}) {
 
 function buildPoorImageResult(sensorData = {}, reason = "image floue") {
   const sensorResult = analyzeWithSensorsOnly(sensorData);
+
+  const reasonMessages = {
+    "aucun oiseau détectable dans l'image":
+      "La caméra ne filme pas les volailles — repositionnez-la.",
+    "image trop sombre": "Image trop sombre — vérifiez l'éclairage du poulailler.",
+    "image surexposée": "Image surexposée — vérifiez l'objectif de la caméra.",
+    "image sans contenu exploitable (plafond ou surface unie)":
+      "La caméra filme le plafond ou un mur — repositionnez-la vers les volailles.",
+    "image probablement floue": "Image floue — nettoyez l'objectif de la caméra ESP32.",
+  };
+
+  const diagnosticPrefix = reasonMessages[reason] ?? `Image inexploitable (${reason}).`;
+
   const hasAnyValid =
     isValidSensorValue(sensorData.temperature, -10, 60) ||
     isValidSensorValue(sensorData.humidity, 0, 100) ||
@@ -1027,13 +1040,25 @@ function parseAIResponse(text, sensorData = {}) {
         comptage.note = "Comptage non fiable — image insuffisante";
       }
 
+      // Bloquer tout le résultat IA si pas de contenu biologique
+      if (!imageHasBiologicalContent) {
+        console.warn("[AI] Image sans contenu biologique — résultat IA ignoré");
+        return buildPoorImageResult(
+          sensorData,
+          "aucun oiseau détectable dans l'image",
+        );
+      }
+
       // Si comptage positif mais image majoritairement unie/sans contenu biologique
       if (comptage?.estimation > 0 && !imageHasBiologicalContent) {
-        console.warn("[AI] Comptage annulé — aucun contenu biologique détecté");
+        console.warn(
+          "[AI] Comptage annulé — aucun contenu biologique détecté",
+        );
         comptage.estimation = null;
         comptage.fiabilite = "faible";
         comptage.note = "Image invalide — aucun oiseau détectable";
       }
+
 
     }
 
@@ -1222,7 +1247,7 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
 
     try {
       console.log("[AI] Tentative Llama Vision...");
-      const result = await callLlamaVision(compressed, sensorData);
+      const result = await callLlamaVision(compressed, enrichedSensorData);
       if (!result.imageUsable) {
         return {
           ...result,
@@ -1246,7 +1271,7 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
     if (sizeKb <= LLAVA_MAX_KB) {
       try {
         console.log("[AI] Tentative fallback Gemma...");
-        const result = await callLlava(compressed, sensorData);
+        const result = await callLlava(compressed, enrichedSensorData);
         if (!result.imageUsable) {
           return {
             ...result,
