@@ -1,6 +1,3 @@
-const path = require("path");
-require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
-
 const axios = require("axios");
 const sharp = require("sharp");
 const { publishCameraCommand } = require("./mqttService");
@@ -8,22 +5,36 @@ const { publishCameraCommand } = require("./mqttService");
 const _CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID;
 const _CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 const USE_CLOUDFLARE = !!(_CF_ACCOUNT_ID && _CF_API_TOKEN);
-
-const PRIMARY_MODEL = "@cf/google/gemma-3-12b-it";
-const FALLBACK_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
-
-const GEMMA_TIMEOUT = 12000;
+const PRIMARY_MODEL = "@cf/meta/llama-3.2-11b-vision-instruct";
+const FALLBACK_MODEL = "@cf/google/gemma-3-12b-it";
+const GEMMA_TIMEOUT = 45000;
 const CHAT_TIMEOUT = 20000;
 const LLAVA_TIMEOUT = 10000;
 const LLAVA_MAX_KB = 24;
+const GEMMA_MAX_KB = 80;
 const INTER_ANALYSIS_DELAY_MS = 5000;
 
 const IMAGE_MIN_BRIGHTNESS = 20;
 const IMAGE_MAX_BRIGHTNESS = 235;
 const IMAGE_MIN_VARIANCE = 80;
 
-// Fraîcheur capteurs : données ignorées si > 10 min
 const SENSOR_STALE_MS = 10 * 60 * 1000;
+
+// ─── Validation Cloudflare au démarrage ──────────────────────────────────────
+
+if (USE_CLOUDFLARE) {
+  console.log(
+    `[AI] Cloudflare ENABLED - Account: ${_CF_ACCOUNT_ID.substring(0, 8)}...`,
+  );
+  console.log(`[AI] Models: Llama Vision, Gemma 3`);
+} else {
+  console.warn(
+    "[AI] ⚠️  Cloudflare DISABLED - Using sensor-only fallback mode",
+  );
+  console.warn(
+    "[AI] Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .env to enable AI",
+  );
+}
 
 const DEATH_KEYWORDS = [
   "décédé",
@@ -42,6 +53,40 @@ const DEATH_KEYWORDS = [
   "deceased",
 ];
 
+// ─── Liste complète des maladies aviaires détectables visuellement ──────────
+const MALADIES_AVIAIRES = [
+  "Maladie de Newcastle",
+  "Grippe aviaire (H5N1 / H7N9)",
+  "Maladie de Marek",
+  "Bronchite infectieuse",
+  "Laryngotrachéite infectieuse",
+  "Mycoplasmose (Mycoplasma gallisepticum)",
+  "Coccidiose",
+  "Aspergillose",
+  "Salmonellose",
+  "Colibacillose (E. coli)",
+  "Gumboro (Bursite infectieuse)",
+  "Choléra aviaire (Pasteurellose)",
+  "Typhose aviaire",
+  "Pullorum (Bacillose blanche)",
+  "Variole aviaire (Fowlpox)",
+  "Leucose aviaire",
+  "Anémie infectieuse du poulet",
+  "Entérite hémorragique",
+  "Syndrome de mort subite",
+  "Parasites externes (gale, poux, acariens)",
+  "Parasites internes (ascaris, ténia, capillaire)",
+  "Candidose (Muguet)",
+  "Trichomonose",
+  "Histomonose (tête noire)",
+  "Dermatite gangréneuse",
+  "Syndrome ascitique (Hydropisie)",
+  "Tendinite / Syndrome de boiterie",
+  "Carence nutritionnelle (rachitisme, avitaminose)",
+  "Stress thermique",
+  "Plumage anormal / Mue prématurée",
+];
+
 const pendingImages = new Map();
 
 // ─── Utilitaires base64 ─────────────────────────────────────────────────────
@@ -55,7 +100,7 @@ function getImageSizeKb(base64) {
   return Math.round((base64.length * 3) / 4 / 1024);
 }
 
-// ─── Guard valeur capteur ─────────────────────────────────────────────────
+// ─── Guard valeur capteur ────────────────────────────────────────────────────
 
 function isValidSensorValue(value, min = 0, max = 100) {
   if (value === null || value === undefined) return false;
@@ -65,7 +110,7 @@ function isValidSensorValue(value, min = 0, max = 100) {
   return true;
 }
 
-// ─── Extraction capteurs frais ─────────────────────────────────────────────
+// ─── Extraction capteurs frais ───────────────────────────────────────────────
 
 function extractFreshSensors(poulailler) {
   const monitoring = poulailler?.lastMonitoring;
@@ -112,7 +157,7 @@ function extractFreshSensors(poulailler) {
   };
 }
 
-// ─── Détection qualité image via sharp ─────────────────────────────────────
+// ─── Détection qualité image via sharp ──────────────────────────────────────
 
 async function assessImageQuality(base64) {
   try {
@@ -167,36 +212,44 @@ async function assessImageQuality(base64) {
   }
 }
 
-// ─── Compression image ─────────────────────────────────────────────────────
+// ─── Compression image ───────────────────────────────────────────────────────
 
-async function compressImage(base64) {
-  if (getImageSizeKb(base64) <= LLAVA_MAX_KB) {
+async function compressImage(base64, maxKb = LLAVA_MAX_KB) {
+  if (getImageSizeKb(base64) <= maxKb) {
     console.log("[AI] Image déjà dans les limites — pas de compression");
     return base64;
   }
 
   const buffer = Buffer.from(base64, "base64");
-  let lastCompressed = null;
+
+  let lastCompressed = buffer;
 
   for (let i = 0; i < 5; i++) {
-    const quality = Math.max(10, 50 - i * 10);
-    const width = Math.max(120, 320 - i * 40);
+    const quality = Math.max(30, 80 - i * 10);
+    const width = Math.max(480, 800 - i * 80);
 
-    const compressed = await sharp(buffer)
-      .resize({ width })
-      .jpeg({ quality, mozjpeg: true })
-      .toBuffer();
+    try {
+      const compressed = await sharp(buffer)
+        .resize({ width })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer();
 
-    const kb = compressed.length / 1024;
-    console.log(
-      `[AI] Compression tentative ${i + 1} : ${Math.round(kb)} Ko (qualité ${quality}, largeur ${width})`,
-    );
+      const kb = compressed.length / 1024;
+      console.log(
+        `[AI] Compression tentative ${i + 1} : ${Math.round(kb)} Ko (qualité ${quality}, largeur ${width})`,
+      );
 
-    if (kb <= LLAVA_MAX_KB) {
-      console.log(`[AI] Image compressée OK : ${Math.round(kb)} Ko`);
-      return compressed.toString("base64");
+      if (kb <= maxKb) {
+        console.log(`[AI] Image compressée OK : ${Math.round(kb)} Ko`);
+        return compressed.toString("base64");
+      }
+      lastCompressed = compressed;
+    } catch (err) {
+      console.warn(
+        `[AI] Compression tentative ${i + 1} échouée :`,
+        err.message,
+      );
     }
-    lastCompressed = compressed;
   }
 
   console.warn(
@@ -205,7 +258,7 @@ async function compressImage(base64) {
   return lastCompressed.toString("base64");
 }
 
-// ─── Conseils capteurs ─────────────────────────────────────────────────────
+// ─── Conseils capteurs ───────────────────────────────────────────────────────
 
 function buildSensorAdvices(sensorData = {}) {
   const advices = [];
@@ -291,7 +344,7 @@ function buildSensorAdvices(sensorData = {}) {
   return advices;
 }
 
-// ─── Fallback capteurs uniquement ─────────────────────────────────────────
+// ─── Fallback capteurs uniquement ───────────────────────────────────────────
 
 function analyzeWithSensorsOnly(sensorData = {}) {
   const airQuality = sensorData.airQualityPercent ?? null;
@@ -396,7 +449,7 @@ function analyzeWithSensorsOnly(sensorData = {}) {
   };
 }
 
-// ─── Résultat pour image inexploitable ─────────────────────────────────────
+// ─── Résultat pour image inexploitable ──────────────────────────────────────
 
 function buildPoorImageResult(sensorData = {}, reason = "image floue") {
   const sensorResult = analyzeWithSensorsOnly(sensorData);
@@ -406,16 +459,13 @@ function buildPoorImageResult(sensorData = {}, reason = "image floue") {
     isValidSensorValue(sensorData.airQualityPercent, 0, 100) ||
     isValidSensorValue(sensorData.waterLevel, 1, 100);
 
-  let advices;
-  if (hasAnyValid) {
-    advices = sensorResult.advices;
-  } else {
-    advices = [
-      "Vérifiez l'éclairage du poulailler avant de relancer une analyse — une luminosité suffisante est nécessaire pour la caméra.",
-      "Assurez-vous que la caméra ESP32 est correctement positionnée et que l'objectif est propre.",
-      "Vérifiez la connexion du module de surveillance pour rétablir les données capteurs.",
-    ];
-  }
+  const advices = hasAnyValid
+    ? sensorResult.advices
+    : [
+        "Vérifiez l'éclairage du poulailler avant de relancer une analyse — une luminosité suffisante est nécessaire pour la caméra.",
+        "Assurez-vous que la caméra ESP32 est correctement positionnée et que l'objectif est propre.",
+        "Vérifiez la connexion du module de surveillance pour rétablir les données capteurs.",
+      ];
 
   return {
     ...sensorResult,
@@ -429,77 +479,101 @@ function buildPoorImageResult(sensorData = {}, reason = "image floue") {
   };
 }
 
-// ─── Prompts ───────────────────────────────────────────────────────────────
-
 function buildAnalysisPrompt(sensorData = {}) {
-  return `You are an expert poultry farm veterinarian. Analyze this farm image.
+  const maladiesListe = MALADIES_AVIAIRES.join(" | ");
 
-CRITICAL RULES:
-- Look at the image carefully. If it is blurry, out of focus, overexposed, too dark, or shows no animals: set imageUsable=false
-- If imageUsable=false: all detections must be null, healthScore must be based ONLY on sensors, comptage and maladie_suspectee must be null/empty
-- Count the EXACT number of dead birds visible on the ground. Set nombreMorts to this number (0 if none visible).
-- Count the EXACT number of live birds visible. Set comptage.estimation to this number.
-- Sleeping or resting birds are NOT dead — count them as live.
-- mortalityDetected=true ONLY if nombreMorts > 0.
-- Detect any visible clinical signs of disease (diarrhea, respiratory distress, swelling, abnormal feathers, etc.).
-- urgencyLevel must be exactly one of: "normal" | "attention" | "critique"
-- All text in French. Diagnostic max 2 sentences. Be specific, not generic.
-- NEVER include raw numeric sensor values in diagnostic or advices text.
-- Write advices as professional veterinary recommendations only.
-- Only generate an advice about water level if WaterLevel sensor value is explicitly provided (not N/A).
-- Only generate an advice about temperature if Temperature sensor value is explicitly provided (not N/A).
+  return `You are an expert poultry veterinarian. Analyze this image NOW.
 
-Respond ONLY with this exact JSON format. No markdown, no text outside JSON:
+KNOWN POULTRY DISEASES — you MUST use one of these exact names for "maladie_probable" if you suspect a disease:
+${maladiesListe}
+
+RESPOND ONLY WITH VALID JSON - NO OTHER TEXT.
+START WITH { AND END WITH }
+ 
+ANALYZE THE IMAGE:
+- Count ONLY birds VISIBLE in THIS image — do NOT estimate total flock size
+- If you see 1 bird, estimation = 1. If you see 3 birds, estimation = 3.
+- Count LIVE birds (standing, moving, sitting naturally)
+- Count DEAD birds (lying flat, stiff, no breathing, not moving)
+- Check for visible diseases
+- Rate health 0-100
+ 
+DEAD BIRD DETECTION:
+- Is any bird lying completely flat? YES = DEAD
+- Is any bird not moving and stiff? YES = DEAD
+- If dead birds found: healthScore = 15, urgencyLevel = "critique"
+ 
+HEALTH SCORING:
+- 90-100: All healthy
+- 70-89: Minor issues
+- 50-69: Moderate issues
+- 30-49: Serious
+- 0-29: CRITICAL (dead birds, major outbreak)
+ 
+OUTPUT THIS JSON EXACTLY:
 {
-  "healthScore": 85,
-  "urgencyLevel": "normal",
+  "healthScore": <number 0-100>,
+  "urgencyLevel": "<normal or attention or critique>",
   "imageUsable": true,
-  "diagnostic": "Diagnostic précis en français.",
+  "diagnostic": "<2-3 sentences in French about what you see>",
   "detections": {
-    "mortalityDetected": false,
-    "behaviorNormal": true,
-    "nombreMorts": 0
+    "mortalityDetected": <true or false>,
+    "behaviorNormal": <true or false>,
+    "nombreMorts": <number of dead birds>
   },
   "comptage": {
-    "estimation": 42,
-    "fiabilite": "bonne",
-    "note": "Troupeau bien regroupé, comptage fiable."
+    "estimation": <number of LIVE birds only>,
+    "fiabilite": "<faible or moyenne or bonne>",
+    "note": "<brief description>"
   },
-  "maladie_suspectee": {
-    "suspicion": false,
-    "maladie_probable": null,
-    "signes_observes": [],
-    "urgence_veterinaire": false,
-    "confiance": null
-  },
-  "advices": ["conseil vétérinaire professionnel 1", "conseil 2", "conseil 3"]
+// APRÈS
+"maladie_suspectee": {
+  "suspicion": <true or false>,
+  "maladie_probable": <null or exact disease name from the list above>,
+  "signes_observes": [<REQUIRED if suspicion=true: list every visible symptom you see, e.g. "plumes ébouriffées", "posture voûtée", "pattes jaunes", "tête baissée">],
+  "urgence_veterinaire": <true or false>,
+  "confiance": <null or "faible" or "moyenne" or "élevée">
+},
+
+DISEASE RULES:
+- If suspicion=true, signes_observes MUST NOT be empty — list at least 2 visible symptoms
+- If suspicion=true, maladie_probable MUST be filled with a disease name from the list
+- Match symptoms to the most likely disease from the KNOWN POULTRY DISEASES list
+  "advices": [
+    "<practical advice 1>",
+    "<practical advice 2>",
+    "<practical advice 3>"
+  ]
+}
+ 
+SENSOR DATA (use for advice only, not for counting):
+Temperature: ${isValidSensorValue(sensorData.temperature, -10, 60) ? sensorData.temperature + "°C" : "N/A"}
+Humidity: ${isValidSensorValue(sensorData.humidity, 0, 100) ? sensorData.humidity + "%" : "N/A"}
+Air Quality: ${isValidSensorValue(sensorData.airQualityPercent, 0, 100) ? sensorData.airQualityPercent + "%" : "N/A"}
+Water Level: ${isValidSensorValue(sensorData.waterLevel, 1, 100) ? sensorData.waterLevel + "%" : "N/A"}
+CRITICAL ANALYSIS RULES:
+- This chicken shows: hunched posture, ruffled feathers, lowered head, yellow legs — these ARE symptoms
+- If the bird is NOT standing straight and alert = behaviorNormal MUST be false
+- If you write "semble malade" or "un peu malade" in diagnostic = suspicion MUST be true
+- NEVER contradict yourself: if diagnostic mentions illness, suspicion cannot be false
+- Be a veterinarian, not a reassurer — report what you SEE, not what you hope
+
+VISIBLE SYMPTOMS TO CHECK:
+- Ruffled/dirty feathers → "plumes ébouriffées"
+- Hunched/crouched posture → "posture voûtée"  
+- Head down or twisted → "tête baissée"
+- Eyes closed or half-closed → "yeux mi-clos"
+- Yellow/pale comb → "crête pâle"
+- Labored breathing → "difficultés respiratoires"
+- Swollen face/eyes → "gonflement facial"
+- Dirty vent → "cloaque souillé"
+- Not moving → "prostration"
+
+If you observe ANY of these → suspicion=true + list them in signes_observes
+NOW ANALYZE THE IMAGE AND RESPOND WITH JSON ONLY.`.trim();
 }
 
-If imageUsable=false:
-{
-  "healthScore": <based only on available sensors>,
-  "urgencyLevel": "<based only on available sensors>",
-  "imageUsable": false,
-  "diagnostic": "Image inexploitable — <raison précise>. <diagnostic capteurs professionnel>.",
-  "detections": {
-    "mortalityDetected": null,
-    "behaviorNormal": null,
-    "nombreMorts": null
-  },
-  "comptage": null,
-  "maladie_suspectee": null,
-  "advices": ["conseil professionnel basé uniquement sur capteurs disponibles"]
-}
-
-Sensor readings (N/A means sensor not connected — DO NOT generate advice for N/A sensors):
-Temperature    = ${isValidSensorValue(sensorData.temperature, -10, 60) ? sensorData.temperature + " °C" : "N/A"}   (normal: 18-28°C)
-Humidity       = ${isValidSensorValue(sensorData.humidity, 0, 100) ? sensorData.humidity + " %" : "N/A"}           (normal: 40-70%)
-AirQuality     = ${isValidSensorValue(sensorData.airQualityPercent, 0, 100) ? sensorData.airQualityPercent + " %" : "N/A"}   (critical if <20%)
-WaterLevel     = ${isValidSensorValue(sensorData.waterLevel, 1, 100) ? sensorData.waterLevel + " %" : "N/A"}       (critical if <20%)
-AnimalCount    = ${sensorData.animalCount ?? "N/A"}
-Surface        = ${sensorData.surface ?? "N/A"} m²
-`.trim();
-}
+// ─── Prompt chat vétérinaire ─────────────────────────────────────────────────
 
 function buildSystemPrompt(context) {
   const sensors = [
@@ -525,25 +599,108 @@ CAPTEURS : ${sensors || "Aucune donnée disponible"}
 SCORE SANTÉ : ${context.lastScore != null ? `${context.lastScore}/100` : "Non disponible"}
 URGENCE : ${context.lastUrgency ?? "Non disponible"}
 DIAGNOSTIC : ${context.lastDiagnostic ?? "Aucune analyse disponible"}
-CONSEILS : ${context.lastAdvices ?? "Aucun conseil disponible"}
-`.trim();
+CONSEILS : ${context.lastAdvices ?? "Aucun conseil disponible"}`.trim();
 }
-
-// ─── Appel Cloudflare générique ─────────────────────────────────────────────
+// ─── Appel Cloudflare API ──────────────────────────────────────────────────
 
 async function callCloudflare(model, payload, timeout) {
   const url = `https://api.cloudflare.com/client/v4/accounts/${_CF_ACCOUNT_ID}/ai/run/${model}`;
-  const response = await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${_CF_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    timeout,
-  });
-  return response.data.result.response;
+
+  console.log(`\n[CF CALL] Model: ${model.substring(0, 40)}...`);
+  console.log(`[CF CALL] Account ID: ${_CF_ACCOUNT_ID.substring(0, 8)}...`);
+  console.log(`[CF CALL] Timeout: ${timeout}ms`);
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${_CF_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      timeout,
+    });
+
+    console.log("[CF CALL] ✓ Success");
+    console.log(
+      "[CF RESPONSE]",
+      JSON.stringify(response.data).substring(0, 500),
+    );
+
+    // Extract response - may be object or string
+    let result =
+      response.data?.result?.response ||
+      response.data?.result?.text ||
+      response.data?.result;
+
+    // If result is an object, stringify it
+    if (typeof result === "object" && result !== null) {
+      result = JSON.stringify(result);
+    }
+
+    return result || JSON.stringify(response.data?.result);
+  } catch (err) {
+    const status = err.response?.status;
+    const statusText = err.response?.statusText;
+
+    console.error(`\n[CF ERROR] Status: ${status} ${statusText}`);
+
+    if (err.response?.data) {
+      console.error(
+        "[CF ERROR DATA]",
+        JSON.stringify(err.response.data, null, 2),
+      );
+    } else {
+      console.error("[CF ERROR]", err.message);
+    }
+
+    if (status === 401) {
+      console.error("\n[CF ERROR] 🔑 AUTHENTICATION FAILED");
+    }
+    if (status === 403) {
+      console.error("\n[CF ERROR] 🔒 FORBIDDEN");
+    }
+    if (status === 404) {
+      console.error("\n[CF ERROR] 🔍 MODEL NOT FOUND");
+    }
+    if (status === 429) {
+      console.error("\n[CF ERROR] ⏱️ RATE LIMITED");
+    }
+
+    throw err;
+  }
+}
+async function acceptLlamaLicense() {
+  if (!USE_CLOUDFLARE) return;
+  const url = `https://api.cloudflare.com/client/v4/accounts/${_CF_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.2-11b-vision-instruct`;
+
+  try {
+    console.log("[AI] Accepting Llama license...");
+
+    const response = await axios.post(
+      url,
+      { prompt: "agree" }, // ← KEY FIX: Use 'prompt', not 'messages'
+      {
+        headers: {
+          Authorization: `Bearer ${_CF_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 10000,
+      },
+    );
+
+    console.log("✅ Llama license accepted");
+    return true;
+  } catch (err) {
+    if (err.response?.status === 403) {
+      console.warn("⚠️  License must be accepted in Cloudflare dashboard:");
+      console.warn(
+        "   https://dash.cloudflare.com → Workers AI → Models → Llama 3.2",
+      );
+    }
+    return false;
+  }
 }
 
-// ─── Normalisation ──────────────────────────────────────────────────────────
+// ─── Normalisation urgence ───────────────────────────────────────────────────
 
 function normalizeUrgency(value) {
   if (!value) return "normal";
@@ -561,21 +718,26 @@ function mentionsDeath(text) {
   return DEATH_KEYWORDS.some((kw) => lower.includes(kw));
 }
 
-// ─── Parse réponse IA ───────────────────────────────────────────────────────
+// ─── Extraction JSON robuste ─────────────────────────────────────────────────
 
 function extractJsonCandidate(text) {
   if (!text) return null;
 
-  // 1) Tente d'extraire un bloc JSON complet basé sur les accolades.
-  const firstBrace = text.indexOf("{");
+  const stripped = text
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
+    .trim();
+
+  const firstBrace = stripped.indexOf("{");
   if (firstBrace === -1) return null;
 
   let depth = 0;
+  let arrayDepth = 0;
   let inString = false;
   let escape = false;
 
-  for (let i = firstBrace; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = firstBrace; i < stripped.length; i++) {
+    const ch = stripped[i];
 
     if (inString) {
       if (escape) {
@@ -592,50 +754,102 @@ function extractJsonCandidate(text) {
       inString = true;
       continue;
     }
-
     if (ch === "{") depth++;
+    if (ch === "[") arrayDepth++;
+    if (ch === "]") arrayDepth--;
     if (ch === "}") {
       depth--;
-      if (depth === 0) {
-        return text.slice(firstBrace, i + 1);
+      if (depth === 0) return stripped.slice(firstBrace, i + 1);
+    }
+  }
+
+  if (depth > 0) {
+    console.warn(
+      `[AI] JSON tronqué détecté (profondeur objet: ${depth}, tableau: ${arrayDepth}) — tentative de réparation`,
+    );
+    const lines = stripped.slice(firstBrace).split("\n");
+
+    while (lines.length > 1) {
+      const last = lines[lines.length - 1].trim();
+      const isComplete =
+        last.endsWith(",") ||
+        last.endsWith('"') ||
+        last.endsWith("}") ||
+        last.endsWith("]") ||
+        last === "";
+      if (!isComplete) {
+        lines.pop();
+      } else {
+        break;
       }
     }
+
+    let rebuilt = lines.join("\n").replace(/,\s*$/, "");
+    rebuilt += "\n" + "]".repeat(Math.max(0, arrayDepth));
+    rebuilt += "\n" + "}".repeat(Math.max(0, depth));
+    return rebuilt;
   }
 
   return null;
 }
 
 function tryRepairJsonLike(text) {
-  // Réparation minimaliste : enlève du texte après le dernier '}' du candidat,
-  // et nettoie quelques erreurs fréquentes (virgules en trop/trailling).
   if (!text || typeof text !== "string") return text;
 
-  // Retire les backticks/markdown potentiels.
   let cleaned = text
-    .replace(/```[\s\S]*?```/g, (m) => m.replace(/```/g, ""))
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
     .trim();
 
-  // Si le texte contient plusieurs objets, garde le premier.
   const candidate = extractJsonCandidate(cleaned);
   if (candidate) cleaned = candidate;
 
-  // Retire une éventuelle virgule avant une accolade/une liste (JSON trailing comma).
+  // Fix trailing commas before closing braces/brackets
   cleaned = cleaned.replace(/,\s*(\})/g, "$1");
   cleaned = cleaned.replace(/,\s*(\])/g, "$1");
+
+  // FIX: Convert unquoted keys to quoted keys
+  // Matches: {key: value, anotherKey: value}
+  // Changes to: {"key": value, "anotherKey": value}
+  // Regex explanation:
+  //   ([{,]\s*)         = Opening brace or comma + whitespace
+  //   ([a-zA-Z_$][a-zA-Z0-9_$]*)  = Valid JavaScript identifier (key name)
+  //   \s*:              = Optional whitespace + colon
+  // Replacement: $1"$2": = Keep the brace/comma, add quotes around key, keep colon
+  cleaned = cleaned.replace(
+    /([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g,
+    '$1"$2":',
+  );
 
   return cleaned;
 }
 
-function parseAIResponse(text, sensorData = {}) {
-  // Supporte les réponses JSON mal formatées (Gemma peut renvoyer ponctuation/texte parasite)
-  // Objectif : extraire un objet JSON valide autant que possible.
+// ═══════════════════════════════════════════════════════════════════════════
+// OPTIONAL: Also improve the analysis prompt to force stricter JSON output
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// If you still get JSON errors, add this to buildAnalysisPrompt():
+// (Find the section "CRITICAL OUTPUT RULES" and add this line)
 
+/*
+CRITICAL OUTPUT RULES (add this):
+- YOUR RESPONSE MUST START WITH { AND END WITH } — NO markdown, NO \`\`\`json, NO text before or after.
+- Do NOT wrap the JSON in code blocks. Output raw JSON only.
+- ALL KEYS MUST BE QUOTED: "healthScore" not healthScore
+- ALL STRING VALUES MUST BE QUOTED: "value" not value
+- Use double quotes ONLY, never single quotes
+- Output ONLY valid JSON, nothing else
+*/
+
+// ─── Parse réponse IA ────────────────────────────────────────────────────────
+
+function parseAIResponse(text, sensorData = {}) {
   try {
     const candidate0 = extractJsonCandidate(text);
     if (!candidate0) {
       console.warn(
         "[AI] Réponse IA non-JSON — fallback capteurs",
-        text.substring(0, 100),
+        text.substring(0, 150),
       );
       return buildPoorImageResult(sensorData, "modèle a renvoyé du texte");
     }
@@ -722,18 +936,33 @@ function parseAIResponse(text, sensorData = {}) {
         ? parsed.advices
         : null;
 
+    if (!aiAdvices) {
+      console.warn(
+        "[AI] advices absents du JSON (probablement tronqué) — fallback capteurs",
+      );
+    }
+
     let comptage = null;
     if (parsed.comptage && typeof parsed.comptage === "object") {
       const est = Number(parsed.comptage.estimation);
+      const fiabilite = ["bonne", "moyenne", "faible"].includes(
+        parsed.comptage.fiabilite,
+      )
+        ? parsed.comptage.fiabilite
+        : null;
+
       comptage = {
         estimation: Number.isFinite(est) ? est : null,
-        fiabilite: ["bonne", "moyenne", "faible"].includes(
-          parsed.comptage.fiabilite,
-        )
-          ? parsed.comptage.fiabilite
-          : null,
+        fiabilite,
         note: parsed.comptage.note || null,
       };
+
+      // Annule le comptage si fiabilité faible
+      if (fiabilite === "faible") {
+        console.warn("[AI] Comptage ignoré — fiabilité faible");
+        comptage.estimation = null;
+        comptage.note = "Comptage non fiable — image insuffisante";
+      }
     }
 
     let maladie = null;
@@ -742,17 +971,51 @@ function parseAIResponse(text, sensorData = {}) {
       typeof parsed.maladie_suspectee === "object"
     ) {
       const s = parsed.maladie_suspectee;
+
+      let maladie_probable = s.maladie_probable || null;
+      if (maladie_probable) {
+        const known = MALADIES_AVIAIRES.some(
+          (m) =>
+            m.toLowerCase().includes(maladie_probable.toLowerCase()) ||
+            maladie_probable
+              .toLowerCase()
+              .includes(m.toLowerCase().split(" ")[0]),
+        );
+        if (!known) {
+          console.warn(`[AI] Maladie inconnue ignorée: ${maladie_probable}`);
+          maladie_probable = null;
+        }
+      }
+
       maladie = {
         suspicion: s.suspicion === true,
-        maladie_probable: s.maladie_probable || null,
+        maladie_probable,
         signes_observes: Array.isArray(s.signes_observes)
-          ? s.signes_observes.filter((x) => typeof x === "string")
+          ? s.signes_observes.filter((x) => typeof x === "string").slice(0, 8)
           : [],
         urgence_veterinaire: s.urgence_veterinaire === true,
         confiance: ["faible", "moyenne", "élevée"].includes(s.confiance)
           ? s.confiance
           : null,
       };
+
+      if (maladie.suspicion && maladie.signes_observes.length === 0) {
+        console.warn(
+          "[AI] Suspicion de maladie sans signes observés — annulée",
+        );
+        maladie.suspicion = false;
+        maladie.maladie_probable = null;
+        maladie.urgence_veterinaire = false;
+        maladie.confiance = null;
+      }
+
+      if (
+        maladie.suspicion &&
+        maladie.urgence_veterinaire &&
+        urgencyLevel === "normal"
+      ) {
+        urgencyLevel = "attention";
+      }
     }
 
     return {
@@ -780,9 +1043,7 @@ function parseAIResponse(text, sensorData = {}) {
   }
 }
 
-// ─── Appels modèles ─────────────────────────────────────────────────────────
-
-async function callGemma(imageBase64, sensorData) {
+async function callLlamaVision(imageBase64, sensorData) {
   const response = await callCloudflare(
     PRIMARY_MODEL,
     {
@@ -790,19 +1051,32 @@ async function callGemma(imageBase64, sensorData) {
         {
           role: "user",
           content: [
-            { type: "text", text: buildAnalysisPrompt(sensorData) },
             {
               type: "image_url",
               image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
             },
+            {
+              type: "text",
+              text: buildAnalysisPrompt(sensorData),
+            },
           ],
         },
       ],
+      max_tokens: 1500,
     },
     GEMMA_TIMEOUT,
   );
-  console.log("[AI] Réponse Gemma (premiers 150 chars):", response.substring(0, 150));
-  return parseAIResponse(response, sensorData);
+
+  // FIX: Ensure response is a string before calling substring()
+  const responseStr =
+    typeof response === "string" ? response : JSON.stringify(response);
+
+  console.log(
+    "[AI] Réponse Llama Vision brute (premiers 500 chars):",
+    responseStr.substring(0, 500),
+  );
+
+  return parseAIResponse(responseStr, sensorData);
 }
 
 async function callLlava(imageBase64, sensorData) {
@@ -811,25 +1085,35 @@ async function callLlava(imageBase64, sensorData) {
     {
       image: imageBase64,
       prompt: buildAnalysisPrompt(sensorData),
-      max_tokens: 512,
+      max_tokens: 1024,
     },
-    LLAVA_TIMEOUT,
+    GEMMA_TIMEOUT,
   );
-  console.log("[AI] Réponse LLaVA (premiers 150 chars):", response.substring(0, 150));
-  return parseAIResponse(response, sensorData);
+
+  // FIX: Safely convert to string if needed
+  const responseStr =
+    typeof response === "string" ? response : JSON.stringify(response);
+
+  console.log(
+    "[AI] Réponse LLaVA brute (premiers 300 chars):",
+    responseStr.substring(0, 300),
+  );
+
+  return parseAIResponse(responseStr, sensorData);
 }
-
-// ─── Analyse principale ─────────────────────────────────────────────────────
-
-async function analyzeWithCloudflareAI(
-  imageBase64,
-  sensorData = {},
-  thresholds = {},
-) {
+async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
   try {
     if (!USE_CLOUDFLARE) {
       console.warn("[AI] Cloudflare désactivé — fallback capteurs");
       return analyzeWithSensorsOnly(sensorData);
+    }
+
+    // Certaines configurations exigent l'acceptation de licence avant le 1er run du modèle.
+    // On tente une acceptation (non bloquante) avant d'appeler Llama Vision.
+    try {
+      await acceptLlamaLicense();
+    } catch (e) {
+      // acceptLlamaLicense gère déjà les erreurs, mais on sécurise ici.
     }
 
     const clean = cleanBase64(imageBase64);
@@ -850,18 +1134,22 @@ async function analyzeWithCloudflareAI(
       return buildPoorImageResult(sensorData, quality.reason);
     }
 
-    const compressed = await compressImage(clean);
+    const compressed = await compressImage(clean, GEMMA_MAX_KB);
     const sizeKb = getImageSizeKb(compressed);
     console.log(`[AI] Taille image finale : ${sizeKb} Ko`);
 
     try {
-      console.log("[AI] Tentative Gemma 3...");
-      const result = await callGemma(compressed, sensorData);
+      console.log("[AI] Tentative Llama Vision...");
+      const result = await callLlamaVision(compressed, sensorData);
       if (!result.imageUsable) {
         return {
           ...result,
           confidence: 50,
-          imageQuality: { sizeKb, status: "poor", reason: "signalé par Gemma" },
+          imageQuality: {
+            sizeKb,
+            status: "poor",
+            reason: "signalé par Llama Vision",
+          },
         };
       }
       return {
@@ -870,12 +1158,12 @@ async function analyzeWithCloudflareAI(
         imageQuality: { sizeKb, status: "optimized" },
       };
     } catch (err) {
-      console.warn("[AI] Gemma échoué :", err.message);
+      console.warn("[AI] Llama Vision échoué :", err.message);
     }
 
     if (sizeKb <= LLAVA_MAX_KB) {
       try {
-        console.log("[AI] Tentative LLaVA...");
+        console.log("[AI] Tentative fallback Gemma...");
         const result = await callLlava(compressed, sensorData);
         if (!result.imageUsable) {
           return {
@@ -884,7 +1172,7 @@ async function analyzeWithCloudflareAI(
             imageQuality: {
               sizeKb,
               status: "poor",
-              reason: "signalé par LLaVA",
+              reason: "signalé par Gemma fallback",
             },
           };
         }
@@ -894,7 +1182,7 @@ async function analyzeWithCloudflareAI(
           imageQuality: { sizeKb, status: "optimized" },
         };
       } catch (err) {
-        console.warn("[AI] LLaVA échoué :", err.message);
+        console.warn("[AI] Gemma fallback échoué :", err.message);
       }
     }
 
@@ -906,7 +1194,7 @@ async function analyzeWithCloudflareAI(
   }
 }
 
-// ─── Chat vétérinaire ───────────────────────────────────────────────────────
+// ─── Chat vétérinaire ────────────────────────────────────────────────────────
 
 async function chatWithGemma(question, context, history = []) {
   try {
@@ -924,7 +1212,7 @@ async function chatWithGemma(question, context, history = []) {
     ];
 
     const response = await callCloudflare(
-      PRIMARY_MODEL,
+      FALLBACK_MODEL,
       { messages },
       CHAT_TIMEOUT,
     );
@@ -947,9 +1235,11 @@ async function chatWithGemma(question, context, history = []) {
 
 function buildFallbackAnswer(question, context) {
   const q = question.toLowerCase();
+  const scoreDisplay =
+    context.lastScore != null ? `${context.lastScore}/100` : "indisponible";
 
   if (q.includes("santé") || q.includes("état") || q.includes("etat")) {
-    return `Le poulailler ${context.poulaillerName} affiche un score de santé de ${context.lastScore}/100 (niveau : ${context.lastUrgency}). ${context.lastDiagnostic}`;
+    return `Le poulailler ${context.poulaillerName} affiche un score de santé de ${scoreDisplay} (niveau : ${context.lastUrgency ?? "inconnu"}). ${context.lastDiagnostic ?? ""}`.trim();
   }
   if (q.includes("alerte") || q.includes("danger") || q.includes("urgent")) {
     if (context.lastUrgency === "critique")
@@ -967,6 +1257,15 @@ function buildFallbackAnswer(question, context) {
       context.lastAdvices ||
       "Maintenez une surveillance régulière, vérifiez les capteurs et assurez une bonne ventilation."
     );
+  }
+  if (
+    q.includes("maladie") ||
+    q.includes("symptôme") ||
+    q.includes("symptome")
+  ) {
+    if (context.lastDiagnostic)
+      return `Selon la dernière analyse : ${context.lastDiagnostic} Consultez un vétérinaire pour un diagnostic précis.`;
+    return "Aucune analyse récente disponible. Lancez une analyse avec image pour détecter les signes de maladie.";
   }
   if (
     q.includes("température") ||
@@ -990,8 +1289,11 @@ function buildFallbackAnswer(question, context) {
       return "Le niveau d'abreuvement est critique — remplissez les abreuvoirs immédiatement.";
     return "Le niveau d'abreuvement est suffisant.";
   }
+  if (q.includes("mort") || q.includes("dead") || q.includes("décès")) {
+    return `Selon la dernière analyse : ${context.lastDiagnostic || "aucune mortalité détectée"}. Consultez un vétérinaire si vous observez des oiseaux morts.`;
+  }
 
-  return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${context.lastScore}/100. ${context.lastDiagnostic}. Posez-moi une question sur la santé, les alertes ou les conseils.`;
+  return `Je suis l'assistant IA de Smart Poultry. ${context.poulaillerName} compte ${context.animalCount} volailles — score santé : ${scoreDisplay}. ${context.lastDiagnostic ?? ""}. Posez-moi une question sur la santé, les alertes, les maladies ou les conseils.`.trim();
 }
 
 // ─── Gestion image caméra ────────────────────────────────────────────────────
@@ -1015,10 +1317,12 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
     );
 
     const key = poulaillerId.toString().trim();
-    pendingImages.set(key, { image: cleanB64, receivedAt: Date.now() });
+    const receivedAt = Date.now();
+    pendingImages.set(key, { image: cleanB64, receivedAt });
 
     setTimeout(() => {
-      if (pendingImages.has(key)) {
+      const current = pendingImages.get(key);
+      if (current && current.receivedAt === receivedAt) {
         pendingImages.delete(key);
         console.warn(`[AI] Image expirée pour le poulailler ${poulaillerId}`);
       }
@@ -1028,20 +1332,17 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   }
 }
 
-// ─── Déclenchement capture MQTT ─────────────────────────────────────────────
+// ─── Déclenchement capture MQTT ──────────────────────────────────────────────
 
 async function publishCaptureTrigger(poulaillerId, requestId) {
-  if (!requestId) {
+  if (!requestId)
     throw new Error("[AI] publishCaptureTrigger : requestId requis");
-  }
   const Camera = require("../models/Camera");
   const camera = await Camera.findOne({
     poulailler: poulaillerId,
     status: "associated",
   });
-  if (!camera) {
-    throw new Error("Aucune caméra active associée à ce poulailler");
-  }
+  if (!camera) throw new Error("Aucune caméra active associée à ce poulailler");
   return publishCameraCommand(poulaillerId, requestId);
 }
 
@@ -1055,4 +1356,5 @@ module.exports = {
   extractFreshSensors,
   pendingImages,
   INTER_ANALYSIS_DELAY_MS,
+  MALADIES_AVIAIRES,
 };
