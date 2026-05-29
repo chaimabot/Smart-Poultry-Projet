@@ -204,11 +204,12 @@ async function assessImageQuality(base64) {
     );
 
     if (brightness < IMAGE_MIN_BRIGHTNESS) {
-      return {
-        usable: false,
-        severity: "hard",
-        reason: "image trop sombre",
-      };
+    return {
+      usable: false,
+      severity: "hard",
+      reason: "image trop sombre",
+      imageHasBiologicalContent: false,
+    };
     }
 
     if (brightness > IMAGE_MAX_BRIGHTNESS) {
@@ -219,6 +220,24 @@ async function assessImageQuality(base64) {
       };
     }
 
+    const sortedPixels = [...pixels].sort((a, b) => a - b);
+    const p10 = sortedPixels[Math.floor(n * 0.1)];
+    const p90 = sortedPixels[Math.floor(n * 0.9)];
+    const dynamicRange = p90 - p10;
+
+    // Détecter les images majoritairement blanches/uniformes (plafond, mur)
+    if (dynamicRange < 40) {
+      return {
+        usable: false,
+        severity: "hard",
+        reason: "image sans contenu exploitable (plafond ou surface unie)",
+        dynamicRange,
+        edgePercent,
+        brightness,
+        imageHasBiologicalContent: false,
+      };
+    }
+
     // FIX FLOU
     // Variance seule = FAUX POSITIFS
     if (variance < IMAGE_MIN_VARIANCE && edgePercent < IMAGE_MIN_EDGES) {
@@ -226,6 +245,10 @@ async function assessImageQuality(base64) {
         usable: true,
         severity: "soft",
         reason: "image probablement floue",
+        dynamicRange,
+        edgePercent,
+        brightness,
+        imageHasBiologicalContent: true,
       };
     }
 
@@ -233,6 +256,10 @@ async function assessImageQuality(base64) {
       usable: true,
       severity: "good",
       reason: "ok",
+      dynamicRange,
+      edgePercent,
+      brightness,
+      imageHasBiologicalContent: true,
     };
   } catch (err) {
     console.warn("[AI] assessImageQuality erreur:", err.message);
@@ -976,7 +1003,10 @@ function parseAIResponse(text, sensorData = {}) {
     }
 
     let comptage = null;
+    const imageHasBiologicalContent = !!sensorData?._imageMeta?.imageHasBiologicalContent;
+
     if (parsed.comptage && typeof parsed.comptage === "object") {
+
       const est = Number(parsed.comptage.estimation);
       const fiabilite = ["bonne", "moyenne", "faible"].includes(
         parsed.comptage.fiabilite,
@@ -991,11 +1021,20 @@ function parseAIResponse(text, sensorData = {}) {
       };
 
       // Annule le comptage si fiabilité faible
-      if (fiabilite === "faible") {
+    if (fiabilite === "faible") {
         console.warn("[AI] Comptage ignoré — fiabilité faible");
         comptage.estimation = null;
         comptage.note = "Comptage non fiable — image insuffisante";
       }
+
+      // Si comptage positif mais image majoritairement unie/sans contenu biologique
+      if (comptage?.estimation > 0 && !imageHasBiologicalContent) {
+        console.warn("[AI] Comptage annulé — aucun contenu biologique détecté");
+        comptage.estimation = null;
+        comptage.fiabilite = "faible";
+        comptage.note = "Image invalide — aucun oiseau détectable";
+      }
+
     }
 
     let maladie = null;
@@ -1159,6 +1198,16 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
     console.log(
       `[AI] Qualité image : ${quality.usable ? "✓ exploitable" : `✗ ${quality.reason}`}`,
     );
+
+    const enrichedSensorData = {
+      ...sensorData,
+      _imageMeta: {
+        dynamicRange: quality.dynamicRange ?? null,
+        edgePercent: quality.edgePercent ?? null,
+        brightness: quality.brightness ?? null,
+        imageHasBiologicalContent: !!quality.imageHasBiologicalContent,
+      },
+    };
 
     if (!quality.usable) {
       console.warn(
