@@ -536,8 +536,10 @@ OUTPUT THIS JSON EXACTLY:
 },
 
 DISEASE RULES:
-- If suspicion=true, signes_observes MUST NOT be empty — list at least 2 visible symptoms
-- If suspicion=true, maladie_probable MUST be filled with a disease name from the list
+// APRÈS
+- If suspicion=true, signes_observes MUST contain only symptoms CLEARLY VISIBLE in the image.
+- If you cannot find 2 real visible symptoms → set suspicion=false instead of inventing them.
+- Listing invented symptoms is a critical error. Zero symptoms = suspicion=false.- If suspicion=true, maladie_probable MUST be filled with a disease name from the list
 - Match symptoms to the most likely disease from the KNOWN POULTRY DISEASES list
   "advices": [
     "<practical advice 1>",
@@ -555,21 +557,20 @@ CRITICAL ANALYSIS RULES:
 - This chicken shows: hunched posture, ruffled feathers, lowered head, yellow legs — these ARE symptoms
 - If the bird is NOT standing straight and alert = behaviorNormal MUST be false
 - If you write "semble malade" or "un peu malade" in diagnostic = suspicion MUST be true
-- NEVER contradict yourself: if diagnostic mentions illness, suspicion cannot be false
-- Be a veterinarian, not a reassurer — report what you SEE, not what you hope
+- NEVER invent illness to match suspicion. If the bird looks healthy, write it and set suspicion=false.
+- A bird that is standing, alert, moving normally IS healthy. Do NOT call it sick.
+- Only set suspicion=true if you see CLEAR, UNAMBIGUOUS visual evidence in the image.- Be a veterinarian, not a reassurer — report what you SEE, not what you hope
 
-VISIBLE SYMPTOMS TO CHECK:
-- Ruffled/dirty feathers → "plumes ébouriffées"
-- Hunched/crouched posture → "posture voûtée"  
-- Head down or twisted → "tête baissée"
-- Eyes closed or half-closed → "yeux mi-clos"
-- Yellow/pale comb → "crête pâle"
-- Labored breathing → "difficultés respiratoires"
-- Swollen face/eyes → "gonflement facial"
-- Dirty vent → "cloaque souillé"
-- Not moving → "prostration"
-
-If you observe ANY of these → suspicion=true + list them in signes_observes
+// APRÈS — exige une observation certaine, interdit l'invention
+VISIBLE SYMPTOMS — STRICT RULES:
+- ONLY report symptoms you can CLEARLY and UNAMBIGUOUSLY see in THIS image.
+- If a bird is standing upright and moving normally → behaviorNormal=true, posture is NOT voûtée.
+- If feathers appear smooth and flat → they are NOT ébouriffées.
+- NEVER invent symptoms to justify suspicion=true.
+- If you are not 100% certain a symptom is present → do NOT list it.
+- "posture voûtée" = bird body bent forward, head lower than chest, visibly drooping. Upright = NOT voûtée.
+- "plumes ébouriffées" = feathers visibly puffed out, standing up, disheveled. Normal feathers = NOT ébouriffées.
+- If no symptom is clearly visible → suspicion=false, signes_observes=[], maladie_probable=null.
 NOW ANALYZE THE IMAGE AND RESPOND WITH JSON ONLY.`.trim();
 }
 
