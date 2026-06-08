@@ -19,14 +19,14 @@ async function updateLampe(id, mode, action) {
 
   console.log(`[lampeService] Update:`, { id, mode, action });
 
-  // ✅ Détecter AUTO → MANUEL
+  //   Détecter AUTO → MANUEL
   const previousMode = poulailler.actuatorStates.lamp.mode;
   const isAutoToManual = previousMode === "auto" && mode === "manual";
 
   poulailler.actuatorStates.lamp.mode = mode;
 
   if (isAutoToManual) {
-    console.log(`[lampeService] 🛑 AUTO → MANUEL : arrêt forcé`);
+    console.log(`[lampeService]    AUTO → MANUEL : arrêt forcé`);
     poulailler.actuatorStates.lamp.status = "off";
     poulailler.actuatorStates.lamp.lastAutoReason = "";
   } else if (mode === "manual") {
@@ -38,7 +38,7 @@ async function updateLampe(id, mode, action) {
 
   await poulailler.save();
   console.log(
-    `[lampeService] ✅ BD: mode=${mode}, status=${poulailler.actuatorStates.lamp.status}`,
+    `[lampeService]   BD: mode=${mode}, status=${poulailler.actuatorStates.lamp.status}`,
   );
 
   const client = getMqttClient();
@@ -49,14 +49,14 @@ async function updateLampe(id, mode, action) {
   const macAddress = await getMacAddress(id);
   const topic = `poulailler/${macAddress}/cmd/lamp`;
 
-  // ✅ Si AUTO → MANUEL : forcer OFF
+  //   Si AUTO → MANUEL : forcer OFF
   if (isAutoToManual) {
     const payload = JSON.stringify({ on: false, mode: "manual" });
     client.publish(topic, payload, { qos: 1 }, (err) => {
       if (err) {
         console.error("[lampeService] ❌ Erreur:", err.message);
       } else {
-        console.log(`[lampeService] ✅ Arrêt forcé: ${topic} → ${payload}`);
+        console.log(`[lampeService]   Arrêt forcé: ${topic} → ${payload}`);
       }
     });
   } else {
@@ -69,7 +69,7 @@ async function updateLampe(id, mode, action) {
       if (err) {
         console.error("[lampeService] ❌ Erreur:", err.message);
       } else {
-        console.log(`[lampeService] ✅ MQTT: ${topic} → ${payload}`);
+        console.log(`[lampeService]   MQTT: ${topic} → ${payload}`);
       }
     });
   }
@@ -99,7 +99,7 @@ async function updateLampe(id, mode, action) {
   return poulailler;
 }
 
-// ✅ Compatibilité : ancien controller utilise sendLampCommand
+//   Compatibilité : ancien controller utilise sendLampCommand
 // Ce projet a une seule fonction métier updateLampe.
 const sendLampCommand = updateLampe;
 

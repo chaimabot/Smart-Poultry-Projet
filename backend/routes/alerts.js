@@ -25,12 +25,12 @@ router.post("/read", markAsRead);
 router.post("/", createAlert);
 
 // ── PATCH ─────────────────────────────────────────────────────────────────────
-// ⚠️ /bulk/read DOIT être avant /:id/read pour éviter que "bulk" soit interprété comme un ID
+//    /bulk/read DOIT être avant /:id/read pour éviter que "bulk" soit interprété comme un ID
 router.patch("/bulk/read", markBulkAsRead);
 router.patch("/:id/read", markOneAsRead);
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
-// ⚠️ /bulk DOIT être avant /:id pour la même raison
+//    /bulk DOIT être avant /:id pour la même raison
 router.delete("/bulk", deleteBulkAlerts);
 router.delete("/:id", deleteOneAlert);
 router.delete("/", deleteReadAlerts);

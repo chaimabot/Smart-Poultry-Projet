@@ -7,7 +7,7 @@
  *   • Actionneurs (ventilateur, lampe)
  *   • MQTT (connexion / déconnexion)
  *
- * ✅ Comparaison intelligente : ignore les décimales pour éviter les doublons
+ *   Comparaison intelligente : ignore les décimales pour éviter les doublons
  *    Ex: 54.2 puis 54.5 = pas de nouvelle alerte (même entier 54)
  *    Ex: 54.9 puis 55.1 = nouvelle alerte (entier différent 54 vs 55)
  */
@@ -136,7 +136,7 @@ const purgeExpiredCache = () => {
 };
 
 /**
- * ✅ MODIFIÉ : Vérifie si on doit créer une alerte
+ *   MODIFIÉ : Vérifie si on doit créer une alerte
  * Pour les capteurs : compare les valeurs entières (ignore les décimales)
  */
 const shouldCreateAlert = (poultryId, type, key, severity, newValue = null) => {
@@ -169,7 +169,7 @@ const shouldCreateAlert = (poultryId, type, key, severity, newValue = null) => {
 };
 
 /**
- * ✅ MODIFIÉ : Stocke l'alerte dans le cache avec sa valeur
+ *   MODIFIÉ : Stocke l'alerte dans le cache avec sa valeur
  */
 const cacheAlert = (
   poultryId,
@@ -532,7 +532,7 @@ const createDoorAlert = async (poultryId, eventKey, triggeredBy = "manual") => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. ALERTES ACTIONNEURS
-// ✅ MODIFIÉ : Accepte un paramètre `reason` pour enregistrer pourquoi l'action a eu lieu
+//   MODIFIÉ : Accepte un paramètre `reason` pour enregistrer pourquoi l'action a eu lieu
 // ─────────────────────────────────────────────────────────────────────────────
 const createActuatorAlert = async (
   poultryId,
@@ -645,8 +645,6 @@ const createActuatorAlert = async (
   }
 };
 
-
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 5. RÉSOLUTION D'ALERTES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -663,7 +661,7 @@ const resolveAlerts = async (poultryId, parameter) => {
       { resolvedAt: new Date(), read: true },
     );
 
-    // ✅ Nettoyer le cache pour ce paramètre
+    //   Nettoyer le cache pour ce paramètre
     for (const sev of ["warn", "danger"]) {
       alertCache.delete(getCacheKey(poultryId, "sensor", parameter, sev));
     }

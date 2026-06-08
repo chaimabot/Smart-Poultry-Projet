@@ -41,7 +41,7 @@ const pompeService = {
     }
 
     if (isAutoToManual) {
-      console.log(`[pompeService] 🛑 AUTO → MANUEL : ARRÊT FORCÉ`);
+      console.log(`[pompeService]    AUTO → MANUEL : ARRÊT FORCÉ`);
       poulailler.actuatorStates.pump.status = "off";
       poulailler.actuatorStates.pump.lastAutoReason = "";
     } else if (!changeModeOnly && action) {
@@ -53,7 +53,7 @@ const pompeService = {
 
     await poulailler.save();
     console.log(
-      `[pompeService] ✅ BD: mode=${poulailler.actuatorStates.pump.mode}, status=${poulailler.actuatorStates.pump.status}`,
+      `[pompeService]   BD: mode=${poulailler.actuatorStates.pump.mode}, status=${poulailler.actuatorStates.pump.status}`,
     );
 
     // Envoi MQTT
@@ -67,16 +67,16 @@ const pompeService = {
 
     if (isAutoToManual) {
       const payload = JSON.stringify({ on: false, mode: "manual" });
-      console.log(`[pompeService] 🛑 Envoi ARRÊT FORCÉ: ${topic} → ${payload}`);
+      console.log(`[pompeService]    Envoi ARRÊT FORCÉ: ${topic} → ${payload}`);
 
-      // ✅ Marquer commande manuelle pour bloquer les status pendant 3s
+      //   Marquer commande manuelle pour bloquer les status pendant 3s
       markManualCommand(macAddress, "pump");
 
       client.publish(topic, payload, { qos: 1 }, (err) => {
         if (err) {
           console.error(`[pompeService] ❌ Erreur:`, err.message);
         } else {
-          console.log(`[pompeService] ✅ Arrêt forcé envoyé`);
+          console.log(`[pompeService]   Arrêt forcé envoyé`);
         }
       });
     } else if (!changeModeOnly && action) {
@@ -86,7 +86,7 @@ const pompeService = {
       });
       console.log(`[pompeService] 📤 ${topic} → ${payload}`);
 
-      // ✅ Marquer commande manuelle
+      //   Marquer commande manuelle
       if (mode === "manual") {
         markManualCommand(macAddress, "pump");
       }
@@ -95,7 +95,7 @@ const pompeService = {
         if (err) {
           console.error(`[pompeService] ❌ Erreur:`, err.message);
         } else {
-          console.log(`[pompeService] ✅ MQTT envoyé`);
+          console.log(`[pompeService]   MQTT envoyé`);
         }
       });
     }

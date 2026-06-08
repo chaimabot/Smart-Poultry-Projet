@@ -53,7 +53,7 @@ router.put("/:id/thresholds", updateThresholds);
 router.post("/:id/thresholds/reset", resetThresholds);
 router.get("/:id/current-measures", getCurrentMeasures);
 
-// ✅ Nouvelles routes
+//   Nouvelles routes
 router.get("/:id/monitoring", getMonitoringData); // Monitoring complet + historique 24h
 router.patch("/:id/actuators", controlActuator); // Contrôle porte / ventilation
 router.get("/:id/history", getMeasureHistory); // Historique par capteur et période

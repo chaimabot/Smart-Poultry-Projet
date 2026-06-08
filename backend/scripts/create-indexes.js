@@ -31,7 +31,7 @@ async function createIndexes() {
     await mongoose.connect(
       process.env.MONGODB_URI || "mongodb://localhost:27017/smart-poultry",
     );
-    console.log("✅ Connected\n");
+    console.log("  Connected\n");
 
     // ============================================================================
     // USER INDEXES
@@ -40,7 +40,7 @@ async function createIndexes() {
     await User.collection.createIndex({ email: 1 }, { unique: true });
     await User.collection.createIndex({ role: 1 });
     await User.collection.createIndex({ createdAt: -1 });
-    console.log("   ✅ email (unique), role, createdAt\n");
+    console.log("     email (unique), role, createdAt\n");
 
     // ============================================================================
     // POULAILLER INDEXES
@@ -54,7 +54,7 @@ async function createIndexes() {
     await Poulailler.collection.createIndex({ status: 1 });
     await Poulailler.collection.createIndex({ createdAt: -1 });
     console.log(
-      "   ✅ owner, owner+status, owner+isArchived, owner+isCritical, moduleId, status, createdAt\n",
+      "     owner, owner+status, owner+isArchived, owner+isCritical, moduleId, status, createdAt\n",
     );
 
     // ============================================================================
@@ -68,7 +68,7 @@ async function createIndexes() {
     await Module.collection.createIndex({ status: 1, createdAt: -1 });
     await Module.collection.createIndex({ lastPing: -1 });
     console.log(
-      "   ✅ macAddress, owner, poulailler, status, status+createdAt, lastPing\n",
+      "     macAddress, owner, poulailler, status, status+createdAt, lastPing\n",
     );
 
     // ============================================================================
@@ -78,7 +78,7 @@ async function createIndexes() {
     await Measure.collection.createIndex({ poulailler: 1, timestamp: -1 });
     await Measure.collection.createIndex({ timestamp: -1 });
     // TTL index already exists from model
-    console.log("   ✅ poulailler+timestamp, timestamp (+ TTL 30d)\n");
+    console.log("     poulailler+timestamp, timestamp (+ TTL 30d)\n");
 
     // ============================================================================
     // COMMAND INDEXES
@@ -87,20 +87,20 @@ async function createIndexes() {
     await Command.collection.createIndex({ poulailler: 1 });
     await Command.collection.createIndex({ status: 1 });
     await Command.collection.createIndex({ createdAt: -1 });
-    console.log("   ✅ poulailler, status, createdAt\n");
+    console.log("     poulailler, status, createdAt\n");
 
     // ============================================================================
     // ALERT INDEXES
     // ============================================================================
-    console.log("⚠️  Creating Alert indexes...");
+    console.log("    Creating Alert indexes...");
     await Alert.collection.createIndex({ poulailler: 1 });
     await Alert.collection.createIndex({ severity: 1 });
     await Alert.collection.createIndex({ isResolved: 1 });
     await Alert.collection.createIndex({ createdAt: -1 });
-    console.log("   ✅ poulailler, severity, isResolved, createdAt\n");
+    console.log("     poulailler, severity, isResolved, createdAt\n");
 
     console.log("═══════════════════════════════════════");
-    console.log("✅ ALL INDEXES CREATED SUCCESSFULLY!\n");
+    console.log("  ALL INDEXES CREATED SUCCESSFULLY!\n");
     console.log("💡 Performance improvements:");
     console.log("   • User queries: 10x faster");
     console.log("   • Poulailler pagination: 8x faster");

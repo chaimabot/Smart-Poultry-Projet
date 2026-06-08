@@ -21,16 +21,34 @@ const IMAGE_MIN_VARIANCE = 80;
 const SENSOR_STALE_MS = 10 * 60 * 1000;
 
 if (USE_CLOUDFLARE) {
-  console.log(`[AI] Cloudflare ENABLED - Account: ${_CF_ACCOUNT_ID.substring(0, 8)}...`);
+  console.log(
+    `[AI] Cloudflare ENABLED - Account: ${_CF_ACCOUNT_ID.substring(0, 8)}...`,
+  );
   console.log(`[AI] Models: Llama Vision, Gemma 3`);
 } else {
-  console.warn("[AI] ⚠️  Cloudflare DISABLED - Using sensor-only fallback mode");
-  console.warn("[AI] Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .env to enable AI");
+  console.warn(
+    "[AI]     Cloudflare DISABLED - Using sensor-only fallback mode",
+  );
+  console.warn(
+    "[AI] Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN in .env to enable AI",
+  );
 }
 
 const DEATH_KEYWORDS = [
-  "décédé", "décès", "mort", "morte", "morts", "mortes", "mortalité",
-  "oiseau mort", "volaille morte", "cadavre", "dead", "death", "mortality", "deceased",
+  "décédé",
+  "décès",
+  "mort",
+  "morte",
+  "morts",
+  "mortes",
+  "mortalité",
+  "oiseau mort",
+  "volaille morte",
+  "cadavre",
+  "dead",
+  "death",
+  "mortality",
+  "deceased",
 ];
 
 const MALADIES_AVIAIRES = [
@@ -93,12 +111,14 @@ function isValidSensorValue(value, min = 0, max = 100) {
 
 function extractFreshSensors(poulailler) {
   const monitoring = poulailler?.lastMonitoring;
-  const timestamp = monitoring?.timestamp ? new Date(monitoring.timestamp).getTime() : 0;
+  const timestamp = monitoring?.timestamp
+    ? new Date(monitoring.timestamp).getTime()
+    : 0;
   const isFresh = timestamp > 0 && Date.now() - timestamp < SENSOR_STALE_MS;
 
   if (!isFresh) {
     console.log(
-      `[AI] Capteurs obsolètes/absents (timestamp: ${timestamp ? new Date(timestamp).toISOString() : "jamais"}) — toutes valeurs nullifiées`
+      `[AI] Capteurs obsolètes/absents (timestamp: ${timestamp ? new Date(timestamp).toISOString() : "jamais"}) — toutes valeurs nullifiées`,
     );
     return {
       temperature: null,
@@ -118,7 +138,9 @@ function extractFreshSensors(poulailler) {
     return n;
   };
 
-  console.log(`[AI] Capteurs frais ✓ (timestamp: ${new Date(timestamp).toISOString()})`);
+  console.log(
+    `[AI] Capteurs frais ✓ (timestamp: ${new Date(timestamp).toISOString()})`,
+  );
 
   return {
     temperature: safeNumber(monitoring.temperature, -10, 60),
@@ -148,14 +170,17 @@ async function assessImageQuality(base64) {
     const n = pixels.length;
 
     const brightness = pixels.reduce((sum, p) => sum + p, 0) / n;
-    const variance = pixels.reduce((sum, p) => sum + Math.pow(p - brightness, 2), 0) / n;
+    const variance =
+      pixels.reduce((sum, p) => sum + Math.pow(p - brightness, 2), 0) / n;
 
     let edges = 0;
     for (let y = 1; y < info.height - 1; y++) {
       for (let x = 1; x < info.width - 1; x++) {
         const idx = y * info.width + x;
         const gx = Math.abs(pixels[idx - 1] - pixels[idx + 1]);
-        const gy = Math.abs(pixels[idx - info.width] - pixels[idx + info.width]);
+        const gy = Math.abs(
+          pixels[idx - info.width] - pixels[idx + info.width],
+        );
         if (gx + gy > 35) edges++;
       }
     }
@@ -163,7 +188,7 @@ async function assessImageQuality(base64) {
     const edgePercent = (edges / n) * 100;
 
     console.log(
-      `[AI] Qualité image — brightness=${brightness.toFixed(1)} variance=${variance.toFixed(1)} edges=${edgePercent.toFixed(1)}%`
+      `[AI] Qualité image — brightness=${brightness.toFixed(1)} variance=${variance.toFixed(1)} edges=${edgePercent.toFixed(1)}%`,
     );
 
     if (brightness < IMAGE_MIN_BRIGHTNESS) {
@@ -262,18 +287,25 @@ async function compressImage(base64, maxKb = LLAVA_MAX_KB) {
         .jpeg({ quality, mozjpeg: true })
         .toBuffer();
       const kb = compressed.length / 1024;
-      console.log(`[AI] Compression tentative ${i + 1} : ${Math.round(kb)} Ko (qualité ${quality}, largeur ${width})`);
+      console.log(
+        `[AI] Compression tentative ${i + 1} : ${Math.round(kb)} Ko (qualité ${quality}, largeur ${width})`,
+      );
       if (kb <= maxKb) {
         console.log(`[AI] Image compressée OK : ${Math.round(kb)} Ko`);
         return compressed.toString("base64");
       }
       lastCompressed = compressed;
     } catch (err) {
-      console.warn(`[AI] Compression tentative ${i + 1} échouée :`, err.message);
+      console.warn(
+        `[AI] Compression tentative ${i + 1} échouée :`,
+        err.message,
+      );
     }
   }
 
-  console.warn("[AI] Limite de compression atteinte — envoi du meilleur résultat");
+  console.warn(
+    "[AI] Limite de compression atteinte — envoi du meilleur résultat",
+  );
   return lastCompressed.toString("base64");
 }
 
@@ -285,37 +317,57 @@ function buildSensorAdvices(sensorData = {}) {
 
   if (isValidSensorValue(airQualityPercent, 0, 100)) {
     if (airQualityPercent < 20) {
-      advices.push("Ventilation insuffisante — augmentez immédiatement le débit d'air du poulailler.");
+      advices.push(
+        "Ventilation insuffisante — augmentez immédiatement le débit d'air du poulailler.",
+      );
     } else if (airQualityPercent < 40) {
-      advices.push("Qualité de l'air dégradée — vérifiez les extracteurs et l'aération des parois.");
+      advices.push(
+        "Qualité de l'air dégradée — vérifiez les extracteurs et l'aération des parois.",
+      );
     }
   }
 
   if (isValidSensorValue(temperature, -10, 60)) {
     if (temperature > 31) {
-      advices.push("Température excessive — activez le refroidissement et augmentez la ventilation en urgence.");
+      advices.push(
+        "Température excessive — activez le refroidissement et augmentez la ventilation en urgence.",
+      );
     } else if (temperature > 28) {
-      advices.push("Température légèrement élevée — surveillez le confort thermique des volailles et l'hydratation.");
+      advices.push(
+        "Température légèrement élevée — surveillez le confort thermique des volailles et l'hydratation.",
+      );
     } else if (temperature < 15) {
-      advices.push("Température trop basse — vérifiez le système de chauffage et l'isolation du bâtiment.");
+      advices.push(
+        "Température trop basse — vérifiez le système de chauffage et l'isolation du bâtiment.",
+      );
     } else if (temperature < 18) {
-      advices.push("Température en dessous de la plage optimale — contrôlez le chauffage d'appoint.");
+      advices.push(
+        "Température en dessous de la plage optimale — contrôlez le chauffage d'appoint.",
+      );
     }
   }
 
   if (isValidSensorValue(humidity, 0, 100)) {
     if (humidity > 80) {
-      advices.push("Humidité excessive — risque bactérien élevé, améliorez la ventilation et changez la litière.");
+      advices.push(
+        "Humidité excessive — risque bactérien élevé, améliorez la ventilation et changez la litière.",
+      );
     } else if (humidity < 30) {
-      advices.push("Humidité insuffisante — vérifiez les abreuvoirs et envisagez une brumisation légère.");
+      advices.push(
+        "Humidité insuffisante — vérifiez les abreuvoirs et envisagez une brumisation légère.",
+      );
     }
   }
 
   if (isValidSensorValue(waterLevel, 1, 100)) {
     if (waterLevel < 20) {
-      advices.push("Niveau d'abreuvement critique — remplissez les abreuvoirs immédiatement.");
+      advices.push(
+        "Niveau d'abreuvement critique — remplissez les abreuvoirs immédiatement.",
+      );
     } else if (waterLevel < 40) {
-      advices.push("Niveau d'abreuvement bas — planifiez un remplissage dans les prochaines heures.");
+      advices.push(
+        "Niveau d'abreuvement bas — planifiez un remplissage dans les prochaines heures.",
+      );
     }
   }
 
@@ -326,12 +378,18 @@ function buildSensorAdvices(sensorData = {}) {
     isValidSensorValue(waterLevel, 1, 100);
 
   if (advices.length === 0 && hasAnyValid) {
-    advices.push("Paramètres environnementaux dans les plages normales — maintenez la surveillance habituelle.");
+    advices.push(
+      "Paramètres environnementaux dans les plages normales — maintenez la surveillance habituelle.",
+    );
   }
 
   if (advices.length === 0) {
-    advices.push("Aucune donnée capteur disponible — vérifiez la connexion du module de surveillance.");
-    advices.push("Repositionnez la caméra ESP32 pour obtenir une image exploitable lors de la prochaine analyse.");
+    advices.push(
+      "Aucune donnée capteur disponible — vérifiez la connexion du module de surveillance.",
+    );
+    advices.push(
+      "Repositionnez la caméra ESP32 pour obtenir une image exploitable lors de la prochaine analyse.",
+    );
   }
 
   return advices;
@@ -355,11 +413,16 @@ function analyzeWithSensorsOnly(sensorData = {}) {
     return {
       healthScore: null,
       urgencyLevel: "inconnu",
-      diagnostic: "Aucune donnée capteur ni image disponible. Vérifiez la connexion du module de surveillance et de la caméra.",
+      diagnostic:
+        "Aucune donnée capteur ni image disponible. Vérifiez la connexion du module de surveillance et de la caméra.",
       confidence: 0,
       imageAvailable: false,
       imageUsable: false,
-      detections: { mortalityDetected: null, behaviorNormal: null, nombreMorts: null },
+      detections: {
+        mortalityDetected: null,
+        behaviorNormal: null,
+        nombreMorts: null,
+      },
       comptage: null,
       maladie_suspectee: null,
       advices: buildSensorAdvices(sensorData),
@@ -372,28 +435,51 @@ function analyzeWithSensorsOnly(sensorData = {}) {
   const issues = [];
 
   if (isValidSensorValue(airQuality, 0, 100)) {
-    if (airQuality < 20) { score -= 40; urgency = "critique"; issues.push("qualité d'air critique"); }
-    else if (airQuality < 40) { score -= 20; if (urgency !== "critique") urgency = "attention"; issues.push("qualité d'air dégradée"); }
+    if (airQuality < 20) {
+      score -= 40;
+      urgency = "critique";
+      issues.push("qualité d'air critique");
+    } else if (airQuality < 40) {
+      score -= 20;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("qualité d'air dégradée");
+    }
   }
 
   if (isValidSensorValue(temperature, -10, 60)) {
-    if (temperature > 31) { score -= 20; urgency = "critique"; issues.push("surchauffe détectée"); }
-    else if (temperature < 15) { score -= 15; if (urgency !== "critique") urgency = "attention"; issues.push("température trop basse"); }
+    if (temperature > 31) {
+      score -= 20;
+      urgency = "critique";
+      issues.push("surchauffe détectée");
+    } else if (temperature < 15) {
+      score -= 15;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("température trop basse");
+    }
   }
 
   if (isValidSensorValue(waterLevel, 1, 100)) {
-    if (waterLevel < 20) { score -= 15; if (urgency !== "critique") urgency = "attention"; issues.push("niveau d'abreuvement insuffisant"); }
+    if (waterLevel < 20) {
+      score -= 15;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("niveau d'abreuvement insuffisant");
+    }
   }
 
   if (isValidSensorValue(humidity, 0, 100)) {
-    if (humidity > 80) { score -= 10; if (urgency !== "critique") urgency = "attention"; issues.push("humidité excessive"); }
+    if (humidity > 80) {
+      score -= 10;
+      if (urgency !== "critique") urgency = "attention";
+      issues.push("humidité excessive");
+    }
   }
 
   score = Math.max(0, Math.min(100, score));
 
-  const diagnostic = issues.length > 0
-    ? `Anomalies environnementales détectées : ${issues.join(", ")}. Évaluation visuelle indisponible — image absente ou inexploitable.`
-    : "Paramètres environnementaux dans les plages normales. Évaluation visuelle indisponible — relancez une analyse avec image.";
+  const diagnostic =
+    issues.length > 0
+      ? `Anomalies environnementales détectées : ${issues.join(", ")}. Évaluation visuelle indisponible — image absente ou inexploitable.`
+      : "Paramètres environnementaux dans les plages normales. Évaluation visuelle indisponible — relancez une analyse avec image.";
 
   return {
     healthScore: score,
@@ -402,7 +488,11 @@ function analyzeWithSensorsOnly(sensorData = {}) {
     confidence: 50,
     imageAvailable: false,
     imageUsable: false,
-    detections: { mortalityDetected: null, behaviorNormal: null, nombreMorts: null },
+    detections: {
+      mortalityDetected: null,
+      behaviorNormal: null,
+      nombreMorts: null,
+    },
     comptage: null,
     maladie_suspectee: null,
     advices: buildSensorAdvices(sensorData),
@@ -416,14 +506,19 @@ function buildPoorImageResult(sensorData = {}, reason = "image floue") {
   const sensorResult = analyzeWithSensorsOnly(sensorData);
 
   const reasonMessages = {
-    "aucun oiseau détectable dans l'image": "La caméra ne filme pas les volailles — repositionnez-la.",
-    "image trop sombre": "Image trop sombre — vérifiez l'éclairage du poulailler.",
+    "aucun oiseau détectable dans l'image":
+      "La caméra ne filme pas les volailles — repositionnez-la.",
+    "image trop sombre":
+      "Image trop sombre — vérifiez l'éclairage du poulailler.",
     "image surexposée": "Image surexposée — vérifiez l'objectif de la caméra.",
-    "image sans contenu exploitable (plafond ou surface unie)": "La caméra filme le plafond ou un mur — repositionnez-la vers les volailles.",
-    "image probablement floue": "Image floue — nettoyez l'objectif de la caméra ESP32.",
+    "image sans contenu exploitable (plafond ou surface unie)":
+      "La caméra filme le plafond ou un mur — repositionnez-la vers les volailles.",
+    "image probablement floue":
+      "Image floue — nettoyez l'objectif de la caméra ESP32.",
   };
 
-  const diagnosticPrefix = reasonMessages[reason] ?? `Image inexploitable (${reason}).`;
+  const diagnosticPrefix =
+    reasonMessages[reason] ?? `Image inexploitable (${reason}).`;
 
   const hasAnyValid =
     isValidSensorValue(sensorData.temperature, -10, 60) ||
@@ -548,11 +643,15 @@ NOW ANALYZE THE IMAGE AND RESPOND WITH JSON ONLY.`.trim();
 
 function buildSystemPrompt(context) {
   const sensors = [
-    context.temperature != null ? `Température : ${context.temperature}°C` : null,
+    context.temperature != null
+      ? `Température : ${context.temperature}°C`
+      : null,
     context.humidity != null ? `Humidité : ${context.humidity}%` : null,
     context.airQuality != null ? `Qualité air : ${context.airQuality}%` : null,
     context.waterLevel != null ? `Niveau eau : ${context.waterLevel}%` : null,
-  ].filter(Boolean).join(", ");
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   return `Tu es un assistant vétérinaire expert en élevage de volailles.
 Réponds en français, de manière claire et concise (maximum 3 phrases).
@@ -588,7 +687,10 @@ async function callCloudflare(model, payload, timeout) {
     });
 
     console.log("[CF CALL] ✓ Success");
-    console.log("[CF RESPONSE]", JSON.stringify(response.data).substring(0, 500));
+    console.log(
+      "[CF RESPONSE]",
+      JSON.stringify(response.data).substring(0, 500),
+    );
 
     let result =
       response.data?.result?.response ||
@@ -607,7 +709,10 @@ async function callCloudflare(model, payload, timeout) {
     console.error(`\n[CF ERROR] Status: ${status} ${statusText}`);
 
     if (err.response?.data) {
-      console.error("[CF ERROR DATA]", JSON.stringify(err.response.data, null, 2));
+      console.error(
+        "[CF ERROR DATA]",
+        JSON.stringify(err.response.data, null, 2),
+      );
     } else {
       console.error("[CF ERROR]", err.message);
     }
@@ -627,19 +732,25 @@ async function acceptLlamaLicense() {
 
   try {
     console.log("[AI] Accepting Llama license...");
-    await axios.post(url, { prompt: "agree" }, {
-      headers: {
-        Authorization: `Bearer ${_CF_API_TOKEN}`,
-        "Content-Type": "application/json",
+    await axios.post(
+      url,
+      { prompt: "agree" },
+      {
+        headers: {
+          Authorization: `Bearer ${_CF_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 10000,
       },
-      timeout: 10000,
-    });
+    );
     console.log("[AI] Llama license accepted");
     return true;
   } catch (err) {
     if (err.response?.status === 403) {
       console.warn("[AI] License must be accepted in Cloudflare dashboard:");
-      console.warn("   https://dash.cloudflare.com → Workers AI → Models → Llama 3.2");
+      console.warn(
+        "   https://dash.cloudflare.com → Workers AI → Models → Llama 3.2",
+      );
     }
     return false;
   }
@@ -650,8 +761,10 @@ async function acceptLlamaLicense() {
 function normalizeUrgency(value) {
   if (!value) return "normal";
   const v = value.toString().toLowerCase();
-  if (v.includes("critical") || v.includes("critique") || v === "high") return "critique";
-  if (v.includes("attention") || v.includes("medium") || v.includes("warning")) return "attention";
+  if (v.includes("critical") || v.includes("critique") || v === "high")
+    return "critique";
+  if (v.includes("attention") || v.includes("medium") || v.includes("warning"))
+    return "attention";
   return "normal";
 }
 
@@ -683,13 +796,20 @@ function extractJsonCandidate(text) {
     const ch = stripped[i];
 
     if (inString) {
-      if (escape) { escape = false; }
-      else if (ch === "\\") { escape = true; }
-      else if (ch === '"') { inString = false; }
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
       continue;
     }
 
-    if (ch === '"') { inString = true; continue; }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
     if (ch === "{") depth++;
     if (ch === "[") arrayDepth++;
     if (ch === "]") arrayDepth--;
@@ -700,15 +820,24 @@ function extractJsonCandidate(text) {
   }
 
   if (depth > 0) {
-    console.warn(`[AI] JSON tronqué détecté (profondeur objet: ${depth}, tableau: ${arrayDepth}) — tentative de réparation`);
+    console.warn(
+      `[AI] JSON tronqué détecté (profondeur objet: ${depth}, tableau: ${arrayDepth}) — tentative de réparation`,
+    );
     const lines = stripped.slice(firstBrace).split("\n");
 
     while (lines.length > 1) {
       const last = lines[lines.length - 1].trim();
       const isComplete =
-        last.endsWith(",") || last.endsWith('"') ||
-        last.endsWith("}") || last.endsWith("]") || last === "";
-      if (!isComplete) { lines.pop(); } else { break; }
+        last.endsWith(",") ||
+        last.endsWith('"') ||
+        last.endsWith("}") ||
+        last.endsWith("]") ||
+        last === "";
+      if (!isComplete) {
+        lines.pop();
+      } else {
+        break;
+      }
     }
 
     let rebuilt = lines.join("\n").replace(/,\s*$/, "");
@@ -733,7 +862,10 @@ function tryRepairJsonLike(text) {
 
   cleaned = cleaned.replace(/,\s*(\})/g, "$1");
   cleaned = cleaned.replace(/,\s*(\])/g, "$1");
-  cleaned = cleaned.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":');
+  cleaned = cleaned.replace(
+    /([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g,
+    '$1"$2":',
+  );
 
   return cleaned;
 }
@@ -744,7 +876,10 @@ function parseAIResponse(text, sensorData = {}) {
   try {
     const candidate0 = extractJsonCandidate(text);
     if (!candidate0) {
-      console.warn("[AI] Réponse IA non-JSON — fallback capteurs", text.substring(0, 150));
+      console.warn(
+        "[AI] Réponse IA non-JSON — fallback capteurs",
+        text.substring(0, 150),
+      );
       return buildPoorImageResult(sensorData, "modèle a renvoyé du texte");
     }
 
@@ -752,17 +887,25 @@ function parseAIResponse(text, sensorData = {}) {
     const parsed = JSON.parse(candidate);
 
     if (parsed.imageUsable === false) {
-      console.warn("[AI] Modèle signale image inexploitable via imageUsable=false");
+      console.warn(
+        "[AI] Modèle signale image inexploitable via imageUsable=false",
+      );
       return {
         ...analyzeWithSensorsOnly(sensorData),
-        diagnostic: parsed.diagnostic || "Image inexploitable selon le modèle IA.",
+        diagnostic:
+          parsed.diagnostic || "Image inexploitable selon le modèle IA.",
         imageAvailable: true,
         imageUsable: false,
-        imageQuality: { sizeKb: 0, status: "poor", reason: "signalé par le modèle" },
+        imageQuality: {
+          sizeKb: 0,
+          status: "poor",
+          reason: "signalé par le modèle",
+        },
       };
     }
 
-    let healthScore = typeof parsed.healthScore === "number" ? parsed.healthScore : 70;
+    let healthScore =
+      typeof parsed.healthScore === "number" ? parsed.healthScore : 70;
     healthScore = Math.max(0, Math.min(100, healthScore));
     let urgencyLevel = normalizeUrgency(parsed.urgencyLevel);
 
@@ -771,13 +914,16 @@ function parseAIResponse(text, sensorData = {}) {
     const waterLevel = sensorData.waterLevel ?? null;
 
     const sensorsNormal =
-      (!isValidSensorValue(temperature, -10, 60) || (temperature >= 18 && temperature <= 28)) &&
+      (!isValidSensorValue(temperature, -10, 60) ||
+        (temperature >= 18 && temperature <= 28)) &&
       (!isValidSensorValue(airQuality, 0, 100) || airQuality >= 40) &&
       (!isValidSensorValue(waterLevel, 1, 100) || waterLevel >= 20);
 
-    const criticalSensors = isValidSensorValue(airQuality, 0, 100) && airQuality < 20;
+    const criticalSensors =
+      isValidSensorValue(airQuality, 0, 100) && airQuality < 20;
     const warningSensors =
-      (isValidSensorValue(temperature, -10, 60) && (temperature < 15 || temperature > 31)) ||
+      (isValidSensorValue(temperature, -10, 60) &&
+        (temperature < 15 || temperature > 31)) ||
       (isValidSensorValue(waterLevel, 1, 100) && waterLevel < 20);
 
     let mortalityDetected = parsed.detections?.mortalityDetected ?? null;
@@ -787,8 +933,10 @@ function parseAIResponse(text, sensorData = {}) {
       const n = Number(nombreMorts);
       if (Number.isFinite(n) && n >= 0) {
         nombreMorts = Math.round(n);
-        if (mortalityDetected === null && nombreMorts > 0) mortalityDetected = true;
-        if (mortalityDetected === true && nombreMorts === 0) mortalityDetected = false;
+        if (mortalityDetected === null && nombreMorts > 0)
+          mortalityDetected = true;
+        if (mortalityDetected === true && nombreMorts === 0)
+          mortalityDetected = false;
       } else {
         nombreMorts = null;
       }
@@ -796,29 +944,43 @@ function parseAIResponse(text, sensorData = {}) {
 
     if (mortalityDetected === true && sensorsNormal) {
       const diagText = (parsed.diagnostic || "").toLowerCase();
-      if (!mentionsDeath(diagText) && (nombreMorts === null || nombreMorts === 0)) {
-        console.warn("[AI] Mortalité bloquée — capteurs normaux et aucun mort confirmé");
+      if (
+        !mentionsDeath(diagText) &&
+        (nombreMorts === null || nombreMorts === 0)
+      ) {
+        console.warn(
+          "[AI] Mortalité bloquée — capteurs normaux et aucun mort confirmé",
+        );
         mortalityDetected = false;
         nombreMorts = 0;
       }
     }
 
     if (criticalSensors && urgencyLevel === "normal") urgencyLevel = "critique";
-    else if (warningSensors && urgencyLevel === "normal") urgencyLevel = "attention";
+    else if (warningSensors && urgencyLevel === "normal")
+      urgencyLevel = "attention";
 
     const aiAdvices =
-      Array.isArray(parsed.advices) && parsed.advices.length > 0 ? parsed.advices : null;
+      Array.isArray(parsed.advices) && parsed.advices.length > 0
+        ? parsed.advices
+        : null;
 
     if (!aiAdvices) {
-      console.warn("[AI] advices absents du JSON (probablement tronqué) — fallback capteurs");
+      console.warn(
+        "[AI] advices absents du JSON (probablement tronqué) — fallback capteurs",
+      );
     }
 
     // ── Guard contenu biologique — AVANT le bloc comptage ───────────────────
-    const imageHasBiologicalContent = !!sensorData?._imageMeta?.imageHasBiologicalContent;
+    const imageHasBiologicalContent =
+      !!sensorData?._imageMeta?.imageHasBiologicalContent;
 
     if (!imageHasBiologicalContent) {
       console.warn("[AI] Image sans contenu biologique — résultat IA ignoré");
-      return buildPoorImageResult(sensorData, "aucun oiseau détectable dans l'image");
+      return buildPoorImageResult(
+        sensorData,
+        "aucun oiseau détectable dans l'image",
+      );
     }
 
     // ── Comptage ─────────────────────────────────────────────────────────────
@@ -826,7 +988,9 @@ function parseAIResponse(text, sensorData = {}) {
 
     if (parsed.comptage && typeof parsed.comptage === "object") {
       const est = Number(parsed.comptage.estimation);
-      const fiabilite = ["bonne", "moyenne", "faible"].includes(parsed.comptage.fiabilite)
+      const fiabilite = ["bonne", "moyenne", "faible"].includes(
+        parsed.comptage.fiabilite,
+      )
         ? parsed.comptage.fiabilite
         : null;
 
@@ -846,7 +1010,10 @@ function parseAIResponse(text, sensorData = {}) {
     // ── Maladie ───────────────────────────────────────────────────────────────
     let maladie = null;
 
-    if (parsed.maladie_suspectee && typeof parsed.maladie_suspectee === "object") {
+    if (
+      parsed.maladie_suspectee &&
+      typeof parsed.maladie_suspectee === "object"
+    ) {
       const s = parsed.maladie_suspectee;
 
       let maladie_probable = s.maladie_probable || null;
@@ -854,7 +1021,9 @@ function parseAIResponse(text, sensorData = {}) {
         const known = MALADIES_AVIAIRES.some(
           (m) =>
             m.toLowerCase().includes(maladie_probable.toLowerCase()) ||
-            maladie_probable.toLowerCase().includes(m.toLowerCase().split(" ")[0])
+            maladie_probable
+              .toLowerCase()
+              .includes(m.toLowerCase().split(" ")[0]),
         );
         if (!known) {
           console.warn(`[AI] Maladie inconnue ignorée: ${maladie_probable}`);
@@ -869,59 +1038,71 @@ function parseAIResponse(text, sensorData = {}) {
           ? s.signes_observes.filter((x) => typeof x === "string").slice(0, 8)
           : [],
         urgence_veterinaire: s.urgence_veterinaire === true,
-        confiance: ["faible", "moyenne", "élevée"].includes(s.confiance) ? s.confiance : null,
+        confiance: ["faible", "moyenne", "élevée"].includes(s.confiance)
+          ? s.confiance
+          : null,
       };
 
       if (maladie.suspicion && maladie.signes_observes.length === 0) {
-        console.warn("[AI] Suspicion de maladie sans signes observés — annulée");
+        console.warn(
+          "[AI] Suspicion de maladie sans signes observés — annulée",
+        );
         maladie.suspicion = false;
         maladie.maladie_probable = null;
         maladie.urgence_veterinaire = false;
         maladie.confiance = null;
       }
 
-      if (maladie.suspicion && maladie.urgence_veterinaire && urgencyLevel === "normal") {
+      if (
+        maladie.suspicion &&
+        maladie.urgence_veterinaire &&
+        urgencyLevel === "normal"
+      ) {
         urgencyLevel = "attention";
       }
     }
 
-// ── Guard behaviorNormal ─────────────────────────────────────────────────
-let behaviorNormal = parsed.detections?.behaviorNormal ?? null;
+    // ── Guard behaviorNormal ─────────────────────────────────────────────────
+    let behaviorNormal = parsed.detections?.behaviorNormal ?? null;
 
-// "Regroupements suspects" impossible avec 1 seule volaille visible
-// et sans aucun signe clinique confirmé → on invalide behaviorNormal=false
-const estimationCount = comptage?.estimation ?? null;
-const hasSignes = maladie?.signes_observes?.length > 0;
+    // "Regroupements suspects" impossible avec 1 seule volaille visible
+    // et sans aucun signe clinique confirmé → on invalide behaviorNormal=false
+    const estimationCount = comptage?.estimation ?? null;
+    const hasSignes = maladie?.signes_observes?.length > 0;
 
-if (
-  behaviorNormal === false &&
-  estimationCount !== null &&
-  estimationCount <= 1 &&
-  !hasSignes
-) {
-  console.warn(
-    "[AI] behaviorNormal=false ignoré — volaille unique, aucun signe clinique"
-  );
-  behaviorNormal = null;
-}
+    if (
+      behaviorNormal === false &&
+      estimationCount !== null &&
+      estimationCount <= 1 &&
+      !hasSignes
+    ) {
+      console.warn(
+        "[AI] behaviorNormal=false ignoré — volaille unique, aucun signe clinique",
+      );
+      behaviorNormal = null;
+    }
 
-return {
-  healthScore,
-  urgencyLevel,
-  diagnostic: parsed.diagnostic || "Analyse effectuée.",
-  imageAvailable: true,
-  imageUsable: true,
-  detections: {
-    mortalityDetected,
-    behaviorNormal,       // ← variable locale au lieu de parsed.detections?.behaviorNormal
-    nombreMorts,
-  },
-  comptage,
-  maladie_suspectee: maladie,
-  advices: aiAdvices || buildSensorAdvices(sensorData),
-};
+    return {
+      healthScore,
+      urgencyLevel,
+      diagnostic: parsed.diagnostic || "Analyse effectuée.",
+      imageAvailable: true,
+      imageUsable: true,
+      detections: {
+        mortalityDetected,
+        behaviorNormal, // ← variable locale au lieu de parsed.detections?.behaviorNormal
+        nombreMorts,
+      },
+      comptage,
+      maladie_suspectee: maladie,
+      advices: aiAdvices || buildSensorAdvices(sensorData),
+    };
   } catch (err) {
-    console.warn("[AI] Erreur parsing JSON :", err.message, "— fallback capteurs");
+    console.warn(
+      "[AI] Erreur parsing JSON :",
+      err.message,
+      "— fallback capteurs",
+    );
     return buildPoorImageResult(sensorData, "parsing JSON échoué");
   }
 }
@@ -936,18 +1117,25 @@ async function callLlamaVision(imageBase64, sensorData) {
         {
           role: "user",
           content: [
-            { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+            {
+              type: "image_url",
+              image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
+            },
             { type: "text", text: buildAnalysisPrompt(sensorData) },
           ],
         },
       ],
       max_tokens: 1500,
     },
-    GEMMA_TIMEOUT
+    GEMMA_TIMEOUT,
   );
 
-  const responseStr = typeof response === "string" ? response : JSON.stringify(response);
-  console.log("[AI] Réponse Llama Vision brute (premiers 500 chars):", responseStr.substring(0, 500));
+  const responseStr =
+    typeof response === "string" ? response : JSON.stringify(response);
+  console.log(
+    "[AI] Réponse Llama Vision brute (premiers 500 chars):",
+    responseStr.substring(0, 500),
+  );
   return parseAIResponse(responseStr, sensorData);
 }
 
@@ -959,11 +1147,15 @@ async function callLlava(imageBase64, sensorData) {
       prompt: buildAnalysisPrompt(sensorData),
       max_tokens: 1024,
     },
-    GEMMA_TIMEOUT
+    GEMMA_TIMEOUT,
   );
 
-  const responseStr = typeof response === "string" ? response : JSON.stringify(response);
-  console.log("[AI] Réponse LLaVA brute (premiers 300 chars):", responseStr.substring(0, 300));
+  const responseStr =
+    typeof response === "string" ? response : JSON.stringify(response);
+  console.log(
+    "[AI] Réponse LLaVA brute (premiers 300 chars):",
+    responseStr.substring(0, 300),
+  );
   return parseAIResponse(responseStr, sensorData);
 }
 
@@ -976,7 +1168,9 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
       return analyzeWithSensorsOnly(sensorData);
     }
 
-    try { await acceptLlamaLicense(); } catch (e) {}
+    try {
+      await acceptLlamaLicense();
+    } catch (e) {}
 
     const clean = cleanBase64(imageBase64);
     if (!clean || clean.length < 100) {
@@ -985,7 +1179,9 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
     }
 
     const quality = await assessImageQuality(clean);
-    console.log(`[AI] Qualité image : ${quality.usable ? "✓ exploitable" : `✗ ${quality.reason}`}`);
+    console.log(
+      `[AI] Qualité image : ${quality.usable ? "✓ exploitable" : `✗ ${quality.reason}`}`,
+    );
 
     const enrichedSensorData = {
       ...sensorData,
@@ -998,7 +1194,9 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
     };
 
     if (!quality.usable) {
-      console.warn(`[AI] Image inexploitable (${quality.reason}) — pas d'envoi au modèle`);
+      console.warn(
+        `[AI] Image inexploitable (${quality.reason}) — pas d'envoi au modèle`,
+      );
       return buildPoorImageResult(sensorData, quality.reason);
     }
 
@@ -1010,9 +1208,21 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
       console.log("[AI] Tentative Llama Vision...");
       const result = await callLlamaVision(compressed, enrichedSensorData);
       if (!result.imageUsable) {
-        return { ...result, confidence: 50, imageQuality: { sizeKb, status: "poor", reason: "signalé par Llama Vision" } };
+        return {
+          ...result,
+          confidence: 50,
+          imageQuality: {
+            sizeKb,
+            status: "poor",
+            reason: "signalé par Llama Vision",
+          },
+        };
       }
-      return { ...result, confidence: 85, imageQuality: { sizeKb, status: "optimized" } };
+      return {
+        ...result,
+        confidence: 85,
+        imageQuality: { sizeKb, status: "optimized" },
+      };
     } catch (err) {
       console.warn("[AI] Llama Vision échoué :", err.message);
     }
@@ -1022,9 +1232,21 @@ async function analyzeWithCloudflareAI(imageBase64, sensorData = {}) {
         console.log("[AI] Tentative fallback Gemma...");
         const result = await callLlava(compressed, enrichedSensorData);
         if (!result.imageUsable) {
-          return { ...result, confidence: 50, imageQuality: { sizeKb, status: "poor", reason: "signalé par Gemma fallback" } };
+          return {
+            ...result,
+            confidence: 50,
+            imageQuality: {
+              sizeKb,
+              status: "poor",
+              reason: "signalé par Gemma fallback",
+            },
+          };
         }
-        return { ...result, confidence: 75, imageQuality: { sizeKb, status: "optimized" } };
+        return {
+          ...result,
+          confidence: 75,
+          imageQuality: { sizeKb, status: "optimized" },
+        };
       } catch (err) {
         console.warn("[AI] Gemma fallback échoué :", err.message);
       }
@@ -1049,11 +1271,17 @@ async function chatWithGemma(question, context, history = []) {
 
     const messages = [
       { role: "system", content: buildSystemPrompt(context) },
-      ...history.slice(-6).map((msg) => ({ role: msg.role, content: msg.content })),
+      ...history
+        .slice(-6)
+        .map((msg) => ({ role: msg.role, content: msg.content })),
       { role: "user", content: question },
     ];
 
-    const response = await callCloudflare(FALLBACK_MODEL, { messages }, CHAT_TIMEOUT);
+    const response = await callCloudflare(
+      FALLBACK_MODEL,
+      { messages },
+      CHAT_TIMEOUT,
+    );
 
     if (!response || response.trim().length < 5) {
       return buildFallbackAnswer(question, context);
@@ -1073,34 +1301,58 @@ async function chatWithGemma(question, context, history = []) {
 
 function buildFallbackAnswer(question, context) {
   const q = question.toLowerCase();
-  const scoreDisplay = context.lastScore != null ? `${context.lastScore}/100` : "indisponible";
+  const scoreDisplay =
+    context.lastScore != null ? `${context.lastScore}/100` : "indisponible";
 
   if (q.includes("santé") || q.includes("état") || q.includes("etat")) {
     return `Le poulailler ${context.poulaillerName} affiche un score de santé de ${scoreDisplay} (niveau : ${context.lastUrgency ?? "inconnu"}). ${context.lastDiagnostic ?? ""}`.trim();
   }
   if (q.includes("alerte") || q.includes("danger") || q.includes("urgent")) {
-    if (context.lastUrgency === "critique") return "Niveau critique détecté — intervention immédiate recommandée. Vérifiez la ventilation et la qualité de l'air.";
-    if (context.lastUrgency === "attention") return "Surveillance renforcée conseillée. Contrôlez les capteurs et observez le comportement des volailles.";
+    if (context.lastUrgency === "critique")
+      return "Niveau critique détecté — intervention immédiate recommandée. Vérifiez la ventilation et la qualité de l'air.";
+    if (context.lastUrgency === "attention")
+      return "Surveillance renforcée conseillée. Contrôlez les capteurs et observez le comportement des volailles.";
     return "Aucune alerte active. L'état du poulailler est stable.";
   }
-  if (q.includes("conseil") || q.includes("recommandation") || q.includes("faire")) {
-    return context.lastAdvices || "Maintenez une surveillance régulière, vérifiez les capteurs et assurez une bonne ventilation.";
+  if (
+    q.includes("conseil") ||
+    q.includes("recommandation") ||
+    q.includes("faire")
+  ) {
+    return (
+      context.lastAdvices ||
+      "Maintenez une surveillance régulière, vérifiez les capteurs et assurez une bonne ventilation."
+    );
   }
-  if (q.includes("maladie") || q.includes("symptôme") || q.includes("symptome")) {
-    if (context.lastDiagnostic) return `Selon la dernière analyse : ${context.lastDiagnostic} Consultez un vétérinaire pour un diagnostic précis.`;
+  if (
+    q.includes("maladie") ||
+    q.includes("symptôme") ||
+    q.includes("symptome")
+  ) {
+    if (context.lastDiagnostic)
+      return `Selon la dernière analyse : ${context.lastDiagnostic} Consultez un vétérinaire pour un diagnostic précis.`;
     return "Aucune analyse récente disponible. Lancez une analyse avec image pour détecter les signes de maladie.";
   }
-  if (q.includes("température") || q.includes("temperature") || q.includes("chaud") || q.includes("froid")) {
+  if (
+    q.includes("température") ||
+    q.includes("temperature") ||
+    q.includes("chaud") ||
+    q.includes("froid")
+  ) {
     const temp = context.temperature;
-    if (!temp) return "Aucune donnée de température disponible pour ce poulailler.";
-    if (temp > 28) return "La température est élevée. Activez la ventilation et vérifiez l'hydratation des volailles.";
-    if (temp < 18) return "La température est basse. Vérifiez le système de chauffage et l'isolation du poulailler.";
+    if (!temp)
+      return "Aucune donnée de température disponible pour ce poulailler.";
+    if (temp > 28)
+      return "La température est élevée. Activez la ventilation et vérifiez l'hydratation des volailles.";
+    if (temp < 18)
+      return "La température est basse. Vérifiez le système de chauffage et l'isolation du poulailler.";
     return "La température est dans la plage normale — entre 18 et 28°C.";
   }
   if (q.includes("eau") || q.includes("water")) {
     const wl = context.waterLevel;
     if (!wl) return "Aucune donnée de niveau d'eau disponible.";
-    if (wl < 20) return "Le niveau d'abreuvement est critique — remplissez les abreuvoirs immédiatement.";
+    if (wl < 20)
+      return "Le niveau d'abreuvement est critique — remplissez les abreuvoirs immédiatement.";
     return "Le niveau d'abreuvement est suffisant.";
   }
   if (q.includes("mort") || q.includes("dead") || q.includes("décès")) {
@@ -1114,7 +1366,9 @@ function buildFallbackAnswer(question, context) {
 
 async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
   try {
-    const cleanB64 = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+    const cleanB64 = imageBase64.includes(",")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
     const base64Length = cleanB64.length;
     const padding = (cleanB64.match(/=/g) || []).length;
     const imageSizeKb = Math.round(((base64Length * 3) / 4 - padding) / 1024);
@@ -1124,7 +1378,9 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
       return;
     }
 
-    console.log(`[AI] Image stockée — poulailler ${poulaillerId} (${imageSizeKb} Ko)`);
+    console.log(
+      `[AI] Image stockée — poulailler ${poulaillerId} (${imageSizeKb} Ko)`,
+    );
 
     const key = poulaillerId.toString().trim();
     const receivedAt = Date.now();
@@ -1145,9 +1401,13 @@ async function handleCameraImage(poulaillerId, macAddress, imageBase64) {
 // ─── Déclenchement capture MQTT ──────────────────────────────────────────────
 
 async function publishCaptureTrigger(poulaillerId, requestId) {
-  if (!requestId) throw new Error("[AI] publishCaptureTrigger : requestId requis");
+  if (!requestId)
+    throw new Error("[AI] publishCaptureTrigger : requestId requis");
   const Camera = require("../models/Camera");
-  const camera = await Camera.findOne({ poulailler: poulaillerId, status: "associated" });
+  const camera = await Camera.findOne({
+    poulailler: poulaillerId,
+    status: "associated",
+  });
   if (!camera) throw new Error("Aucune caméra active associée à ce poulailler");
   return publishCameraCommand(poulaillerId, requestId);
 }
@@ -1164,7 +1424,3 @@ module.exports = {
   INTER_ANALYSIS_DELAY_MS,
   MALADIES_AVIAIRES,
 };
-
-
-
-

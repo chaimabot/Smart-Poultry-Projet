@@ -78,7 +78,7 @@ async function main() {
 
   if (!["jpg", "jpeg", "png", "webp"].includes(ext.replace(".", ""))) {
     console.warn(
-      `⚠️  Format '${ext}' inhabituel — recommandé : .jpg ou .png\n`,
+      `    Format '${ext}' inhabituel — recommandé : .jpg ou .png\n`,
     );
   }
 
@@ -100,7 +100,7 @@ async function main() {
   let aiResult;
 
   try {
-    // ✅ CORRECTION
+    //   CORRECTION
     aiResult = await analyzeWithCloudflareAI(
       imageBase64,
       DEFAULT_SENSORS,
@@ -119,7 +119,7 @@ async function main() {
   // ============================================================
   printSeparator("📊 RÉSULTAT DE L'ANALYSE");
 
-  const urgencyEmoji = { normal: "✅", attention: "⚠️ ", critique: "🚨" };
+  const urgencyEmoji = { normal: "  ", attention: "   ", critique: "🚨" };
   const scoreBar = buildScoreBar(aiResult.healthScore);
 
   console.log(`   Score de santé  : ${scoreBar} ${aiResult.healthScore}/100`);
@@ -139,10 +139,10 @@ async function main() {
 
   console.log("🔍 DÉTECTIONS");
   console.log(
-    `   Mortalité détectée : ${aiResult.detections?.mortalityDetected ? "❌ OUI" : "✅ NON"}`,
+    `   Mortalité détectée : ${aiResult.detections?.mortalityDetected ? "❌ OUI" : "  NON"}`,
   );
   console.log(
-    `   Comportement normal: ${aiResult.detections?.behaviorNormal ? "✅ OUI" : "⚠️  NON"}`,
+    `   Comportement normal: ${aiResult.detections?.behaviorNormal ? "  OUI" : "    NON"}`,
   );
   console.log();
 
@@ -207,10 +207,10 @@ async function main() {
     console.log("🚨 INTERVENTION IMMÉDIATE REQUISE");
     console.log("   Contactez un vétérinaire et vérifiez le poulailler.");
   } else if (aiResult.urgencyLevel === "attention") {
-    console.log("⚠️  SURVEILLANCE RENFORCÉE CONSEILLÉE");
+    console.log("    SURVEILLANCE RENFORCÉE CONSEILLÉE");
     console.log("   Observez les volailles et contrôlez les capteurs.");
   } else {
-    console.log("✅ ÉTAT SATISFAISANT");
+    console.log("  ÉTAT SATISFAISANT");
     console.log("   Continuez la surveillance régulière.");
   }
 

@@ -57,7 +57,7 @@ async function testAI() {
 
   console.log("📋 Configuration détectée :");
   console.log(
-    `   Cloudflare AI : ${hasCloudflare ? "✅ Configuré" : "⚠️  Non configuré"}`,
+    `   Cloudflare AI : ${hasCloudflare ? "  Configuré" : "    Non configuré"}`,
   );
   console.log(
     `   Mode actif    : ${hasCloudflare ? "Cloudflare AI (Gemma)" : "Fallback capteurs (offline)"}`,
@@ -74,7 +74,7 @@ async function testAI() {
     );
   } else {
     console.warn(
-      `⚠️  Image '${TEST_IMAGE_NAME}' non trouvée dans backend/test/\n`,
+      `    Image '${TEST_IMAGE_NAME}' non trouvée dans backend/test/\n`,
     );
   }
 
@@ -196,7 +196,7 @@ async function testAI() {
   console.log("╔══════════════════════════════════════════════════════════╗");
   console.log("║                    📊 RÉSULTATS GLOBAUX                  ║");
   console.log(
-    `║   ✅ Vérifications passées  : ${String(totalPassed).padStart(2)}                       ║`,
+    `║     Vérifications passées  : ${String(totalPassed).padStart(2)}                       ║`,
   );
   console.log(
     `║   ❌ Vérifications échouées : ${String(totalFailed).padStart(2)}                       ║`,
@@ -339,7 +339,7 @@ function logChecks(checks) {
   const passed = checks.filter((c) => c.test).length;
   const failed = checks.filter((c) => !c.test).length;
 
-  console.log(`✅ ${passed}/${checks.length} vérifications passent`);
+  console.log(`  ${passed}/${checks.length} vérifications passent`);
 
   if (failed > 0) {
     checks

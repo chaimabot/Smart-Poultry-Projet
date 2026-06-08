@@ -13,7 +13,7 @@ async function test() {
     console.log("Test upload Cloudinary...");
     const result = await cloudinary.uploadImage(testBase64, "test-poulailler");
 
-    console.log("✅ SUCCÈS !");
+    console.log("  SUCCÈS !");
     console.log("URL:", result.url);
     console.log("Thumbnail:", result.thumbnailUrl);
   } catch (err) {

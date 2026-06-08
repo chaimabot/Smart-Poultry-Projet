@@ -152,7 +152,7 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
           resolve(false);
         } else {
           console.log(
-            `[AUTO ${type.toUpperCase()}] ✅ ${on ? "ON" : "OFF"} → ${topic}`,
+            `[AUTO ${type.toUpperCase()}]   ${on ? "ON" : "OFF"} → ${topic}`,
           );
           resolve(true);
         }
@@ -252,7 +252,7 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
         poulailler.actuatorStates.pump.lastAutoChange = new Date();
         stateChanged = true;
         console.log(
-          `[AUTO PUMP] ✅ État sauvegardé: ${result.shouldBeOn ? "ON" : "OFF"}`,
+          `[AUTO PUMP]   État sauvegardé: ${result.shouldBeOn ? "ON" : "OFF"}`,
         );
       } else {
         console.error(`[AUTO PUMP] ❌ Échec envoi MQTT`);
@@ -268,7 +268,7 @@ async function evaluateAutoControls(poulailler, macAddress, mqttClient) {
   if (stateChanged || reasonChanged) {
     try {
       await poulailler.save();
-      console.log("[AUTO] ✅ Sauvegardé en BD");
+      console.log("[AUTO]   Sauvegardé en BD");
     } catch (err) {
       console.error("[AUTO] ❌ Erreur sauvegarde:", err.message);
     }

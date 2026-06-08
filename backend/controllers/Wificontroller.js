@@ -103,7 +103,7 @@ exports.updateWifi = async (req, res) => {
 
     console.log(`[WIFI] Publication → topic: ${topic}`);
     mqttClient.publish(topic, payload, { qos: 1, retain: false });
-    console.log(`[WIFI] ✅ Commande envoyée → ${topic} | SSID: ${ssid.trim()}`);
+    console.log(`[WIFI]   Commande envoyée → ${topic} | SSID: ${ssid.trim()}`);
 
     return res.status(200).json({
       success: true,

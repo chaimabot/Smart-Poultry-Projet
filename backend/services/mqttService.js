@@ -22,7 +22,7 @@ let doorTimeoutIntervalId = null;
 let doorClockIntervalId = null;
 let connectionAttempt = 0;
 
-// ✅ Cache pour ignorer certains effets pendant une courte fenêtre après une commande manuelle
+// Cache pour ignorer certains effets pendant une courte fenêtre après une commande manuelle
 // macAddress -> { type: timestamp }
 const recentManualCommands = new Map();
 
@@ -39,7 +39,6 @@ function hasRecentManualCommand(macAddress, type, withinMs = 3000) {
   if (!entry || !entry[type]) return false;
   return Date.now() - entry[type] < withinMs;
 }
-
 
 // ─── RÉSOLUTION MAC / POULAILLER ─────────────────────────────────────────────
 
@@ -463,7 +462,7 @@ const handleMqttMessage = async (topic, message) => {
         const fanMode = poulailler.actuatorStates.ventilation?.mode;
 
         if (hasRecentManualCommand(macAddress, "fan")) {
-          console.log(`[STATUS FAN] ⏭️ Ignoré (commande manuelle récente)`);
+          console.log(`[STATUS FAN]    Ignoré (commande manuelle récente)`);
         } else if (fanMode !== "auto") {
           poulailler.actuatorStates.ventilation.status = data.fanOn
             ? "on"
@@ -476,7 +475,7 @@ const handleMqttMessage = async (topic, message) => {
         const lampMode = poulailler.actuatorStates.lamp?.mode;
 
         if (hasRecentManualCommand(macAddress, "lamp")) {
-          console.log(`[STATUS LAMP] ⏭️ Ignoré (commande manuelle récente)`);
+          console.log(`[STATUS LAMP]    Ignoré (commande manuelle récente)`);
         } else if (lampMode !== "auto") {
           poulailler.actuatorStates.lamp.status = data.lampOn ? "on" : "off";
           console.log(
@@ -489,7 +488,7 @@ const handleMqttMessage = async (topic, message) => {
         const pumpMode = poulailler.actuatorStates.pump?.mode;
 
         if (hasRecentManualCommand(macAddress, "pump")) {
-          console.log(`[STATUS PUMP] ⏭️ Ignoré (commande manuelle récente)`);
+          console.log(`[STATUS PUMP]    Ignoré (commande manuelle récente)`);
         } else if (pumpMode !== "auto") {
           poulailler.actuatorStates.pump.status = data.pumpOn ? "on" : "off";
           console.log(
@@ -521,7 +520,7 @@ const handleMqttMessage = async (topic, message) => {
         // qui peuvent transitoirement annoncer CLOSED/UNKNOWN.
         if (hasRecentManualCommand(macAddress, "door", 3000)) {
           console.log(
-            `[STATUS DOOR] 🛑 Ignoré pendant commande manuelle (${macAddress}).`,
+            `[STATUS DOOR]    Ignoré pendant commande manuelle (${macAddress}).`,
             {
               receivedDoorState: data.doorState,
               prevDoorStatus,
@@ -551,10 +550,9 @@ const handleMqttMessage = async (topic, message) => {
         }
       }
 
-
       await poulailler.save();
 
-      // ⚠️ NE PAS appeler evaluateAutoControls ici si commande manuelle récente
+      //  NE PAS appeler evaluateAutoControls ici si commande manuelle récente
       // (sinon risque d'override de la commande)
       if (
         !hasRecentManualCommand(macAddress, "pump") &&
@@ -740,7 +738,6 @@ module.exports = {
   stopDoorMonitoring,
   startDoorClockSync,
   stopDoorClockSync,
-  // ✅ Exporté pour pompeService (arrêt forcé + anti-override)
   markManualCommand,
   hasRecentManualCommand,
 };

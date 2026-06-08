@@ -18,7 +18,7 @@ const trackDoorMotion = (poulaillerId, action) => {
 
 /**
  * Check if door motion timed out (> 30s without reaching end switch)
- * ✅ CORRIGÉ — createDoorAlert appelé avec la bonne signature
+ *   CORRIGÉ — createDoorAlert appelé avec la bonne signature
  */
 const mongoose = require("mongoose"); // FIX mongoose scope
 
@@ -42,12 +42,12 @@ const checkDoorTimeout = async (poulaillerId) => {
 
 /**
  * Record door motion completed successfully
- * ✅ CORRIGÉ — createDoorAlert appelé avec la bonne signature
+ *   CORRIGÉ — createDoorAlert appelé avec la bonne signature
  */
 const recordDoorCompletion = async (poulaillerId, action) => {
   doorMotionTracker.delete(poulaillerId);
 
-  // ✅ Signature correcte : (poultryId, eventKey, triggeredBy)
+  //   Signature correcte : (poultryId, eventKey, triggeredBy)
   const eventKey = action === "open" ? "scheduled_open" : "scheduled_close";
   await createDoorAlert(poulaillerId, eventKey, "scheduled");
 

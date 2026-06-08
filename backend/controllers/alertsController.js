@@ -8,10 +8,10 @@
  *   POST   /api/alerts                        → créer une alerte manuellement (IoT / tests)
  *   POST   /api/alerts/read                   → marquer une ou toutes comme lues (backend)
  *   PATCH  /api/alerts/:id/read               → marquer une alerte spécifique comme lue
- *   PATCH  /api/alerts/bulk/read              → marquer plusieurs alertes comme lues ✅ NOUVEAU
+ *   PATCH  /api/alerts/bulk/read              → marquer plusieurs alertes comme lues   NOUVEAU
  *   DELETE /api/alerts                        → supprimer les alertes lues
- *   DELETE /api/alerts/:id                    → supprimer une alerte spécifique ✅ NOUVEAU
- *   DELETE /api/alerts/bulk                   → supprimer plusieurs alertes par IDs ✅ NOUVEAU
+ *   DELETE /api/alerts/:id                    → supprimer une alerte spécifique   NOUVEAU
+ *   DELETE /api/alerts/bulk                   → supprimer plusieurs alertes par IDs   NOUVEAU
  */
 
 const AlertModel = require("../models/Alert");
@@ -263,7 +263,7 @@ exports.getAlertStats = async (req, res) => {
       data: {
         total,
         unread,
-        // ✅ Détail par sévérité (utile pour SummaryBar mobile)
+        //   Détail par sévérité (utile pour SummaryBar mobile)
         bySeverity: {
           danger: dangerCount,
           warn: warnCount,
@@ -511,7 +511,7 @@ exports.markOneAsRead = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PATCH /api/alerts/bulk/read                               ✅ NOUVEAU
+// PATCH /api/alerts/bulk/read                                 NOUVEAU
 // Marquer plusieurs alertes comme lues en une seule requête
 // Body : { alertIds: ["id1", "id2", ...] }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -624,7 +624,7 @@ exports.deleteReadAlerts = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE /api/alerts/:id                                    ✅ NOUVEAU
+// DELETE /api/alerts/:id                                      NOUVEAU
 // Supprimer une alerte spécifique
 // ─────────────────────────────────────────────────────────────────────────────
 exports.deleteOneAlert = async (req, res) => {
@@ -656,7 +656,7 @@ exports.deleteOneAlert = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE /api/alerts/bulk                                   ✅ NOUVEAU
+// DELETE /api/alerts/bulk                                     NOUVEAU
 // Supprimer plusieurs alertes par IDs
 // Body : { alertIds: ["id1", "id2", ...] }
 // ─────────────────────────────────────────────────────────────────────────────

@@ -829,7 +829,7 @@ exports.controlActuator = async (req, res) => {
         );
       }
     } else {
-      console.warn("[MQTT] ⚠️ Client non connecté pour commande", actuator);
+      console.warn("[MQTT]    Client non connecté pour commande", actuator);
     }
 
     // 3. Enregistrement commande en base

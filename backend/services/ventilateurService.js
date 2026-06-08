@@ -19,7 +19,7 @@ async function updateVentilateur(id, mode, action) {
 
   console.log(`[ventilateurService] Update:`, { id, mode, action });
 
-  // ✅ Détecter AUTO → MANUEL
+  //   Détecter AUTO → MANUEL
   const previousMode = poulailler.actuatorStates.ventilation.mode;
   const isAutoToManual = previousMode === "auto" && mode === "manual";
 
@@ -27,7 +27,7 @@ async function updateVentilateur(id, mode, action) {
   poulailler.actuatorStates.ventilation.mode = mode;
 
   if (isAutoToManual) {
-    console.log(`[ventilateurService] 🛑 AUTO → MANUEL : arrêt forcé`);
+    console.log(`[ventilateurService]    AUTO → MANUEL : arrêt forcé`);
     poulailler.actuatorStates.ventilation.status = "off";
     poulailler.actuatorStates.ventilation.lastAutoReason = "";
   } else if (mode === "manual") {
@@ -39,7 +39,7 @@ async function updateVentilateur(id, mode, action) {
 
   await poulailler.save();
   console.log(
-    `[ventilateurService] ✅ BD: mode=${mode}, status=${poulailler.actuatorStates.ventilation.status}`,
+    `[ventilateurService]   BD: mode=${mode}, status=${poulailler.actuatorStates.ventilation.status}`,
   );
 
   // Envoi MQTT
@@ -51,7 +51,7 @@ async function updateVentilateur(id, mode, action) {
   const macAddress = await getMacAddress(id);
   const topic = `poulailler/${macAddress}/cmd/fan`;
 
-  // ✅ Si AUTO → MANUEL : forcer OFF
+  //   Si AUTO → MANUEL : forcer OFF
   if (isAutoToManual) {
     const payload = JSON.stringify({ on: false, mode: "manual" });
     client.publish(topic, payload, { qos: 1 }, (err) => {
@@ -59,7 +59,7 @@ async function updateVentilateur(id, mode, action) {
         console.error("[ventilateurService] ❌ Erreur:", err.message);
       } else {
         console.log(
-          `[ventilateurService] ✅ Arrêt forcé: ${topic} → ${payload}`,
+          `[ventilateurService]   Arrêt forcé: ${topic} → ${payload}`,
         );
       }
     });
@@ -73,7 +73,7 @@ async function updateVentilateur(id, mode, action) {
       if (err) {
         console.error("[ventilateurService] ❌ Erreur:", err.message);
       } else {
-        console.log(`[ventilateurService] ✅ MQTT: ${topic} → ${payload}`);
+        console.log(`[ventilateurService]   MQTT: ${topic} → ${payload}`);
       }
     });
   }

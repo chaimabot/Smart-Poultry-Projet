@@ -88,7 +88,7 @@ const publishDoorConfig = async (poulaillerId, schedule) => {
 // ============================================================================
 const syncDoorClock = async (poulaillerId, macAddress) => {
   try {
-    // ✅ Utiliser une variable locale au lieu de réassigner le paramètre
+    //   Utiliser une variable locale au lieu de réassigner le paramètre
     let resolvedMac = macAddress;
 
     if (!resolvedMac) {

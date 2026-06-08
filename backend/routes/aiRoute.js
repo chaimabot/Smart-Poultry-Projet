@@ -34,7 +34,7 @@ router.post(
 );
 
 router.post("/capture-status/:requestId", protect, getCaptureStatus); // ← gardé pour compatibilité
-// ✅ FIX : /analyze/:poulaillerId aliasé vers analyzePoultry (évite 404 si ancien code l'appelle encore)
+//   FIX : /analyze/:poulaillerId aliasé vers analyzePoultry (évite 404 si ancien code l'appelle encore)
 router.post("/analyze/:poulaillerId", protect, analyzePoultry);
 router.get("/capture-status/:requestId", protect, getCaptureStatus);
 router.get("/history/:poulaillerId", protect, getAnalysisHistory);

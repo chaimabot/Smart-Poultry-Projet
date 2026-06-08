@@ -5,7 +5,7 @@ const perUserLimiter = rateLimit({
   max: 10000,
   standardHeaders: true,
   legacyHeaders: false,
-  // ✅ On retire 'defaultKeys' et on utilise 'default: false' pour désactiver les alertes
+  //   On retire 'defaultKeys' et on utilise 'default: false' pour désactiver les alertes
   validate: { default: false },
 });
 

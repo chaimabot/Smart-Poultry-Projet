@@ -59,7 +59,7 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.warn(`[CORS] ⚠️ Blocked origin: ${origin}`);
+      console.warn(`[CORS]    Blocked origin: ${origin}`);
       callback(new Error("CORS not allowed"));
     }
   },
@@ -185,7 +185,7 @@ if (lampeRoutes) {
 }
 
 // ── AI Routes ─────────────────────────────────────────────────────────────────
-// ✅ FIX : suppression du check "typeof aiRoutes.use !== function" — il était
+//   FIX : suppression du check "typeof aiRoutes.use !== function" — il était
 //    faux sur certains environnements Node et faisait throw silencieusement,
 //    ce qui empêchait /api/ai d'être monté (toutes les routes IA → 404).
 //    Le stack trace complet est maintenant loggé pour débogage sur Render.
@@ -212,12 +212,12 @@ app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
 });
 
-// ✅ Route de diagnostic — vérifier que l’API est vivante
+//   Route de diagnostic — vérifier que l’API est vivante
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// ✅ Diagnostic AI — répond même si aiRoute n’est pas monté
+//   Diagnostic AI — répond même si aiRoute n’est pas monté
 // (permet d’identifier si le 404 vient d’un problème de montage /api/ai)
 app.get("/api/ai/__ping-from-app", (req, res) => {
   res.json({ ok: true, source: "app" });

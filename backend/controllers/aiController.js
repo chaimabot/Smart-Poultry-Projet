@@ -406,7 +406,7 @@ async function analyzePoultry(req, res) {
   const { error, status } = await checkAccess(poulaillerId, req.user.id);
   if (error) return res.status(status).json({ success: false, error });
 
-  // ✅ NOUVEAU : Si un requestId est fourni (depuis receive-image), on l'utilise
+  //   NOUVEAU : Si un requestId est fourni (depuis receive-image), on l'utilise
   const existingRequestId = req.body?.requestId;
 
   if (req.body?.imageBase64) {

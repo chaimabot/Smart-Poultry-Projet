@@ -8,10 +8,10 @@ const {
   updatePassword,
 } = require("../controllers/authController");
 const { protect } = require("../middlewares/auth");
-// ✅ NEW: Rate limiting for auth
+//   NEW: Rate limiting for auth
 const { authLimiter, perUserLimiter } = require("../middlewares/rateLimiter");
 
-// ✅ Strict auth limiter on login/register (5 attempts per 15 min)
+//   Strict auth limiter on login/register (5 attempts per 15 min)
 router.post("/register", authLimiter, register);
 router.post("/login", authLimiter, login);
 router.get("/me", protect, getMe);

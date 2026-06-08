@@ -34,8 +34,6 @@ const loginSchema = Joi.object({
   password: Joi.string().required(),
 });
 
-
-
 const generateToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 
@@ -81,7 +79,6 @@ exports.register = async (req, res) => {
 
     const motDePasseTemporaire = genererMotDePasseTemporaire();
 
- 
     const user = await User.create({
       firstName,
       lastName,
@@ -91,7 +88,6 @@ exports.register = async (req, res) => {
       role: "eleveur",
       isActive: false, // inactif jusqu'à validation admin
     });
-
 
     const poulaillersDocs = await Promise.all(
       poulaillers.map((p) => {
@@ -117,7 +113,6 @@ exports.register = async (req, res) => {
     const year = new Date().getFullYear();
     const randomHex = crypto.randomBytes(2).toString("hex").toUpperCase();
     const autoContractNumber = `SP-${year}-${randomHex}`;
-
 
     const dossier = await Dossier.create({
       eleveur: user._id,
@@ -208,7 +203,6 @@ exports.login = async (req, res) => {
   }
 };
 
-
 exports.validerDossier = async (req, res) => {
   try {
     const dossier = await Dossier.findById(req.params.id)
@@ -228,7 +222,6 @@ exports.validerDossier = async (req, res) => {
 
     const user = dossier.eleveur;
 
-
     const motDePasse = req.body.motDePasseTemporaire;
     if (!motDePasse) {
       return res.status(400).json({
@@ -247,7 +240,6 @@ exports.validerDossier = async (req, res) => {
     dossier.dateValidation = new Date();
     dossier.validatedBy = req.user?._id || null;
     await dossier.save();
-
 
     try {
       const nodemailer = require("nodemailer");
@@ -279,7 +271,7 @@ exports.validerDossier = async (req, res) => {
       await transporter.sendMail({
         from: `"SmartPoultry" <${process.env.SMTP_USER}>`,
         to: user.email,
-        subject: "✅ Votre dossier SmartPoultry est validé",
+        subject: "  Votre dossier SmartPoultry est validé",
         html: `
           <div style="font-family:Inter,sans-serif;max-width:600px;margin:auto">
             <h2 style="color:#00361a">Bonjour ${user.firstName},</h2>
@@ -326,7 +318,6 @@ exports.validerDossier = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
-
 
 exports.getMesPoulaillers = async (req, res) => {
   try {
@@ -389,8 +380,6 @@ exports.ajouterPoulailler = async (req, res) => {
     res.status(500).json({ success: false, error: "Erreur serveur" });
   }
 };
-
-
 
 exports.getMe = async (req, res) => {
   try {

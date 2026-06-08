@@ -53,7 +53,7 @@ async function migrate() {
       await poulailler.save();
       updated++;
 
-      console.log(`✅ ${poulailler.name} (${poulailler._id}) → ${uniqueCode}`);
+      console.log(`  ${poulailler.name} (${poulailler._id}) → ${uniqueCode}`);
     }
 
     console.log(

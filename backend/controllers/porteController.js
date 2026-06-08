@@ -55,7 +55,7 @@ const handleControlPorte = async (req, res) => {
       // pas bloquant
     }
 
-    // ✅ Auto-stop uniquement après "open" (pas "close"), délai cohérent avec AUTO_STOP_DELAY_MS
+    //   Auto-stop uniquement après "open" (pas "close"), délai cohérent avec AUTO_STOP_DELAY_MS
     if (action === "open") {
       setTimeout(async () => {
         try {
