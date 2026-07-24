@@ -4,6 +4,24 @@ Smart Poultry est une plateforme IoT complète pour la gestion intelligente des 
 
 ---
 
+## Pourquoi deux API séparées (backend et backend-admin) ?
+
+Le projet est volontairement découpé en deux API indépendantes plutôt qu'une seule API partagée :
+
+- **backend** sert l'application mobile (les éleveurs / utilisateurs finaux) : lecture des capteurs, contrôle des actionneurs, analyses IA, alertes.
+- **backend-admin** sert l'interface web d'administration (gestion des éleveurs, des poulaillers, des paramètres système, des logs).
+
+Cette séparation correspond à une pratique courante en entreprise, pour plusieurs raisons :
+
+- **Sécurité** : les droits d'administration (gestion des utilisateurs, configuration système, accès aux logs) sont isolés de l'API grand public. Une faille ou une erreur côté client n'expose pas les fonctions sensibles d'admin.
+- **Scalabilité** : le trafic mobile (lecture temps réel, IoT) et le trafic admin (rapports, dashboards) n'ont pas les mêmes besoins de charge. Les séparer permet de les déployer et de les faire évoluer indépendamment.
+- **Clarté du code** : chaque API a sa propre logique métier, ses propres modèles et ses propres routes, sans mélanger les responsabilités "utilisateur final" et "administration".
+- **Déploiement indépendant** : l'API admin peut être mise à jour ou redémarrée sans interrompre le service pour les éleveurs qui utilisent l'application mobile.
+
+Ce projet a été conçu et développé seule (backend, backend-admin, interface web, application mobile, firmware ESP32), dans une logique de portfolio technique reproduisant une architecture réaliste type entreprise.
+
+---
+
 ## Architecture globale
 
 ```
@@ -16,7 +34,7 @@ Smart Poultry
 │   - Authentification & utilisateurs
 │   - Gestion des poulaillers & modules
 │   - IoT (MQTT + Socket.IO)
-│   - Analyse IA (Google Gemini)
+│   - Analyse IA (Cloudflare Workers AI — Llama 3.2 Vision + Gemma 3)
 │   - Contrôle des actionneurs
 │   - Webhooks & tâches planifiées (cron)
 │
@@ -34,12 +52,15 @@ Smart Poultry
 
 ## Fonctionnalités
 
-### Intelligence artificielle
+### Intelligence artificielle — Cloudflare Workers AI
 
-- Analyse sanitaire des volailles à partir d'images, via Google Gemini AI
-- Détection automatique de maladies à partir de photos
-- Chat interactif avec l'IA pour une consultation vétérinaire (Dr. Gemma)
-- Analyses programmées via des tâches cron
+- Analyse sanitaire des volailles par vision via Cloudflare Workers AI
+- Modèle principal : `@cf/meta/llama-3.2-11b-vision-instruct` (Llama Vision 11B) — analyse visuelle, comptage, détection maladies
+- Modèle secondaire / chat : `@cf/google/gemma-3-12b-it` (Gemma 3) — backup analyse image + chat vétérinaire "Dr. Gemma"
+- Chat vétérinaire interactif avec contexte du poulailler (capteurs, historique santé, diagnostic)
+- Compression et validation automatique de la qualité d'image avant analyse (via Sharp)
+- Images stockées sur Cloudinary
+- Analyses programmées via tâches cron
 - Historique complet des analyses avec images
 
 ### IoT et automatisation (ESP32)
@@ -153,7 +174,7 @@ smart-poultry/
 - MongoDB + Mongoose 9
 - Socket.IO (temps réel)
 - MQTT.js (communication IoT)
-- Google Gemini AI (analyse d'images)
+- Cloudflare Workers AI — Llama 3.2 Vision 11B + Gemma 3 (analyse d'images et chat vétérinaire)
 - Cloudinary (stockage d'images)
 - JWT (authentification)
 - Winston (logging)
@@ -198,7 +219,7 @@ smart-poultry/
 - Node.js >= 18
 - MongoDB (local ou Atlas)
 - Compte Cloudinary
-- Clé API Google Gemini AI
+- Compte Cloudflare avec accès à Workers AI (clé API + Account ID)
 - Compte HiveMQ Cloud (MQTT)
 
 ### 1. Cloner le dépôt
@@ -258,7 +279,7 @@ cd Embarquee
 ### API principale (port 5000)
 
 | Endpoint         | Méthode  | Description               |
-| ---------------- | -------- | ------------------------- |
+| ----------------- | -------- | -------------------------- |
 | /api/auth        | POST     | Authentification          |
 | /api/poulaillers | CRUD     | Gestion des poulaillers   |
 | /api/modules     | CRUD     | Gestion des modules ESP32 |
@@ -274,7 +295,7 @@ cd Embarquee
 ### API admin (port 5001)
 
 | Endpoint                | Méthode | Description                   |
-| ----------------------- | ------- | ----------------------------- |
+| ------------------------- | ------- | -------------------------------- |
 | /api/admin/dashboard    | GET     | Statistiques du dashboard     |
 | /api/admin/poulaillers  | CRUD    | Gestion admin des poulaillers |
 | /api/admin/utilisateurs | CRUD    | Gestion des utilisateurs      |
@@ -289,40 +310,6 @@ cd Embarquee
 
 ---
 
-## Tests
 
-```bash
-npm test               # lance tous les tests (Jest)
-npm run test:ai        # tests spécifiques à l'IA
-npm run test:coverage  # couverture de code
-```
-
----
-
-## Diagrammes
-
-Des diagrammes Mermaid sont disponibles dans le dossier backend/ :
-
-- diagramme_ia_partie_mermaid.md — architecture IA
-- diagramme_classe_ia_sante_capture_exact_mermaid.md — classes IA/Santé
-- diagramme_classe_participation_analyse_ia_sante_esp32_mermaid.md — participation ESP32
-- sequence_analyse_ia_automatique_mermaid.md — séquence d'analyse IA automatique
-- sequence_consultation_dr_gemma_mermaid.md — séquence de consultation Dr. Gemma
-
----
-
-## Contribution
-
-Les contributions sont les bienvenues. N'hésitez pas à ouvrir une issue ou à soumettre une pull request.
-
----
-
-## Licence
-
-Ce projet est sous licence ISC.
-
----
-
-## Auteur
 
 Développé par Chaima — Smart Poultry Solutions
