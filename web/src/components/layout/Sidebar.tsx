@@ -28,23 +28,11 @@ const navItems = [
     description: "Appareils ESP32 connectés",
   },
   {
-    name: "Rapports",
-    path: "/rapports",
-    icon: "analytics",
-    description: "Statistiques et analyses",
-  },
-  {
     name: "Alertes",
     path: "/alertes",
     icon: "notifications",
     badge: true,
     description: "Notifications et alertes",
-  },
-  {
-    name: "Journaux",
-    path: "/logs",
-    icon: "description",
-    description: "Historique des actions",
   },
   {
     name: "Dossiers",

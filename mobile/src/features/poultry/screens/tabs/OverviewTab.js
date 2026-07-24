@@ -35,9 +35,9 @@ const STATUS_LABEL = {
 };
 
 // ── Templates d'action ──
-// ✅ airQualityPercent : seuil MIN (danger si en dessous) → {min} pas {max}
-// ✅ waterLevel        : seuil MIN uniquement → {min}
-// ✅ Aucune valeur brute dans les templates — texte professionnel
+//   airQualityPercent : seuil MIN (danger si en dessous) → {min} pas {max}
+//   waterLevel        : seuil MIN uniquement → {min}
+//   Aucune valeur brute dans les templates — texte professionnel
 const ACTIONS = {
   temperature: {
     warn: "Surveiller — température proche des limites autorisées (min {min}{unit} / max {max}{unit})",
@@ -51,13 +51,13 @@ const ACTIONS = {
     danger:
       "Changer la litière et aérer — humidité hors de la plage autorisée ({min}{unit} – {max}{unit})",
   },
-  // ✅ CORRIGÉ : seuil min uniquement, danger si valeur EN DESSOUS de {min}
+  //   CORRIGÉ : seuil min uniquement, danger si valeur EN DESSOUS de {min}
   airQualityPercent: {
     warn: "Contrôler la ventilation — qualité de l'air approche le seuil minimum ({min}{unit})",
     danger:
       "Ventiler d'urgence — qualité de l'air en dessous du seuil critique ({min}{unit})",
   },
-  // ✅ CORRIGÉ : seuil min uniquement, danger si valeur EN DESSOUS de {min}
+  //   CORRIGÉ : seuil min uniquement, danger si valeur EN DESSOUS de {min}
   waterLevel: {
     warn: "Vérifier l'abreuvoir — niveau d'eau approche le seuil minimum ({min}{unit})",
     danger:
@@ -81,7 +81,7 @@ const formatAction = (template, sensor, threshold) => {
 };
 
 // ── Helper : construit le texte de seuil ──
-// ✅ CORRIGÉ : détecte correctement min-seul / max-seul / min+max
+//   CORRIGÉ : détecte correctement min-seul / max-seul / min+max
 const getThresholdText = (sensor, threshold) => {
   const { status, value, unit } = sensor;
   const v = value !== null && value !== undefined ? String(value) : "—";
@@ -106,7 +106,7 @@ const getThresholdText = (sensor, threshold) => {
       return `Seuil dépassé — température inférieure au minimum requis (${threshold.min ?? "?"}${u})`;
 
     case "danger": {
-      // ✅ Seuil min uniquement (air, eau) : danger si valeur en dessous
+      //   Seuil min uniquement (air, eau) : danger si valeur en dessous
       if (threshold.min !== undefined && threshold.max === undefined)
         return `Seuil critique — valeur en dessous du minimum requis (${threshold.min}${u})`;
 
@@ -183,6 +183,26 @@ function NoSensorData() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Composant utilitaire
+// ─────────────────────────────────────────────────────────────
+function SectionLabel({ children }) {
+  return (
+    <Text
+      style={{
+        fontSize: 11,
+        fontWeight: "700",
+        letterSpacing: 1.2,
+        textTransform: "uppercase",
+        color: "#94A3B8",
+        marginBottom: 12,
+      }}
+    >
+      {children}
+    </Text>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Composant principal
 // ─────────────────────────────────────────────────────────────
 export default function OverviewTab({
@@ -197,31 +217,19 @@ export default function OverviewTab({
   onGoToChat,
   onGoToHistory,
 }) {
-  // ✅ sensors toujours un tableau
+  //   sensors toujours un tableau
   const safeSensors = Array.isArray(sensors) ? sensors : [];
   const hasSensors = safeSensors.length > 0;
 
   const dangerSensors = safeSensors.filter((s) => isDanger(s.status));
   const warnSensors = safeSensors.filter((s) => s.status === "warn");
 
-  // ✅ Score IA — "—" si null
+  //   Score IA — "—" si null
   const scoreDisplay =
     aiScore !== null && aiScore !== undefined ? String(aiScore) : "—";
 
-  // ✅ Date dernière analyse formatée
+  //   Date dernière analyse formatée
   const lastDateDisplay = formatDate(lastAnalysis?.date);
-
-  // ✅ Score dernière analyse
-  const lastScoreDisplay =
-    lastAnalysis?.score !== null && lastAnalysis?.score !== undefined
-      ? `${lastAnalysis.score}/100`
-      : "—";
-
-  // ✅ Confiance
-  const confidenceDisplay =
-    lastAnalysis?.confidence !== null && lastAnalysis?.confidence !== undefined
-      ? `${lastAnalysis.confidence}%`
-      : "—";
 
   return (
     <ScrollView
@@ -254,7 +262,6 @@ export default function OverviewTab({
           <Text style={{ fontSize: 14, fontWeight: "800", color: "#fff" }}>
             Analyse IA Santé
           </Text>
-          {/* ✅ Date dynamique */}
           <Text
             style={{
               fontSize: 11,
@@ -267,7 +274,6 @@ export default function OverviewTab({
               : "Aucune analyse — appuyez pour analyser"}
           </Text>
         </View>
-        {/* ✅ Score dynamique — "—" si null */}
         <View style={aiBannerScore}>
           <Text style={{ fontSize: 17, fontWeight: "800", color: "#fff" }}>
             {scoreDisplay}
@@ -307,16 +313,6 @@ export default function OverviewTab({
           <MaterialIcons name="chat-bubble-outline" size={15} color="#22C55E" />
           <Text style={{ fontSize: 12, fontWeight: "700", color: "#1E293B" }}>
             Dr. Gemma
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={quickAction}
-          onPress={onGoToHistory}
-          activeOpacity={0.85}
-        >
-          <MaterialIcons name="show-chart" size={15} color="#64748B" />
-          <Text style={{ fontSize: 12, fontWeight: "700", color: "#1E293B" }}>
-            Historique
           </Text>
         </TouchableOpacity>
       </View>
@@ -384,23 +380,16 @@ export default function OverviewTab({
       ════════════════════════════════════ */}
       <SectionLabel>Capteurs temps réel</SectionLabel>
 
-      {/* ✅ Placeholder si aucune donnée fraîche */}
       {!hasSensors ? (
         <NoSensorData />
       ) : (
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: 10,
-            marginBottom: 24,
-          }}
-        >
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {safeSensors.map((sensor, i) => {
             const col = STATUS_COLORS[sensor.status] ?? STATUS_COLORS.normal;
             const bg = STATUS_BG[sensor.status] ?? STATUS_BG.normal;
             const label = STATUS_LABEL[sensor.status] ?? "OK";
-            const alert = isAlertStatus(sensor.status);
+            const alert = isDanger(sensor.status) || sensor.status === "warn";
+
             const threshold = thresholds?.[sensor.key];
             const actionTpl =
               ACTIONS[sensor.key]?.[sensor.status] ??
@@ -408,7 +397,6 @@ export default function OverviewTab({
             const actionText = formatAction(actionTpl, sensor, threshold);
             const threshText = alert ? getThresholdText(sensor, threshold) : "";
 
-            // ✅ Guard null sur value
             const displayValue =
               sensor.value !== null && sensor.value !== undefined
                 ? String(sensor.value)
@@ -419,7 +407,6 @@ export default function OverviewTab({
                 key={`${sensor.key}-${i}`}
                 style={[card, { flexBasis: "47%", flexGrow: 1 }]}
               >
-                {/* En-tête : icône + badge */}
                 <View
                   style={{
                     flexDirection: "row",
@@ -449,18 +436,13 @@ export default function OverviewTab({
                     }}
                   >
                     <Text
-                      style={{
-                        fontSize: 10,
-                        fontWeight: "700",
-                        color: col,
-                      }}
+                      style={{ fontSize: 10, fontWeight: "700", color: col }}
                     >
                       {label}
                     </Text>
                   </View>
                 </View>
 
-                {/* Valeur */}
                 <View
                   style={{
                     flexDirection: "row",
@@ -479,11 +461,7 @@ export default function OverviewTab({
                     {displayValue}
                   </Text>
                   <Text
-                    style={{
-                      fontSize: 12,
-                      color: "#94A3B8",
-                      marginBottom: 2,
-                    }}
+                    style={{ fontSize: 12, color: "#94A3B8", marginBottom: 2 }}
                   >
                     {sensor.unit ?? ""}
                   </Text>
@@ -500,7 +478,6 @@ export default function OverviewTab({
                   {sensor.name}
                 </Text>
 
-                {/* Bloc alerte : seuil + action */}
                 {alert && (
                   <View
                     style={{
@@ -509,6 +486,7 @@ export default function OverviewTab({
                       borderLeftColor: col,
                       borderRadius: 6,
                       padding: 8,
+                      marginBottom: 14,
                     }}
                   >
                     {threshText ? (
@@ -554,21 +532,8 @@ export default function OverviewTab({
           <Text style={{ fontSize: 13, fontWeight: "700", color: "#166534" }}>
             Dr. Gemma — Insight IA
           </Text>
-          {/* ✅ Date dynamique */}
-          {lastDateDisplay && (
-            <Text
-              style={{
-                fontSize: 11,
-                color: "#22C55E",
-                marginLeft: "auto",
-              }}
-            >
-              {lastDateDisplay}
-            </Text>
-          )}
         </View>
 
-        {/* ✅ Insight dynamique depuis dernière analyse */}
         <Text style={{ fontSize: 13, color: "#166534", lineHeight: 20 }}>
           {aiInsight ??
             "Lancez une analyse IA pour obtenir un diagnostic complet de l'état de santé de vos volailles."}
@@ -589,6 +554,7 @@ export default function OverviewTab({
               Poser une question
             </Text>
           </TouchableOpacity>
+
           <TouchableOpacity
             style={[aiInsightBtn, aiInsightBtnPrimary]}
             onPress={onGoToAIAnalysis}
@@ -601,150 +567,7 @@ export default function OverviewTab({
           </TouchableOpacity>
         </View>
       </View>
-
-      {/* ════════════════════════════════════
-          Dernière analyse IA
-      ════════════════════════════════════ */}
-      <SectionLabel>Dernière analyse IA</SectionLabel>
-      <View style={[card, { marginBottom: 8 }]}>
-        {/* En-tête */}
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 10,
-            marginBottom: 12,
-          }}
-        >
-          <View
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: 12,
-              backgroundColor: "#F0FDF4",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Text style={{ fontSize: 22 }}>📸</Text>
-          </View>
-          <View style={{ flex: 1 }}>
-            {/* ✅ ID dynamique */}
-            <Text style={{ fontSize: 14, fontWeight: "700", color: "#1E293B" }}>
-              {lastAnalysis
-                ? `Analyse #${lastAnalysis.id ?? "—"}`
-                : "Aucune analyse disponible"}
-            </Text>
-            {/* ✅ Date dynamique */}
-            <Text style={{ fontSize: 11, color: "#94A3B8", marginTop: 2 }}>
-              {lastDateDisplay ?? "—"} · Gemma 3
-            </Text>
-          </View>
-          {/* ✅ Score — "—" si null */}
-          <View
-            style={{
-              paddingHorizontal: 10,
-              paddingVertical: 5,
-              borderRadius: 10,
-              backgroundColor:
-                lastAnalysis?.score != null ? "#F0FDF4" : "#F8FAFC",
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 14,
-                fontWeight: "800",
-                color: lastAnalysis?.score != null ? "#166534" : "#94A3B8",
-              }}
-            >
-              {lastScoreDisplay}
-            </Text>
-          </View>
-        </View>
-
-        {/* Stats */}
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          {[
-            {
-              label: "Mortalité",
-              value: lastAnalysis?.mortality ?? "—",
-              color:
-                lastAnalysis?.mortality === "Aucune"
-                  ? "#22C55E"
-                  : lastAnalysis?.mortality === "Détectée"
-                    ? "#EF4444"
-                    : "#94A3B8",
-            },
-            {
-              label: "Comportement",
-              value: lastAnalysis?.behavior ?? "—",
-              color:
-                lastAnalysis?.behavior === "Normal"
-                  ? "#22C55E"
-                  : lastAnalysis?.behavior === "Anormal"
-                    ? "#F59E0B"
-                    : "#94A3B8",
-            },
-            {
-              label: "Confiance",
-              value: confidenceDisplay,
-              color: lastAnalysis?.confidence != null ? "#22C55E" : "#94A3B8",
-            },
-          ].map((stat, i) => (
-            <View
-              key={i}
-              style={{
-                flex: 1,
-                padding: 9,
-                borderRadius: 10,
-                backgroundColor: "#F8FAFC",
-                alignItems: "center",
-              }}
-            >
-              <Text
-                style={{
-                  fontSize: 10,
-                  color: "#94A3B8",
-                  fontWeight: "600",
-                }}
-              >
-                {stat.label}
-              </Text>
-              <Text
-                style={{
-                  fontSize: 13,
-                  fontWeight: "800",
-                  color: stat.color,
-                  marginTop: 3,
-                }}
-              >
-                {stat.value}
-              </Text>
-            </View>
-          ))}
-        </View>
-      </View>
     </ScrollView>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// Composant utilitaire
-// ─────────────────────────────────────────────────────────────
-function SectionLabel({ children }) {
-  return (
-    <Text
-      style={{
-        fontSize: 11,
-        fontWeight: "700",
-        letterSpacing: 1.2,
-        textTransform: "uppercase",
-        color: "#94A3B8",
-        marginBottom: 12,
-      }}
-    >
-      {children}
-    </Text>
   );
 }
 

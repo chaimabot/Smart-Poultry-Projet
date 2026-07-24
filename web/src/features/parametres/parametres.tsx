@@ -1,3 +1,4 @@
+// pages/parametres/Parametres.tsx
 import { useState, useEffect } from "react";
 import { parametresAPI } from "../../services/api";
 import Header from "../../components/layout/Header";
@@ -8,13 +9,18 @@ interface Seuils {
   temperatureMax?: number;
   humidityMin?: number;
   humidityMax?: number;
-  co2Max?: number;
-  co2Warning?: number;
-  co2Critical?: number;
-  nh3Max?: number;
-  dustMax?: number;
+  airQualityMin?: number;
   waterLevelMin?: number;
 }
+
+const DEFAULT_SEUILS: Seuils = {
+  temperatureMin: 18,
+  temperatureMax: 28,
+  humidityMin: 40,
+  humidityMax: 70,
+  airQualityMin: 50,
+  waterLevelMin: 20,
+};
 
 export default function Parametres() {
   const [seuils, setSeuils] = useState<Seuils>({});
@@ -28,6 +34,7 @@ export default function Parametres() {
     setError(null);
     try {
       const response = await parametresAPI.get();
+      console.log("📥 fetchParametres response:", response.data);
       if (response.data.defaults) {
         setSeuils(response.data.defaults);
       }
@@ -45,7 +52,10 @@ export default function Parametres() {
 
   const handleChange = (field: keyof Seuils, value: string) => {
     const numValue = parseFloat(value);
-    setSeuils({ ...seuils, [field]: isNaN(numValue) ? undefined : numValue });
+    setSeuils((prev) => ({
+      ...prev,
+      [field]: isNaN(numValue) ? undefined : numValue,
+    }));
   };
 
   const handleSave = async () => {
@@ -53,7 +63,12 @@ export default function Parametres() {
     setError(null);
     setSuccess(false);
     try {
-      await parametresAPI.update({ thresholds: seuils });
+      const response = await parametresAPI.update({ thresholds: seuils });
+      console.log("✅ handleSave response:", response.data);
+
+      // Recharger depuis la DB pour confirmer la persistance
+      await fetchParametres();
+
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
@@ -65,17 +80,7 @@ export default function Parametres() {
   };
 
   const handleReset = () => {
-    setSeuils({
-      temperatureMin: 18,
-      temperatureMax: 28,
-      humidityMin: 40,
-      humidityMax: 70,
-      co2Warning: 2500,
-      co2Critical: 3000,
-      nh3Max: 25,
-      dustMax: 150,
-      waterLevelMin: 20,
-    });
+    setSeuils(DEFAULT_SEUILS);
   };
 
   return (
@@ -84,44 +89,49 @@ export default function Parametres() {
       <div className="flex">
         <Sidebar />
         <main className="flex-1 p-6 lg:p-8">
+          {/* Page Header */}
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-slate-900 dark:text-white">
               Paramètres Système
             </h1>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Configurez les seuils par défaut du système
+              Configurez les seuils par défaut appliqués aux nouveaux
+              poulaillers
             </p>
           </div>
 
+          {/* Alerts */}
           {error && (
             <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
               <p className="text-red-600 dark:text-red-400">{error}</p>
             </div>
           )}
-
           {success && (
             <div className="mb-6 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
               <p className="text-green-600 dark:text-green-400">
-                Paramètres enregistrés avec succès!
+                Paramètres enregistrés avec succès !
               </p>
             </div>
           )}
 
           {loading ? (
             <div className="flex items-center justify-center h-64">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
             </div>
           ) : (
             <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-sm">
+              {/* Card Header */}
               <div className="p-6 border-b border-slate-200 dark:border-slate-700">
                 <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
                   Seuils par Défaut
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                  Ces valeurs seront appliquées aux nouveaux poulaillers
+                  Ces valeurs seront appliquées automatiquement aux nouveaux
+                  poulaillers
                 </p>
               </div>
 
+              {/* Fields */}
               <div className="p-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {/* Température */}
@@ -200,91 +210,31 @@ export default function Parametres() {
                     </div>
                   </div>
 
-                  {/* CO2 */}
+                  {/* Qualité de l'air */}
                   <div className="space-y-4">
                     <h3 className="font-medium text-slate-900 dark:text-white flex items-center gap-2">
                       <span className="material-symbols-outlined text-primary">
-                        co2
+                        air
                       </span>
-                      CO2 (ppm)
+                      Qualité de l'air (IAQ)
                     </h3>
                     <div>
                       <label className="block text-sm text-slate-600 dark:text-slate-400 mb-1">
-                        Warning
+                        Min acceptable
                       </label>
                       <input
                         type="number"
-                        value={seuils.co2Warning ?? ""}
+                        value={seuils.airQualityMin ?? ""}
                         onChange={(e) =>
-                          handleChange("co2Warning", e.target.value)
+                          handleChange("airQualityMin", e.target.value)
                         }
                         className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-                        placeholder="2500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-slate-600 dark:text-slate-400 mb-1">
-                        Critical
-                      </label>
-                      <input
-                        type="number"
-                        value={seuils.co2Critical ?? ""}
-                        onChange={(e) =>
-                          handleChange("co2Critical", e.target.value)
-                        }
-                        className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-                        placeholder="3000"
+                        placeholder="50"
                       />
                     </div>
                   </div>
 
-                  {/* NH3 */}
-                  <div className="space-y-4">
-                    <h3 className="font-medium text-slate-900 dark:text-white flex items-center gap-2">
-                      <span className="material-symbols-outlined text-primary">
-                        science
-                      </span>
-                      NH3 (ppm)
-                    </h3>
-                    <div>
-                      <label className="block text-sm text-slate-600 dark:text-slate-400 mb-1">
-                        Max
-                      </label>
-                      <input
-                        type="number"
-                        value={seuils.nh3Max ?? ""}
-                        onChange={(e) => handleChange("nh3Max", e.target.value)}
-                        className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-                        placeholder="25"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Poussière */}
-                  <div className="space-y-4">
-                    <h3 className="font-medium text-slate-900 dark:text-white flex items-center gap-2">
-                      <span className="material-symbols-outlined text-primary">
-                        dust
-                      </span>
-                      Poussière (mg/m³)
-                    </h3>
-                    <div>
-                      <label className="block text-sm text-slate-600 dark:text-slate-400 mb-1">
-                        Max
-                      </label>
-                      <input
-                        type="number"
-                        value={seuils.dustMax ?? ""}
-                        onChange={(e) =>
-                          handleChange("dustMax", e.target.value)
-                        }
-                        className="w-full px-4 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-                        placeholder="150"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Eau */}
+                  {/* Niveau d'eau */}
                   <div className="space-y-4">
                     <h3 className="font-medium text-slate-900 dark:text-white flex items-center gap-2">
                       <span className="material-symbols-outlined text-primary">
@@ -310,6 +260,7 @@ export default function Parametres() {
                 </div>
               </div>
 
+              {/* Footer Actions */}
               <div className="p-6 border-t border-slate-200 dark:border-slate-700 flex justify-between">
                 <button
                   onClick={handleReset}

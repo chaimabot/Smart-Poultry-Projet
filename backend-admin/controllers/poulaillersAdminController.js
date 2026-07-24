@@ -1,6 +1,7 @@
 const Poulailler = require("../models/Poulailler");
 const User = require("../models/User");
 const Alert = require("../models/Alert");
+const AiAnalysis = require("../models/AiAnalysis");
 
 // ============================================================================
 // HELPER — format d'une entrée de la liste
@@ -46,7 +47,6 @@ const mapActuators = (actuatorStates) => {
       icon: "💨",
     });
   }
-  // Souvent la lampe et la pompe ne sont pas dans le modèle — fallback si absent
   if (!actuatorStates.lampe && !map.find((a) => a.name === "Lampe")) {
     map.push({ name: "Lampe", state: "Éteinte", mode: "Auto", icon: "💡" });
   }
@@ -82,11 +82,50 @@ const mapAutoThresholds = (auto) => {
   };
 };
 
+// ============================================================================
+// HELPER — récupère la dernière analyse IA d'un poulailler
+// Gère la compat ObjectId / String dans la collection AiAnalysis
+// ============================================================================
+const getLastAiAnalysis = async (poulaillerId) => {
+  // Recherche par ObjectId d'abord
+  let analysis = await AiAnalysis.findOne({ poultryId: poulaillerId })
+    .sort({ createdAt: -1 })
+    .select(
+      "result.healthScore result.urgencyLevel result.diagnostic createdAt",
+    )
+    .lean();
+
+  // Compat Mongo : parfois poultryId est stocké comme String dans la collection
+  if (!analysis) {
+    analysis = await AiAnalysis.findOne({
+      poultryId: poulaillerId.toString(),
+    })
+      .sort({ createdAt: -1 })
+      .select(
+        "result.healthScore result.urgencyLevel result.diagnostic createdAt",
+      )
+      .lean();
+  }
+
+  if (!analysis) return null;
+
+  return {
+    healthScore: analysis.result?.healthScore ?? null,
+    urgencyLevel: analysis.result?.urgencyLevel ?? "inconnu",
+    diagnostic: analysis.result?.diagnostic ?? null,
+    createdAt: analysis.createdAt,
+  };
+};
+
+// ============================================================================
+// HELPER — format complet d'un poulailler pour la liste ET le détail
+// ============================================================================
 const formatPoulaillerListItem = async (p) => {
-  const alertesCount = await Alert.countDocuments({
-    poulailler: p._id,
-    resolvedAt: null,
-  });
+  // FIX : on récupère alertes ET dernière analyse IA en parallèle
+  const [alertesCount, lastAiAnalysis] = await Promise.all([
+    Alert.countDocuments({ poulailler: p._id, resolvedAt: null }),
+    getLastAiAnalysis(p._id),
+  ]);
 
   const connectionStatus = computeConnectionStatus(p);
   const alertSeverity = computeAlertSeverity(alertesCount, p.isCritical);
@@ -132,6 +171,8 @@ const formatPoulaillerListItem = async (p) => {
     actuators: mapActuators(p.actuatorStates),
     thresholds: mapThresholds(p.seuils),
     autoThresholds: mapAutoThresholds(p.autoThresholds),
+    // FIX : lastAiAnalysis maintenant inclus dans la liste
+    lastAiAnalysis,
   };
 };
 
@@ -151,7 +192,6 @@ exports.getAllPoulaillers = async (req, res) => {
     }
 
     if (search) {
-      // FIX #4 — recherche aussi par nom/prénom de l'éleveur via lookup
       const matchingOwners = await User.find(
         {
           $or: [
@@ -223,10 +263,10 @@ exports.getPoulaillerById = async (req, res) => {
       });
     }
 
-    const alertesCount = await Alert.countDocuments({
-      poulailler: poulailler._id,
-      resolvedAt: null,
-    });
+    const [alertesCount, lastAiAnalysis] = await Promise.all([
+      Alert.countDocuments({ poulailler: poulailler._id, resolvedAt: null }),
+      getLastAiAnalysis(poulailler._id),
+    ]);
 
     const connectionStatus = computeConnectionStatus(poulailler);
     const alertSeverity = computeAlertSeverity(
@@ -281,6 +321,7 @@ exports.getPoulaillerById = async (req, res) => {
         isOnline: poulailler.isOnline,
         lastCommunicationAt: poulailler.lastCommunicationAt,
         createdAt: poulailler.createdAt,
+        lastAiAnalysis,
       },
     });
   } catch (err) {
@@ -293,7 +334,7 @@ exports.getPoulaillerById = async (req, res) => {
 };
 
 // ============================================================================
-// @desc    Créer un poulailler (admin)              ← FIX #1 — handler manquant
+// @desc    Créer un poulailler (admin)
 // @route   POST /api/admin/poulaillers
 // @access  Private/Admin
 // ============================================================================
@@ -301,7 +342,6 @@ exports.createPoulailler = async (req, res) => {
   try {
     const { name, type, animalCount, ownerId } = req.body;
 
-    // Validation minimale
     if (!name || !ownerId) {
       return res.status(400).json({
         success: false,
@@ -324,7 +364,6 @@ exports.createPoulailler = async (req, res) => {
       });
     }
 
-    // Génération du code unique : POL-XXXXXX
     const uniqueCode =
       "POL-" + Math.random().toString(36).substring(2, 8).toUpperCase();
 
@@ -366,7 +405,6 @@ exports.createPoulailler = async (req, res) => {
 // ============================================================================
 exports.updatePoulailler = async (req, res) => {
   try {
-    // FIX #3 — type, animalCount et ownerId ignorés avant
     const {
       name,
       type,
@@ -460,13 +498,13 @@ exports.deletePoulailler = async (req, res) => {
     console.error("[DELETE POULAILLER ERROR]", err);
     res.status(500).json({
       success: false,
-      error: "Erreur lors de la suppression du poulailler",
+      error: "Erreur lors de l'archivage du poulailler",
     });
   }
 };
 
 // ============================================================================
-// @desc    Obtenir la liste des éleveurs (pour les selects)  ← FIX #2 — manquant
+// @desc    Obtenir la liste des éleveurs (pour les selects)
 // @route   GET /api/admin/poulaillers/users
 // @access  Private/Admin
 // ============================================================================

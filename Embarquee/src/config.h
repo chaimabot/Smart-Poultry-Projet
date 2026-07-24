@@ -4,8 +4,8 @@
 // Ces valeurs sont utilisées au premier démarrage uniquement.
 // Une fois changées via l'app, les nouvelles valeurs sont
 // sauvegardées en NVS et ces constantes sont ignorées.
-#define DEFAULT_WIFI_SSID     "globalnet"
-#define DEFAULT_WIFI_PASSWORD "changeme"
+#define DEFAULT_WIFI_SSID     "Wifi"
+#define DEFAULT_WIFI_PASSWORD "walid90%"
 
 // ====================== MQTT ================================
 #define MQTT_BROKER     "372f445aface456abb82e44117d9d92b.s1.eu.hivemq.cloud"

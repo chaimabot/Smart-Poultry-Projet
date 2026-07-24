@@ -1,4 +1,4 @@
-// context/NotificationsContext.js - FIXED ✅ Compatible AlertController
+// context/NotificationsContext.js - FIXED   Compatible AlertController
 import React, {
   createContext,
   useContext,
@@ -121,7 +121,7 @@ export function NotificationsProvider({ children }) {
             });
           } else {
             console.warn(
-              `⚠️ Alertes non chargées pour "${poultry?.name}":`,
+              `   Alertes non chargées pour "${poultry?.name}":`,
               result.reason?.message || result.reason,
             );
           }

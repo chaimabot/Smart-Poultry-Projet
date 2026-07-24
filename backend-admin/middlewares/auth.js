@@ -2,11 +2,26 @@
 const jwt = require("jsonwebtoken");
 
 const protect = (req, res, next) => {
-  const token =
-    req.header("x-auth-token") ||
-    req.header("Authorization")?.replace("Bearer ", "");
+  const authHeader = req.header("Authorization");
+  const tokenFromX = req.header("x-auth-token");
+
+  // support 1) Authorization: Bearer <jwt>
+  // support 2) Authorization: <jwt>
+  let tokenFromAuth = null;
+  if (authHeader) {
+    const trimmed = authHeader.trim();
+    tokenFromAuth = trimmed.toLowerCase().startsWith("bearer ")
+      ? trimmed.slice(7)
+      : trimmed;
+  }
+
+  const token = tokenFromX || tokenFromAuth;
 
   if (!token) {
+    console.warn("[auth] Aucun token fourni. headers:", {
+      authorization: req.header("Authorization"),
+      "x-auth-token": req.header("x-auth-token"),
+    });
     return res
       .status(401)
       .json({ success: false, error: "Aucun token fourni" });

@@ -1,4 +1,4 @@
-// services/poultry.js - COMPLET ✅ Sans doublons
+// services/poultry.js - COMPLET   Sans doublons
 import api from "./api";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,7 +145,7 @@ export const getMonitoringData = async (id) => {
   }
 };
 
-// ✅ CORRIGÉ — déclaration complète de la fonction
+//   CORRIGÉ — déclaration complète de la fonction
 // Envoie une commande pour contrôler un actionneur
 export const controlActuator = async (id, actuator, state, mode = "manual") => {
   try {

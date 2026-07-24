@@ -41,7 +41,7 @@ const { width } = Dimensions.get("window");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// ✅ airQualityPercent est un seuil MIN — danger si en dessous
+//   airQualityPercent est un seuil MIN — danger si en dessous
 function getAirQuality(airQualityPercent, threshold) {
   if (airQualityPercent === null || airQualityPercent === undefined)
     return { label: "—", color: "#94A3B8", status: "none" };
@@ -89,7 +89,7 @@ const BADGE_CONFIG = {
     dot: "#94A3B8",
   },
   connecte: {
-    label: "Associé à un ESP32",
+    label: "Configuré",
     bg: "rgba(255,255,255,0.9)",
     textColor: "#1E293B",
     dot: "#22C55E",
@@ -626,7 +626,7 @@ export default function DashboardScreen({ navigation }) {
               {
                 key: "connected",
                 icon: "pulse-outline",
-                label: `Associé à un ESP32 (${stats.active})`,
+                label: `Configuré (${stats.active})`,
               },
               { key: "pending", icon: "time-outline", label: `En attente` },
             ].map(({ key, icon, label }) => (
@@ -1039,7 +1039,7 @@ export default function DashboardScreen({ navigation }) {
                       </View>
                     </View>
 
-                    {/* ✅ Qualité d'air - Cohérent avec OverviewTab */}
+                    {/*   Qualité d'air - Cohérent avec OverviewTab */}
                     <View
                       style={[
                         styles.airQualityBox,

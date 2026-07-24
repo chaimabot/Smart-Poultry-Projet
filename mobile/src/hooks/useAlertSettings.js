@@ -184,7 +184,7 @@ export default function useAlertSettings({ poultryId, activeTab, setToast }) {
 
   // ── Threshold handlers ────────────────────────────────────────────────────
   const handleThresholdChange = (key, text) => {
-    // ✅ FIX 2 : Gestion de la virgule (français) -> on la remplace par un point
+    //   FIX 2 : Gestion de la virgule (français) -> on la remplace par un point
     const normalizedText = text.replace(",", ".");
 
     // On nettoie tout sauf les chiffres, le point et le signe moins

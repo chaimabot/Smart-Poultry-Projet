@@ -1,5 +1,13 @@
 // screens/AIAnalysisDetailScreen.js
-// FIX : Platform ajouté dans les imports react-native (manquant → ReferenceError → bundle 500)
+// Compatible backend v4 — Smart Poultry
+//
+// Corrections appliquées :
+//   1. sensors : lit doc.sensors (racine AiAnalysis) en priorité, puis result.sensors
+//   2. imageUsable / imageAvailable : propagés depuis la racine du document
+//   3. imageQuality : merge racine + result (status "poor" est contagieux)
+//   4. Platform : importé (était manquant → ReferenceError sur Android)
+//   5. triggeredBy "cron-auto" ajouté dans getTriggeredByLabel
+//   6. Détections visuelles : Mortalité + nb morts, Comptage poussins, Maladie, Comportement
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -14,7 +22,7 @@ import {
   Animated,
   Share,
   Alert,
-  Platform, // ✅ FIX : était utilisé dans StyleSheet mais jamais importé
+  Platform,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -28,7 +36,7 @@ import Toast from "../../components/Toast";
 
 const { width } = Dimensions.get("window");
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(dateStr) {
   if (!dateStr) return "—";
@@ -92,8 +100,10 @@ function getTriggeredByLabel(triggeredBy) {
   switch (triggeredBy) {
     case "auto":
     case "esp32-auto":
+      return { label: "Automatique (ESP32)", icon: "settings-remote" };
+    case "cron-auto":
     case "cron":
-      return { label: "Automatique (CRON)", icon: "schedule" };
+      return { label: "Automatique (CRON 2h)", icon: "schedule" };
     case "manual":
       return { label: "Manuel (app mobile)", icon: "touch-app" };
     default:
@@ -101,11 +111,45 @@ function getTriggeredByLabel(triggeredBy) {
   }
 }
 
-// ─── Score Circle ──────────────────────────────────────────────────────────
+/**
+ * Extrait les capteurs depuis le document AiAnalysis.
+ * Priorité : doc.sensors (racine) → result.sensors → result plat → doc plat
+ */
+function extractSensors(doc) {
+  if (!doc) return {};
+  const notEmpty = (obj) =>
+    obj && typeof obj === "object" && Object.keys(obj).length > 0;
+
+  if (notEmpty(doc.sensors)) return doc.sensors;
+  if (notEmpty(doc.result?.sensors)) return doc.result.sensors;
+  return {};
+}
+
+/**
+ * Fusionne imageQuality depuis la racine et result.
+ * Le statut "poor" est contagieux.
+ */
+function mergeImageQuality(rootIQ, resultIQ) {
+  const root = rootIQ || {};
+  const res = resultIQ || {};
+  const isPoor = root.status === "poor" || res.status === "poor";
+  return {
+    ...res,
+    ...root,
+    status: isPoor ? "poor" : root.status || res.status || "unknown",
+    usable: root.usable !== undefined ? root.usable : res.usable,
+    score: root.score !== undefined ? root.score : res.score,
+  };
+}
+
+// ─── Score Circle ─────────────────────────────────────────────────────────────
 
 function ScoreCircle({ score, size = 110 }) {
-  const rotation = (score / 100) * 360;
-  const color = score >= 70 ? "#22C55E" : score >= 40 ? "#F59E0B" : "#EF4444";
+  const safeScore = score ?? 0;
+  const rotation = (safeScore / 100) * 360;
+  const color =
+    safeScore >= 70 ? "#22C55E" : safeScore >= 40 ? "#F59E0B" : "#EF4444";
+
   return (
     <View
       style={[
@@ -127,7 +171,7 @@ function ScoreCircle({ score, size = 110 }) {
         <Text
           style={[styles.scoreCircleValue, { color, fontSize: size * 0.28 }]}
         >
-          {score}
+          {score != null ? score : "—"}
         </Text>
         <Text style={[styles.scoreCircleLabel, { color }]}>/100</Text>
       </View>
@@ -171,45 +215,44 @@ function ScoreCircle({ score, size = 110 }) {
   );
 }
 
-// ─── Detection Row ─────────────────────────────────────────────────────────
+// ─── Detection Card (remplace DetectionRow — design carte enrichie) ───────────
 
-function DetectionRow({ icon, label, desc, ok, confidence }) {
-  const color = ok ? "#22C55E" : "#EF4444";
-  const bg = ok ? "#F0FDF4" : "#FEF2F2";
+function DetectionCard({
+  icon,
+  label,
+  status,
+  statusColor,
+  statusBg,
+  statusLabel,
+  children,
+  isNull,
+}) {
   return (
-    <View style={styles.detectionRow}>
-      <View style={[styles.detectionIconWrap, { backgroundColor: bg }]}>
-        <MaterialIcons name={icon} size={20} color={color} />
-      </View>
-      <View style={styles.detectionBody}>
-        <View style={styles.detectionTopRow}>
-          <Text style={styles.detectionLabel}>{label}</Text>
-          <View style={[styles.detectionBadge, { backgroundColor: bg }]}>
-            <Text style={[styles.detectionBadgeText, { color }]}>
-              {ok ? "OK" : "ALERTE"}
-            </Text>
-          </View>
+    <View style={[styles.detectionCard, { opacity: isNull ? 0.55 : 1 }]}>
+      <View style={styles.detectionCardHeader}>
+        <View
+          style={[styles.detectionCardIconWrap, { backgroundColor: statusBg }]}
+        >
+          <MaterialIcons name={icon} size={20} color={statusColor} />
         </View>
-        <Text style={styles.detectionDesc}>{desc}</Text>
-        {confidence != null && (
-          <View style={styles.detectionBarWrap}>
-            <View style={styles.detectionBarBg}>
-              <View
-                style={[
-                  styles.detectionBarFill,
-                  { width: `${confidence}%`, backgroundColor: color },
-                ]}
-              />
-            </View>
-            <Text style={[styles.detectionPct, { color }]}>{confidence}%</Text>
-          </View>
-        )}
+        <Text style={styles.detectionCardLabel}>{label}</Text>
+        <View
+          style={[styles.detectionCardBadge, { backgroundColor: statusBg }]}
+        >
+          <Text style={[styles.detectionCardBadgeText, { color: statusColor }]}>
+            {statusLabel}
+          </Text>
+        </View>
       </View>
+      {children && <View style={styles.detectionCardBody}>{children}</View>}
+      {isNull && (
+        <Text style={styles.detectionNa}>Non évalué — image indisponible</Text>
+      )}
     </View>
   );
 }
 
-// ─── Sensor Card ───────────────────────────────────────────────────────────
+// ─── Sensor Card ──────────────────────────────────────────────────────────────
 
 function SensorCard({
   icon,
@@ -240,7 +283,7 @@ function SensorCard({
   );
 }
 
-// ─── Section Header ────────────────────────────────────────────────────────
+// ─── Section Header ───────────────────────────────────────────────────────────
 
 function SectionHeader({ icon, title }) {
   return (
@@ -251,7 +294,7 @@ function SectionHeader({ icon, title }) {
   );
 }
 
-// ─── Tech Row ──────────────────────────────────────────────────────────────
+// ─── Tech Row ─────────────────────────────────────────────────────────────────
 
 function TechRow({ label, value, mono = false }) {
   return (
@@ -268,7 +311,7 @@ function TechRow({ label, value, mono = false }) {
   );
 }
 
-// ─── Main Screen ───────────────────────────────────────────────────────────
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function AIAnalysisDetailScreen() {
   const navigation = useNavigation();
@@ -281,7 +324,6 @@ export default function AIAnalysisDetailScreen() {
   const poultryName =
     params.poultryName || params.poulaillerName || "Poulailler";
 
-  // Si l'analyse est passée directement (depuis l'historique), on l'utilise
   const [analysis, setAnalysis] = useState(params.analysis || null);
   const [loading, setLoading] = useState(!params.analysis);
   const [toast, setToast] = useState({
@@ -294,15 +336,12 @@ export default function AIAnalysisDetailScreen() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(24)).current;
 
-  // ── Chargement ────────────────────────────────────────────────────────
   useEffect(() => {
     if (analysis) {
       animateIn();
       return;
     }
-    if (analysisId) {
-      fetchAnalysis();
-    }
+    if (analysisId) fetchAnalysis();
   }, []);
 
   async function fetchAnalysis() {
@@ -337,16 +376,15 @@ export default function AIAnalysisDetailScreen() {
     ]).start();
   }
 
-  // ── Partage ───────────────────────────────────────────────────────────
   const handleShare = useCallback(async () => {
     if (!analysis) return;
     try {
-      const r = analysis.result;
+      const r = analysis.result || {};
       const msg =
         `📊 Rapport IA — ${poultryName}\n` +
         `📅 ${formatDateShort(analysis.createdAt)}\n\n` +
-        `🩺 Score santé : ${r.healthScore}/100\n` +
-        `🚦 Niveau : ${r.urgencyLevel?.toUpperCase()}\n` +
+        `🩺 Score santé : ${r.healthScore ?? "—"}/100\n` +
+        `🚦 Niveau : ${r.urgencyLevel?.toUpperCase() ?? "—"}\n` +
         `📋 Diagnostic : ${r.diagnostic}\n\n` +
         `Conseils :\n${(r.advices || []).map((a, i) => `${i + 1}. ${a}`).join("\n")}`;
       await Share.share({ message: msg, title: "Rapport IA Smart Poultry" });
@@ -355,7 +393,6 @@ export default function AIAnalysisDetailScreen() {
     }
   }, [analysis, poultryName]);
 
-  // ── Chat contextuel ───────────────────────────────────────────────────
   const handleChat = useCallback(() => {
     navigation.navigate("AIChat", {
       poultryId,
@@ -364,7 +401,6 @@ export default function AIAnalysisDetailScreen() {
     });
   }, [navigation, poultryId, poultryName, analysis]);
 
-  // ── Nouvelle analyse ──────────────────────────────────────────────────
   const handleNewAnalysis = useCallback(() => {
     navigation.navigate("AIAnalysis", { poultryId, poultryName });
   }, [navigation, poultryId, poultryName]);
@@ -372,7 +408,8 @@ export default function AIAnalysisDetailScreen() {
   const showToast = (message, type = "success") =>
     setToast({ visible: true, message, type });
 
-  // ── Render loading ────────────────────────────────────────────────────
+  // ── Loading ────────────────────────────────────────────────────────────────
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -425,15 +462,102 @@ export default function AIAnalysisDetailScreen() {
     );
   }
 
+  // ── Data extraction ────────────────────────────────────────────────────────
   const result = analysis.result || {};
-  const sensors = analysis.sensors || result.sensors || {};
   const detections = result.detections || {};
+  const comptage = result.comptage || {};
+  const maladie = result.maladie_suspectee || {};
+
+  // Capteurs : priorité racine du document (AiAnalysis.sensors), puis result.sensors
+  const sensors = extractSensors(analysis);
+
+  // imageQuality : merge racine + result
+  const imageQuality = mergeImageQuality(
+    analysis.imageQuality,
+    result.imageQuality,
+  );
+
+  // imageUsable / imageAvailable : racine en priorité
+  const imageUsable =
+    analysis.imageUsable !== undefined
+      ? analysis.imageUsable
+      : result.imageUsable;
+  const imageAvailable =
+    analysis.imageAvailable !== undefined
+      ? analysis.imageAvailable
+      : result.imageAvailable;
+
   const urgency = getUrgencyConfig(result.urgencyLevel);
   const trigger = getTriggeredByLabel(analysis.triggeredBy);
   const imageUrl = analysis.image?.url || null;
   const thumbnailUrl = analysis.image?.thumbnailUrl || imageUrl;
+  const isPoor = imageQuality?.status === "poor" || imageUsable === false;
 
-  // ── Render ────────────────────────────────────────────────────────────
+  // ── Détections enrichies ───────────────────────────────────────────────────
+
+  // Mortalité
+  const mortalityDetected = isPoor ? null : detections.mortalityDetected;
+  const mortalityColor =
+    mortalityDetected === null
+      ? "#94A3B8"
+      : mortalityDetected
+        ? "#EF4444"
+        : "#22C55E";
+  const mortalityBg =
+    mortalityDetected === null
+      ? "#F8FAFC"
+      : mortalityDetected
+        ? "#FEF2F2"
+        : "#F0FDF4";
+  const mortalityLabel =
+    mortalityDetected === null
+      ? "N/A"
+      : mortalityDetected
+        ? "DÉTECTÉE"
+        : "AUCUNE";
+
+  // Comptage
+  const comptageEstimation = isPoor ? null : comptage.estimation;
+  const comptageFiabilite = comptage.fiabilite;
+  const comptageColor = comptageEstimation === null ? "#94A3B8" : "#3B82F6";
+  const comptageBg = comptageEstimation === null ? "#F8FAFC" : "#EFF6FF";
+
+  // Maladie
+  const maladieSuspicion = isPoor ? null : maladie.suspicion;
+  const maladieColor =
+    maladieSuspicion === null
+      ? "#94A3B8"
+      : maladieSuspicion
+        ? "#EF4444"
+        : "#22C55E";
+  const maladieBg =
+    maladieSuspicion === null
+      ? "#F8FAFC"
+      : maladieSuspicion
+        ? "#FEF2F2"
+        : "#F0FDF4";
+  const maladieLabel =
+    maladieSuspicion === null ? "N/A" : maladieSuspicion ? "SUSPECTÉE" : "RAS";
+
+  // Comportement
+  const behaviorNormal = isPoor ? null : detections.behaviorNormal;
+  const behaviorColor =
+    behaviorNormal === null
+      ? "#94A3B8"
+      : behaviorNormal
+        ? "#22C55E"
+        : "#F59E0B";
+  const behaviorBg =
+    behaviorNormal === null
+      ? "#F8FAFC"
+      : behaviorNormal
+        ? "#F0FDF4"
+        : "#FEF3C7";
+  const behaviorLabel =
+    behaviorNormal === null ? "N/A" : behaviorNormal ? "NORMAL" : "ANORMAL";
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" />
@@ -468,19 +592,26 @@ export default function AIAnalysisDetailScreen() {
           { paddingBottom: 110 + Math.max(insets.bottom, 0) },
         ]}
       >
-        {/* ── Image + Score hero ── */}
+        {/* Hero card */}
         <View style={styles.heroCard}>
-          {/* Image */}
           <View style={styles.heroImageWrap}>
             {imageUrl && !imageError ? (
               <>
                 <Image
                   source={{ uri: thumbnailUrl || imageUrl }}
-                  style={styles.heroImage}
+                  style={[styles.heroImage, isPoor && { opacity: 0.4 }]}
                   resizeMode="cover"
                   onError={() => setImageError(true)}
                 />
                 <View style={styles.heroImageOverlay} />
+                {isPoor && (
+                  <View style={styles.poorOverlay}>
+                    <MaterialIcons name="blur-on" size={28} color="#fff" />
+                    <Text style={styles.poorOverlayText}>
+                      Image inexploitable
+                    </Text>
+                  </View>
+                )}
               </>
             ) : (
               <View style={styles.heroImagePlaceholder}>
@@ -495,7 +626,6 @@ export default function AIAnalysisDetailScreen() {
               </View>
             )}
 
-            {/* Badge urgence sur l'image */}
             {imageUrl && !imageError && (
               <View
                 style={[
@@ -507,8 +637,6 @@ export default function AIAnalysisDetailScreen() {
                 <Text style={styles.heroUrgencyBadgeText}>{urgency.label}</Text>
               </View>
             )}
-
-            {/* Badge caméra */}
             {analysis.cameraMac && imageUrl && !imageError && (
               <View style={styles.heroCamBadge}>
                 <MaterialIcons name="camera-alt" size={12} color="#fff" />
@@ -519,8 +647,7 @@ export default function AIAnalysisDetailScreen() {
 
           {/* Score + meta */}
           <View style={styles.heroScoreSection}>
-            <ScoreCircle score={result.healthScore ?? 0} size={110} />
-
+            <ScoreCircle score={result.healthScore} size={110} />
             <View style={styles.heroScoreInfo}>
               <View
                 style={[styles.urgencyBadge, { backgroundColor: urgency.bg }]}
@@ -539,27 +666,24 @@ export default function AIAnalysisDetailScreen() {
                   {urgency.label}
                 </Text>
               </View>
-
               <View style={styles.metaRow}>
                 <MaterialIcons name="verified" size={13} color="#94A3B8" />
                 <Text style={styles.metaText}>
                   Confiance : {result.confidence ?? "—"}%
+                  {isPoor ? " (capteurs)" : ""}
                 </Text>
               </View>
-
               <View style={styles.metaRow}>
                 <MaterialIcons name={trigger.icon} size={13} color="#94A3B8" />
                 <Text style={styles.metaText}>{trigger.label}</Text>
               </View>
-
               <View style={styles.metaRow}>
                 <MaterialIcons name="access-time" size={13} color="#94A3B8" />
                 <Text style={styles.metaText}>
                   {formatDateShort(analysis.createdAt)}
                 </Text>
               </View>
-
-              {analysis.imageQuality?.status === "optimized" && (
+              {imageQuality?.status === "optimized" && (
                 <View style={styles.metaRow}>
                   <MaterialIcons
                     name="photo-size-select-actual"
@@ -567,14 +691,25 @@ export default function AIAnalysisDetailScreen() {
                     color="#94A3B8"
                   />
                   <Text style={styles.metaText}>
-                    Image : {analysis.imageQuality?.sizeKb ?? "—"} Ko
+                    Image : {imageQuality?.sizeKb ?? "—"} Ko
+                  </Text>
+                </View>
+              )}
+              {isPoor && (
+                <View style={styles.metaRow}>
+                  <MaterialIcons
+                    name="broken-image"
+                    size={13}
+                    color="#F59E0B"
+                  />
+                  <Text style={[styles.metaText, { color: "#F59E0B" }]}>
+                    Sans image exploitable
                   </Text>
                 </View>
               )}
             </View>
           </View>
 
-          {/* Date complète */}
           <View style={styles.heroDivider} />
           <View style={styles.heroDateRow}>
             <MaterialIcons name="event" size={14} color="#94A3B8" />
@@ -584,7 +719,7 @@ export default function AIAnalysisDetailScreen() {
           </View>
         </View>
 
-        {/* ── Diagnostic ── */}
+        {/* Diagnostic */}
         <View style={styles.card}>
           <SectionHeader icon="medical-services" title="Diagnostic" />
           <View
@@ -596,49 +731,296 @@ export default function AIAnalysisDetailScreen() {
           </View>
         </View>
 
-        {/* ── Détections visuelles ── */}
+        {/* ═══════════════════════════════════════════════════════════════════
+            DÉTECTIONS IA — section remaniée
+            ═══════════════════════════════════════════════════════════════════ */}
         <View style={styles.card}>
-          <SectionHeader icon="search" title="Détections visuelles" />
+          <SectionHeader icon="biotech" title="Analyse IA du troupeau" />
+
+          {isPoor && (
+            <View style={styles.unavailableRow}>
+              <MaterialIcons name="visibility-off" size={15} color="#94A3B8" />
+              <Text style={styles.unavailableText}>
+                Non disponible — image inexploitable
+              </Text>
+            </View>
+          )}
+
           <View style={styles.detectionList}>
-            <DetectionRow
-              icon="psychology"
-              label="Comportement"
-              desc="Activité et posture des volailles dans l'image"
-              ok={detections.behaviorNormal !== false}
-              confidence={95}
-            />
-            <DetectionRow
-              icon="favorite"
+            {/* ── 1. Mortalité ────────────────────────────────────────────── */}
+            <DetectionCard
+              icon="warning"
               label="Mortalité"
-              desc="Présence de cadavres détectée visuellement"
-              ok={!detections.mortalityDetected}
-              confidence={99}
-            />
-            <DetectionRow
-              icon="group"
-              label="Densité"
-              desc="Répartition et densité des volailles au m²"
-              ok={detections.densityOk !== false}
-              confidence={88}
-            />
-            <DetectionRow
-              icon="cleaning-services"
-              label="Environnement"
-              desc="État de la litière et propreté générale"
-              ok={detections.cleanEnvironment !== false}
-              confidence={92}
-            />
-            <DetectionRow
-              icon="air"
-              label="Ventilation"
-              desc="Circulation d'air et signes de condensation"
-              ok={detections.ventilationAdequate !== false}
-              confidence={90}
-            />
+              statusColor={mortalityColor}
+              statusBg={mortalityBg}
+              statusLabel={mortalityLabel}
+              isNull={mortalityDetected === null}
+            >
+              {mortalityDetected === true ? (
+                <View style={styles.detectionDetail}>
+                  <MaterialIcons name="report" size={14} color="#EF4444" />
+                  <Text
+                    style={[styles.detectionDetailText, { color: "#EF4444" }]}
+                  >
+                    Des volailles mortes ont été détectées dans l'image.
+                    Contactez un vétérinaire immédiatement.
+                  </Text>
+                </View>
+              ) : mortalityDetected === false ? (
+                <View style={styles.detectionDetail}>
+                  <MaterialIcons
+                    name="check-circle"
+                    size={14}
+                    color="#22C55E"
+                  />
+                  <Text style={styles.detectionDetailText}>
+                    Aucune mortalité visible dans le champ de la caméra.
+                  </Text>
+                </View>
+              ) : null}
+            </DetectionCard>
+
+            {/* ── 2. Comptage poussins ────────────────────────────────────── */}
+            <DetectionCard
+              icon="groups"
+              label="Nombre de volailles"
+              statusColor={comptageColor}
+              statusBg={comptageBg}
+              statusLabel={
+                comptageEstimation !== null
+                  ? `~${comptageEstimation} volailles`
+                  : "N/A"
+              }
+              isNull={comptageEstimation === null && !isPoor}
+            >
+              {comptageEstimation !== null ? (
+                <View style={styles.detectionDetailCol}>
+                  <View style={styles.comptageRow}>
+                    <View style={styles.comptageNumBox}>
+                      <Text style={styles.comptageNum}>
+                        {comptageEstimation}
+                      </Text>
+                      <Text style={styles.comptageNumLabel}>
+                        volailles estimées
+                      </Text>
+                    </View>
+                    {comptageFiabilite && (
+                      <View
+                        style={[
+                          styles.comptageFiabBadge,
+                          {
+                            backgroundColor:
+                              comptageFiabilite === "bonne"
+                                ? "#F0FDF4"
+                                : comptageFiabilite === "moyenne"
+                                  ? "#FEF3C7"
+                                  : "#F8FAFC",
+                          },
+                        ]}
+                      >
+                        <MaterialIcons
+                          name={
+                            comptageFiabilite === "bonne"
+                              ? "signal-cellular-alt"
+                              : comptageFiabilite === "moyenne"
+                                ? "signal-cellular-alt-2-bar"
+                                : "signal-cellular-alt-1-bar"
+                          }
+                          size={13}
+                          color={
+                            comptageFiabilite === "bonne"
+                              ? "#22C55E"
+                              : comptageFiabilite === "moyenne"
+                                ? "#F59E0B"
+                                : "#94A3B8"
+                          }
+                        />
+                        <Text
+                          style={[
+                            styles.comptageFiabText,
+                            {
+                              color:
+                                comptageFiabilite === "bonne"
+                                  ? "#22C55E"
+                                  : comptageFiabilite === "moyenne"
+                                    ? "#F59E0B"
+                                    : "#94A3B8",
+                            },
+                          ]}
+                        >
+                          Fiabilité {comptageFiabilite}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  {sensors.animalCount != null && (
+                    <View style={styles.detectionDetail}>
+                      <MaterialIcons
+                        name="info-outline"
+                        size={13}
+                        color="#94A3B8"
+                      />
+                      <Text style={styles.detectionDetailTextSm}>
+                        Effectif déclaré : {sensors.animalCount} volailles
+                        {comptageEstimation < sensors.animalCount * 0.8
+                          ? " — écart important, vérifiez la visibilité"
+                          : ""}
+                      </Text>
+                    </View>
+                  )}
+                  {comptage.note && (
+                    <View style={styles.detectionDetail}>
+                      <MaterialIcons name="notes" size={13} color="#94A3B8" />
+                      <Text style={styles.detectionDetailTextSm}>
+                        {comptage.note}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              ) : isPoor ? null : (
+                <View style={styles.detectionDetail}>
+                  <MaterialIcons
+                    name="help-outline"
+                    size={14}
+                    color="#94A3B8"
+                  />
+                  <Text style={styles.detectionDetailText}>
+                    Comptage impossible — visibilité insuffisante.
+                  </Text>
+                </View>
+              )}
+            </DetectionCard>
+
+            {/* ── 3. Maladie suspectée ────────────────────────────────────── */}
+            <DetectionCard
+              icon="coronavirus"
+              label="Maladie suspectée"
+              statusColor={maladieColor}
+              statusBg={maladieBg}
+              statusLabel={maladieLabel}
+              isNull={maladieSuspicion === null}
+            >
+              {maladieSuspicion === true ? (
+                <View style={styles.detectionDetailCol}>
+                  {maladie.maladie_probable && (
+                    <View style={styles.maladieNomRow}>
+                      <MaterialIcons
+                        name="coronavirus"
+                        size={15}
+                        color="#EF4444"
+                      />
+                      <Text style={styles.maladieNomText}>
+                        {maladie.maladie_probable}
+                      </Text>
+                    </View>
+                  )}
+                  {Array.isArray(maladie.signes_observes) &&
+                    maladie.signes_observes.length > 0 && (
+                      <View style={styles.signesWrap}>
+                        <Text style={styles.signesTitle}>
+                          Signes observés :
+                        </Text>
+                        {maladie.signes_observes.map((signe, i) => (
+                          <View key={i} style={styles.signeItem}>
+                            <View style={styles.signeDot} />
+                            <Text style={styles.signeText}>{signe}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  <View style={styles.detectionDetailRow}>
+                    {maladie.confiance && (
+                      <View
+                        style={[
+                          styles.comptageFiabBadge,
+                          { backgroundColor: "#FEF2F2" },
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="show-chart"
+                          size={12}
+                          color="#EF4444"
+                        />
+                        <Text
+                          style={[
+                            styles.comptageFiabText,
+                            { color: "#EF4444" },
+                          ]}
+                        >
+                          Confiance {maladie.confiance}
+                        </Text>
+                      </View>
+                    )}
+                    {maladie.urgence_veterinaire && (
+                      <View
+                        style={[
+                          styles.comptageFiabBadge,
+                          { backgroundColor: "#FEF2F2", marginLeft: 6 },
+                        ]}
+                      >
+                        <MaterialIcons
+                          name="local-hospital"
+                          size={12}
+                          color="#EF4444"
+                        />
+                        <Text
+                          style={[
+                            styles.comptageFiabText,
+                            { color: "#EF4444" },
+                          ]}
+                        >
+                          Urgence vétérinaire
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                </View>
+              ) : maladieSuspicion === false ? (
+                <View style={styles.detectionDetail}>
+                  <MaterialIcons
+                    name="check-circle"
+                    size={14}
+                    color="#22C55E"
+                  />
+                  <Text style={styles.detectionDetailText}>
+                    Aucun signe clinique suspect détecté visuellement.
+                  </Text>
+                </View>
+              ) : null}
+            </DetectionCard>
+
+            {/* ── 4. Comportement général ─────────────────────────────────── */}
+            <DetectionCard
+              icon="psychology"
+              label="Comportement du troupeau"
+              statusColor={behaviorColor}
+              statusBg={behaviorBg}
+              statusLabel={behaviorLabel}
+              isNull={behaviorNormal === null}
+            >
+              {behaviorNormal === true ? (
+                <View style={styles.detectionDetail}>
+                  <MaterialIcons
+                    name="check-circle"
+                    size={14}
+                    color="#22C55E"
+                  />
+                  <Text style={styles.detectionDetailText}>
+                    Activité et postures normales — troupeau en bonne forme
+                    apparente.
+                  </Text>
+                </View>
+              ) : behaviorNormal === false ? (
+                <View style={styles.detectionDetail}>
+                  <MaterialIcons name="warning" size={14} color="#F59E0B" />
+
+                </View>
+              ) : null}
+            </DetectionCard>
           </View>
         </View>
 
-        {/* ── Capteurs au moment de l'analyse ── */}
+        {/* Capteurs au moment de l'analyse */}
         <View style={styles.card}>
           <SectionHeader
             icon="sensors"
@@ -648,7 +1030,11 @@ export default function AIAnalysisDetailScreen() {
             <SensorCard
               icon="thermostat"
               label="Température"
-              value={sensors.temperature}
+              value={
+                sensors.temperature != null
+                  ? Number(sensors.temperature).toFixed(1)
+                  : null
+              }
               unit="°C"
               color={
                 sensors.temperature == null
@@ -659,12 +1045,15 @@ export default function AIAnalysisDetailScreen() {
                       ? "#F59E0B"
                       : "#22C55E"
               }
-              threshold={null}
             />
             <SensorCard
               icon="water-drop"
               label="Humidité"
-              value={sensors.humidity}
+              value={
+                sensors.humidity != null
+                  ? Number(sensors.humidity).toFixed(0)
+                  : null
+              }
               unit="%"
               color={
                 sensors.humidity == null
@@ -677,7 +1066,11 @@ export default function AIAnalysisDetailScreen() {
             <SensorCard
               icon="air"
               label="Qualité air"
-              value={sensors.airQualityPercent}
+              value={
+                sensors.airQualityPercent != null
+                  ? Number(sensors.airQualityPercent).toFixed(0)
+                  : null
+              }
               unit="%"
               color={
                 sensors.airQualityPercent == null
@@ -692,7 +1085,11 @@ export default function AIAnalysisDetailScreen() {
             <SensorCard
               icon="water"
               label="Niveau eau"
-              value={sensors.waterLevel}
+              value={
+                sensors.waterLevel != null
+                  ? Number(sensors.waterLevel).toFixed(0)
+                  : null
+              }
               unit="%"
               color={
                 sensors.waterLevel == null
@@ -703,41 +1100,9 @@ export default function AIAnalysisDetailScreen() {
               }
             />
           </View>
-
-          {/* Infos élevage */}
-          {(sensors.animalCount || sensors.surface) && (
-            <View style={styles.farmInfoRow}>
-              {sensors.animalCount != null && (
-                <View style={styles.farmInfoChip}>
-                  <MaterialIcons
-                    name="emoji-nature"
-                    size={14}
-                    color="#64748B"
-                  />
-                  <Text style={styles.farmInfoText}>
-                    {sensors.animalCount} volailles
-                  </Text>
-                </View>
-              )}
-              {sensors.surface != null && (
-                <View style={styles.farmInfoChip}>
-                  <MaterialIcons name="square-foot" size={14} color="#64748B" />
-                  <Text style={styles.farmInfoText}>{sensors.surface} m²</Text>
-                </View>
-              )}
-              {sensors.animalCount != null && sensors.surface != null && (
-                <View style={styles.farmInfoChip}>
-                  <MaterialIcons name="dashboard" size={14} color="#64748B" />
-                  <Text style={styles.farmInfoText}>
-                    {(sensors.animalCount / sensors.surface).toFixed(1)} vol/m²
-                  </Text>
-                </View>
-              )}
-            </View>
-          )}
         </View>
 
-        {/* ── Recommandations ── */}
+        {/* Recommandations */}
         {(result.advices || []).length > 0 && (
           <View style={styles.card}>
             <SectionHeader icon="lightbulb" title="Recommandations IA" />
@@ -762,23 +1127,23 @@ export default function AIAnalysisDetailScreen() {
           </View>
         )}
 
-        {/* ── Infos techniques ── */}
+        {/* Infos techniques */}
         <View style={[styles.card, styles.cardLast]}>
           <SectionHeader icon="info" title="Informations techniques" />
           <View style={styles.techInfoList}>
             <TechRow label="ID analyse" value={analysis._id || "—"} mono />
             <TechRow
               label="Modèle IA"
-              value="Gemma 3 / LLaVA 1.5 (Cloudflare)"
+              value="Gemma 3 12B-IT (Cloudflare Workers AI)"
             />
             <TechRow
               label="Qualité image"
               value={
-                analysis.imageQuality?.status === "optimized"
-                  ? `Optimisée (${analysis.imageQuality?.sizeKb ?? "—"} Ko)`
-                  : analysis.imageQuality?.status === "poor"
-                    ? "Faible (capteurs uniquement)"
-                    : analysis.imageQuality?.status || "—"
+                imageQuality?.status === "optimized"
+                  ? `Optimisée (${imageQuality?.sizeKb ?? "—"} Ko)`
+                  : imageQuality?.status === "poor"
+                    ? "Faible — capteurs uniquement"
+                    : imageQuality?.status || "—"
               }
             />
             {analysis.cameraMac && (
@@ -797,7 +1162,7 @@ export default function AIAnalysisDetailScreen() {
         </View>
       </Animated.ScrollView>
 
-      {/* ── Bottom actions ── */}
+      {/* Bottom actions */}
       <View
         style={[
           styles.bottomActions,
@@ -832,12 +1197,11 @@ export default function AIAnalysisDetailScreen() {
   );
 }
 
-// ─── Styles ────────────────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAF9" },
 
-  // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -874,7 +1238,6 @@ const styles = StyleSheet.create({
 
   scrollContent: { paddingTop: 16, paddingHorizontal: 16 },
 
-  // Loading / empty
   loadingContainer: {
     flex: 1,
     alignItems: "center",
@@ -892,7 +1255,6 @@ const styles = StyleSheet.create({
   },
   retryBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
 
-  // Card générique
   card: {
     backgroundColor: "#fff",
     borderRadius: 20,
@@ -906,7 +1268,6 @@ const styles = StyleSheet.create({
   },
   cardLast: { marginBottom: 0 },
 
-  // Hero card
   heroCard: {
     backgroundColor: "#fff",
     borderRadius: 24,
@@ -928,6 +1289,14 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(0,0,0,0.12)",
   },
+  poorOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.38)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  poorOverlayText: { fontSize: 13, fontWeight: "700", color: "#fff" },
   heroImagePlaceholder: {
     flex: 1,
     alignItems: "center",
@@ -972,7 +1341,6 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   heroScoreInfo: { flex: 1, gap: 8 },
-
   urgencyBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -983,7 +1351,6 @@ const styles = StyleSheet.create({
     alignSelf: "flex-start",
   },
   urgencyBadgeText: { fontSize: 13, fontWeight: "800" },
-
   metaRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   metaText: { fontSize: 12, color: "#64748B", fontWeight: "500", flex: 1 },
 
@@ -997,7 +1364,6 @@ const styles = StyleSheet.create({
   },
   heroDateText: { fontSize: 13, color: "#94A3B8", fontWeight: "500", flex: 1 },
 
-  // Section header
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -1012,7 +1378,6 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
   },
 
-  // Diagnostic
   diagnosticBox: {
     backgroundColor: "#F8FAFC",
     borderRadius: 14,
@@ -1026,59 +1391,181 @@ const styles = StyleSheet.create({
     lineHeight: 23,
   },
 
-  // Détections
-  detectionList: { gap: 10 },
-  detectionRow: {
+  unavailableRow: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    padding: 14,
-    borderRadius: 14,
+    alignItems: "center",
+    gap: 7,
     backgroundColor: "#F8FAFC",
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 10,
   },
-  detectionIconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
+  unavailableText: { fontSize: 12, color: "#94A3B8", fontWeight: "600" },
+
+  // ── Detection Cards ──────────────────────────────────────────────────────
+  detectionList: { gap: 10 },
+
+  detectionCard: {
+    borderRadius: 16,
+    backgroundColor: "#F8FAFC",
+    overflow: "hidden",
+  },
+  detectionCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 14,
+  },
+  detectionCardIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
   },
-  detectionBody: { flex: 1, gap: 4 },
-  detectionTopRow: {
+  detectionCardLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#1E293B",
+  },
+  detectionCardBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  detectionCardBadgeText: {
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  detectionCardBody: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(0,0,0,0.04)",
+    paddingTop: 10,
+  },
+  detectionNa: {
+    fontSize: 11,
+    color: "#CBD5E1",
+    fontStyle: "italic",
+    paddingHorizontal: 14,
+    paddingBottom: 12,
+  },
+
+  detectionDetail: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  detectionDetailRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 8,
   },
-  detectionLabel: { fontSize: 14, fontWeight: "700", color: "#1E293B" },
-  detectionBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
+  detectionDetailCol: {
+    gap: 8,
   },
-  detectionBadgeText: { fontSize: 10, fontWeight: "800" },
-  detectionDesc: { fontSize: 11, color: "#94A3B8" },
-  detectionBarWrap: {
+  detectionDetailText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#475569",
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+  detectionDetailTextSm: {
+    flex: 1,
+    fontSize: 11,
+    color: "#64748B",
+    lineHeight: 17,
+  },
+
+  // Comptage
+  comptageRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  comptageNumBox: {
+    backgroundColor: "#EFF6FF",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignItems: "center",
+  },
+  comptageNum: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: "#3B82F6",
+    lineHeight: 30,
+  },
+  comptageNumLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#93C5FD",
+  },
+  comptageFiabBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  comptageFiabText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  // Maladie
+  maladieNomRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginTop: 4,
+    backgroundColor: "#FEF2F2",
+    borderRadius: 10,
+    padding: 10,
   },
-  detectionBarBg: {
+  maladieNomText: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#EF4444",
     flex: 1,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: "#F1F5F9",
-    overflow: "hidden",
   },
-  detectionBarFill: { height: "100%", borderRadius: 2 },
-  detectionPct: {
-    fontSize: 10,
+  signesWrap: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    padding: 10,
+    gap: 5,
+  },
+  signesTitle: {
+    fontSize: 11,
     fontWeight: "700",
-    width: 32,
-    textAlign: "right",
+    color: "#94A3B8",
+    marginBottom: 2,
+  },
+  signeItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 7,
+  },
+  signeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#EF4444",
+    marginTop: 5,
+  },
+  signeText: {
+    fontSize: 12,
+    color: "#475569",
+    lineHeight: 18,
+    flex: 1,
   },
 
-  // Capteurs
+  // Sensors
   sensorGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -1125,7 +1612,6 @@ const styles = StyleSheet.create({
   },
   farmInfoText: { fontSize: 12, fontWeight: "600", color: "#64748B" },
 
-  // Recommandations
   adviceList: { gap: 10 },
   adviceItem: {
     flexDirection: "row",
@@ -1152,7 +1638,6 @@ const styles = StyleSheet.create({
     fontWeight: "500",
   },
 
-  // Infos techniques
   techInfoList: { gap: 0 },
   techRow: {
     flexDirection: "row",
@@ -1172,11 +1657,10 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   techRowMono: {
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace", // ✅ Platform maintenant importé
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     fontSize: 11,
   },
 
-  // Score circle
   scoreCircleOuter: {
     justifyContent: "center",
     alignItems: "center",
@@ -1191,7 +1675,6 @@ const styles = StyleSheet.create({
   scoreCircleLabel: { fontSize: 11, fontWeight: "600", marginTop: -2 },
   scoreArc: { position: "absolute", top: 0, left: 0, borderRadius: 100 },
 
-  // Bottom actions
   bottomActions: {
     position: "absolute",
     bottom: 0,

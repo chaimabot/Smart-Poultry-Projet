@@ -7,17 +7,38 @@ export function useAIAnalysis(poulaillerId) {
   const [capturing, setCapturing] = useState(false);
   const [latestResult, setLatestResult] = useState(null);
   const [chatLoading, setChatLoading] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [stats, setStats] = useState(null);
+
+  // ── Charger l'historique ─────────────────────────────────────────────────
+  const fetchHistory = useCallback(async () => {
+    if (!poulaillerId) return;
+    try {
+      const res = await api.get(`/ai/history/${poulaillerId}`);
+      if (res.data?.success) {
+        setHistory(res.data.data || []);
+      }
+    } catch (_) {}
+  }, [poulaillerId]);
+
+  // ── Charger les statistiques ─────────────────────────────────────────────
+  const fetchStats = useCallback(async () => {
+    if (!poulaillerId) return;
+    try {
+      const res = await api.get(`/ai/stats/${poulaillerId}`);
+      if (res.data?.success) {
+        setStats(res.data.data || null);
+      }
+    } catch (_) {}
+  }, [poulaillerId]);
 
   // ── Capture + analyse via ESP32CAM (MQTT + polling) ─────────────────────
-  // ✅ FIX : /ai/capture retourne { requestId } pour polling,
-  //          PAS imageBase64 directement. On poll /ai/capture-status/:requestId.
   const captureFromCamera = useCallback(
     async ({ onStatusUpdate } = {}) => {
       if (!poulaillerId) throw new Error("ID poulailler requis");
 
       setCapturing(true);
       try {
-        // 1. Déclencher la capture MQTT
         const triggerRes = await api.post(`/ai/capture/${poulaillerId}`);
         if (!triggerRes.data?.success) {
           throw new Error(
@@ -30,7 +51,6 @@ export function useAIAnalysis(poulaillerId) {
 
         onStatusUpdate?.("capturing");
 
-        // 2. Polling toutes les 2s jusqu'à completed ou failed (max 90s)
         const result = await new Promise((resolve, reject) => {
           const start = Date.now();
           const TIMEOUT_MS = 90_000;
@@ -60,18 +80,16 @@ export function useAIAnalysis(poulaillerId) {
                 clearInterval(interval);
                 reject(new Error(statusRes.data?.error || "Capture échouée"));
               }
-              // pending / capturing / uploading / analyzing → on continue
             } catch (pollErr) {
               if (pollErr.response?.status === 404) {
                 clearInterval(interval);
                 reject(new Error("Session expirée. Relancez l'analyse."));
               }
-              // Erreur réseau passagère → on continue
             }
           }, 2000);
         });
 
-        return result; // { status, imageUrl, thumbnailUrl, analysis }
+        return result;
       } finally {
         setCapturing(false);
       }
@@ -79,39 +97,32 @@ export function useAIAnalysis(poulaillerId) {
     [poulaillerId],
   );
 
-  // ── Analyse depuis une image base64 (mobile camera ou galerie) ──────────
-  // ✅ FIX : utilise /ai/receive-image (endpoint réel pour upload d'image mobile)
-  //          puis poll le résultat via capture-status
+  // ── Analyse depuis une image base64 ─────────────────────────────────────
   const analyze = useCallback(
     async (imageBase64) => {
       if (!poulaillerId) throw new Error("ID poulailler requis");
 
       setAnalyzing(true);
       try {
-        // Nettoyer le préfixe data:image si présent
         const clean = imageBase64.includes(",")
           ? imageBase64.split(",")[1]
           : imageBase64;
 
-        // Envoyer l'image au backend (même endpoint que l'ESP32)
         const uploadRes = await api.post("/ai/receive-image", {
           poulaillerId,
           imageBase64: clean,
-          // deviceId non requis pour upload mobile — le backend accepte poulaillerId direct
         });
 
         if (!uploadRes.data?.success) {
           throw new Error(uploadRes.data?.error || "Erreur upload image");
         }
 
-        // Si la réponse contient déjà un résultat (analyse synchrone)
         if (uploadRes.data?.data?.result) {
           const result = uploadRes.data.data.result;
           setLatestResult(result);
           return result;
         }
 
-        // Sinon poll si un requestId est retourné
         if (uploadRes.data?.data?.requestId) {
           const { requestId } = uploadRes.data.data;
           const polled = await new Promise((resolve, reject) => {
@@ -147,7 +158,7 @@ export function useAIAnalysis(poulaillerId) {
     [poulaillerId],
   );
 
-  // ── Charger la dernière analyse depuis la BD ─────────────────────────────
+  // ── Charger la dernière analyse ──────────────────────────────────────────
   const fetchLatest = useCallback(async () => {
     if (!poulaillerId) return null;
     try {
@@ -193,9 +204,13 @@ export function useAIAnalysis(poulaillerId) {
     analyzing,
     latestResult,
     chatLoading,
-    captureFromCamera, // ESP32CAM via MQTT + polling
-    analyze, // image base64 mobile → upload + résultat
-    fetchLatest, // dernière analyse en BD
-    askVet, // chatbot vétérinaire
+    history,
+    stats,
+    fetchHistory,
+    fetchStats,
+    captureFromCamera,
+    analyze,
+    fetchLatest,
+    askVet,
   };
 }

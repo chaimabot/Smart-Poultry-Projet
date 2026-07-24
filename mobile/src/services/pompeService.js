@@ -19,7 +19,7 @@ export const controlPump = async (id, mode, action, changeModeOnly = false) => {
       changeModeOnly,
     });
 
-    console.log("[controlPump] ✅ Réponse:", response.data);
+    console.log("[controlPump]   Réponse:", response.data);
     return response.data;
   } catch (error) {
     console.error(

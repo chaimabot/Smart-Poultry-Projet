@@ -1,11 +1,5 @@
 // screens/AIAnalysisScreen.js
-// ─────────────────────────────────────────────────────────────────────────────
-// CORRECTIONS v4 :
-//   1. normalizeSensors : garde NaN + 30+ aliases backend
-//   2. rawSensors lookup : 5 chemins de fallback (sensors/sensorData/result root)
-//   3. isResultPoorImage : fallback texte diagnostic
-//   4. imageQuality merge : préserve usable/score + lit depuis la racine
-// ─────────────────────────────────────────────────────────────────────────────
+// Interface redesignée pour l'éleveur — langage simple, données claires
 
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import {
@@ -18,6 +12,8 @@ import {
   Dimensions,
   ActivityIndicator,
   Animated,
+  Platform,
+  Alert,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -26,72 +22,60 @@ import {
 } from "react-native-safe-area-context";
 import { MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system/legacy";
 import api from "../../../../services/api";
+import { analyzePoultry } from "../../../../services/aiAnalysis";
 import Toast from "../../../../components/Toast";
 
 const { width } = Dimensions.get("window");
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Couleurs centralisées ─────────────────────────────────────────────────
 
-/**
- * Détecte si le résultat correspond à une image inexploitable.
- * Couvre tous les shapes connus du backend + fallback texte diagnostic.
- */
-function isResultPoorImage(result) {
-  if (!result) return false;
+const C = {
+  green: "#3B6D11",
+  greenLight: "#EAF3DE",
+  greenMid: "#639922",
+  greenText: "#27500A",
+  amber: "#854F0B",
+  amberLight: "#FAEEDA",
+  amberText: "#633806",
+  red: "#A32D2D",
+  redLight: "#FCEBEB",
+  redText: "#791F1F",
+  blue: "#185FA5",
+  blueLight: "#E6F1FB",
+  blueText: "#0C447C",
+  purple: "#534AB7",
+  purpleLight: "#EEEDFE",
+  gray: "#64748B",
+  grayLight: "#F1F5F9",
+  border: "rgba(0,0,0,0.08)",
+  white: "#FFFFFF",
+  bg: "#F4F6F3",
+  textPrimary: "#1A2E0A",
+  textSecondary: "#4B5E3A",
+  textMuted: "#8A9B7A",
+};
 
-  // 1. Flags booléens / statut explicite
-  if (
-    result.imageQuality?.status === "poor" ||
-    result.imageUsable === false ||
-    result.imageAvailable === false ||
-    result.imageQuality?.usable === false ||
-    result.result?.imageQuality?.status === "poor" ||
-    result.result?.imageUsable === false
-  )
-    return true;
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  // 2. Score imageQuality trop bas (< 30)
-  const iqScore = result.imageQuality?.score;
-  if (iqScore != null && Number(iqScore) < 30) return true;
-
-  // 3. Fallback texte : le diagnostic mentionne explicitement l'image floue
-  const diag =
-    typeof result.diagnostic === "string"
-      ? result.diagnostic.toLowerCase()
-      : "";
-  if (
-    diag.includes("inexploitable") ||
-    diag.includes("image floue") ||
-    diag.includes("image trop floue") ||
-    diag.includes("image non") ||
-    diag.includes("sans image")
-  )
-    return true;
-
-  return false;
+function hasSensorValue(value) {
+  return value !== null && value !== undefined && !isNaN(Number(value));
 }
 
-/**
- * Normalise l'objet capteurs brut du backend vers la shape canonique
- * attendue par SensorsSection.
- *   Garde NaN, couvre 30+ alias de noms de champs backend.
- */
 function normalizeSensors(raw) {
   if (!raw || typeof raw !== "object") return null;
-
-  // Cherche la première clé valide et retourne un Number propre
   const pick = (...keys) => {
     for (const k of keys) {
       const v = raw[k];
       if (v !== null && v !== undefined) {
         const n = Number(v);
-        if (!isNaN(n)) return n; //   garde NaN
+        if (!isNaN(n)) return n;
       }
     }
     return undefined;
   };
-
   const normalized = {
     temperature: pick(
       "temperature",
@@ -99,8 +83,6 @@ function normalizeSensors(raw) {
       "Temperature",
       "temperatureC",
       "temp_c",
-      "ambientTemp",
-      "ambient_temp",
     ),
     humidity: pick(
       "humidity",
@@ -108,121 +90,160 @@ function normalizeSensors(raw) {
       "hum",
       "Humidity",
       "humidityPercent",
-      "humidity_percent",
-      "relativeHumidity",
-      "relative_humidity",
     ),
     waterLevel: pick(
       "waterLevel",
       "water_level",
       "waterLevelPercent",
-      "water_level_percent",
-      "water",
-      "WaterLevel",
-      "waterLvl",
-      "water_lvl",
       "niveauEau",
       "niveau_eau",
-      "waterPercent",
-      "water_percent",
     ),
     airQualityPercent: pick(
       "airQualityPercent",
       "air_quality",
       "airQuality",
-      "air",
-      "AirQuality",
-      "air_quality_percent",
-      "airIndex",
-      "air_index",
       "iaq",
       "IAQ",
     ),
-    co2: pick(
-      "co2",
-      "CO2",
-      "co2_ppm",
-      "co2Ppm",
-      "carbonDioxide",
-      "carbon_dioxide",
-    ),
-    nh3: pick("nh3", "NH3", "ammonia", "nh3_ppm", "ammoniac", "nh3Ppm"),
+    co2: pick("co2", "CO2", "co2_ppm"),
+    nh3: pick("nh3", "NH3", "ammonia", "ammoniac"),
   };
-
   const hasAny = Object.values(normalized).some((v) => v !== undefined);
   return hasAny ? normalized : null;
 }
 
-/**
- * Extrait l'objet capteurs brut depuis toutes les shapes connues du backend.
- * Retourne le premier objet non-vide trouvé.
- */
 function extractRawSensors(source) {
   if (!source) return null;
-
-  // Helpers
   const notEmpty = (obj) =>
     obj && typeof obj === "object" && Object.keys(obj).length > 0;
-
-  // 1. source.sensors
   if (notEmpty(source.sensors)) return source.sensors;
-
-  // 2. source.sensorData
-  if (notEmpty(source.sensorData)) return source.sensorData;
-
-  // 3. source.result.sensors
   if (notEmpty(source.result?.sensors)) return source.result.sensors;
-
-  // 4. source.result.sensorData
+  if (notEmpty(source.sensorData)) return source.sensorData;
   if (notEmpty(source.result?.sensorData)) return source.result.sensorData;
-
-  // 5. source.analysis.sensors
-  if (notEmpty(source.analysis?.sensors)) return source.analysis.sensors;
-
-  // 6. source.analysis.sensorData
-  if (notEmpty(source.analysis?.sensorData)) return source.analysis.sensorData;
-
-  // 7. Les valeurs capteurs sont directement sur source.result (root flat)
   if (
     hasSensorValue(source.result?.waterLevel) ||
     hasSensorValue(source.result?.temperature) ||
     hasSensorValue(source.result?.humidity) ||
-    hasSensorValue(source.result?.water_level) ||
-    hasSensorValue(source.result?.waterLevelPercent)
+    hasSensorValue(source.result?.airQualityPercent)
   )
     return source.result;
-
-  // 8. Les valeurs capteurs sont directement sur source (root flat)
   if (
     hasSensorValue(source.waterLevel) ||
     hasSensorValue(source.temperature) ||
     hasSensorValue(source.humidity) ||
-    hasSensorValue(source.water_level) ||
-    hasSensorValue(source.waterLevelPercent)
+    hasSensorValue(source.airQualityPercent)
   )
     return source;
-
   return null;
 }
 
-// Vérifie si une valeur capteur est réellement disponible
-function hasSensorValue(value) {
-  return value !== null && value !== undefined && !isNaN(Number(value));
+function mergeImageQuality(...sources) {
+  const merged = {};
+  for (const src of sources.filter((s) => s && typeof s === "object")) {
+    Object.assign(merged, src);
+  }
+  return merged;
 }
 
-// ─── Score Circle ────────────────────────────────────────────────────────────
+// ─── Urgence → config UI ─────────────────────────────────────────────────────
 
-function ScoreCircle({ score, size = 88, dimmed = false }) {
-  const isUnknown = score === null || score === undefined;
-  const color =
-    isUnknown || dimmed
-      ? "#94A3B8"
-      : score >= 70
-        ? "#22C55E"
-        : score >= 40
-          ? "#F59E0B"
-          : "#EF4444";
+function urgencyConfig(level) {
+  if (level === "critique")
+    return {
+      color: C.red,
+      bg: C.redLight,
+      icon: "error",
+      label: "Critique",
+      labelLong: "Intervention urgente",
+    };
+  if (level === "attention")
+    return {
+      color: C.amber,
+      bg: C.amberLight,
+      icon: "warning",
+      label: "Attention",
+      labelLong: "Surveillance renforcée",
+    };
+  if (level === "normal")
+    return {
+      color: C.green,
+      bg: C.greenLight,
+      icon: "check-circle",
+      label: "État normal",
+      labelLong: "Tout va bien",
+    };
+  return {
+    color: C.gray,
+    bg: C.grayLight,
+    icon: "help-outline",
+    label: "Inconnu",
+    labelLong: "Données insuffisantes",
+  };
+}
 
+// ─── Score color ──────────────────────────────────────────────────────────────
+
+function scoreColor(score) {
+  if (score === null || score === undefined) return C.gray;
+  if (score >= 70) return C.greenMid;
+  if (score >= 40) return "#D97706";
+  return "#DC2626";
+}
+
+// ─── Test image (galerie → receive-image → polling) ───────────────────────────
+
+async function pickAndSendTestImage(poultryId) {
+  if (Platform.OS !== "web") {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission refusée",
+        "Autorisez l'accès à la galerie dans les paramètres.",
+      );
+      return null;
+    }
+  }
+  const picked = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    quality: 0.8,
+    base64: false,
+    allowsEditing: false,
+  });
+  if (picked.canceled || !picked.assets?.[0]?.uri) return null;
+  const uri = picked.assets[0].uri;
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding:
+      FileSystem?.EncodingType?.Base64 ??
+      FileSystem?.EncodingType?.base64 ??
+      "base64",
+  });
+  const kb = Math.round((base64.length * 3) / 4 / 1024);
+  if (kb < 3) throw new Error(`Image trop petite (${kb} Ko)`);
+  if (kb > 5120) throw new Error(`Image trop grande (${kb} Ko — max 5 Mo)`);
+  const requestId = `test-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+  const res = await api.post("/ai/receive-image", {
+    poulaillerId: poultryId,
+    requestId,
+    imageBase64: base64,
+    isTestImage: true,
+  });
+  if (!res.data?.success)
+    throw new Error(res.data?.error || "Erreur envoi image de test");
+  try {
+    await analyzePoultry(poultryId, "manual");
+  } catch (_) {}
+  return { requestId, base64 };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// COMPOSANTS UI
+// ════════════════════════════════════════════════════════════════════════════
+
+// ─── Score circulaire ─────────────────────────────────────────────────────────
+
+function ScoreCircle({ score, size = 84 }) {
+  const color = scoreColor(score);
+  const isNull = score === null || score === undefined;
   return (
     <View
       style={{
@@ -238,367 +259,242 @@ function ScoreCircle({ score, size = 88, dimmed = false }) {
           height: size,
           borderRadius: size / 2,
           borderWidth: 7,
-          borderColor: "#F1F5F9",
+          borderColor: C.grayLight,
           position: "absolute",
         }}
       />
-      <View
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          borderWidth: 7,
-          borderColor: color,
-          borderRightColor: "transparent",
-          borderBottomColor: "transparent",
-          position: "absolute",
-          transform: [{ rotate: "-90deg" }],
-          opacity: isUnknown ? 0 : 1,
-        }}
-      />
-      <View style={{ alignItems: "center", justifyContent: "center" }}>
-        <Text
-          style={{ fontSize: 26, fontWeight: "800", color, lineHeight: 30 }}
-        >
-          {isUnknown ? "—" : score}
-        </Text>
-        <Text style={{ fontSize: 10, color: "#94A3B8", fontWeight: "600" }}>
-          {isUnknown ? "inconnu" : dimmed ? "capteurs" : "/ 100"}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-// ─── Urgency Badge ───────────────────────────────────────────────────────────
-
-function UrgencyBadge({ level }) {
-  const isUnknown = !level || level === "inconnu";
-  const config = isUnknown
-    ? {
-        bg: "#F1F5F9",
-        color: "#64748B",
-        icon: "help-outline",
-        label: "INCONNU",
-      }
-    : level === "critique"
-      ? { bg: "#FEF2F2", color: "#EF4444", icon: "error", label: "CRITIQUE" }
-      : level === "attention"
-        ? {
-            bg: "#FEF3C7",
-            color: "#F59E0B",
-            icon: "warning",
-            label: "ATTENTION",
-          }
-        : {
-            bg: "#F0FDF4",
-            color: "#22C55E",
-            icon: "check-circle",
-            label: "NORMAL",
-          };
-
-  return (
-    <View style={[styles.urgencyBadge, { backgroundColor: config.bg }]}>
-      <MaterialIcons name={config.icon} size={14} color={config.color} />
-      <Text style={[styles.urgencyBadgeText, { color: config.color }]}>
-        {config.label}
+      {!isNull && (
+        <View
+          style={{
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            borderWidth: 7,
+            borderColor: color,
+            borderRightColor: "transparent",
+            borderBottomColor: "transparent",
+            position: "absolute",
+            transform: [{ rotate: "-90deg" }],
+          }}
+        />
+      )}
+      <Text style={{ fontSize: 24, fontWeight: "700", color, lineHeight: 28 }}>
+        {isNull ? "—" : score}
+      </Text>
+      <Text style={{ fontSize: 10, color: C.textMuted, fontWeight: "600" }}>
+        {isNull ? "inconnu" : "/ 100"}
       </Text>
     </View>
   );
 }
 
-// ─── Detection Row ───────────────────────────────────────────────────────────
+// ─── Badge urgence ────────────────────────────────────────────────────────────
 
-function DetectionRow({ icon, label, desc, value, isMortality = false }) {
-  const isNull = value === null || value === undefined;
-  const ok = isNull ? null : isMortality ? !value : value;
-  const color = isNull ? "#94A3B8" : ok ? "#22C55E" : "#EF4444";
-  const bg = isNull ? "#F8FAFC" : ok ? "#F0FDF4" : "#FEF2F2";
-  const badgeLabel = isNull ? "N/A" : ok ? "OK" : "ALERTE";
-
+function UrgencyBadge({ level, large = false }) {
+  const cfg = urgencyConfig(level);
   return (
-    <View style={[styles.detectionRow, { opacity: isNull ? 0.55 : 1 }]}>
-      <View style={[styles.detectionIcon, { backgroundColor: bg }]}>
-        <MaterialIcons name={icon} size={19} color={color} />
-      </View>
-      <View style={styles.detectionContent}>
-        <View style={styles.detectionTopRow}>
-          <Text style={[styles.detectionName, isNull && { color: "#94A3B8" }]}>
-            {label}
-          </Text>
-          <View style={[styles.detectionBadge, { backgroundColor: bg }]}>
-            <Text style={[styles.detectionBadgeText, { color }]}>
-              {badgeLabel}
-            </Text>
-          </View>
-        </View>
-        <Text style={styles.detectionDesc}>{desc}</Text>
-        {isNull && (
-          <Text style={styles.detectionNa}>
-            Non évalué — image indisponible
-          </Text>
-        )}
-      </View>
+    <View style={[S.badge, { backgroundColor: cfg.bg }]}>
+      <MaterialIcons name={cfg.icon} size={large ? 16 : 13} color={cfg.color} />
+      <Text
+        style={[S.badgeText, { color: cfg.color, fontSize: large ? 13 : 12 }]}
+      >
+        {large ? cfg.labelLong : cfg.label}
+      </Text>
     </View>
   );
 }
 
-// ─── Sensor Card ─────────────────────────────────────────────────────────────
+// ─── Carte de détection générique ─────────────────────────────────────────────
 
-function SensorCard({
+function DetCard({
   icon,
-  label,
-  value,
-  unit,
-  color = "#22C55E",
-  alert = false,
+  title,
+  badge,
+  badgeColor,
+  badgeBg,
+  isNull,
+  children,
 }) {
-  const bg = alert ? color + "18" : color + "12";
   return (
-    <View
-      style={[
-        styles.sensorCard,
-        alert && { borderWidth: 1, borderColor: color + "60" },
-      ]}
-    >
-      <View style={[styles.sensorCardIcon, { backgroundColor: bg }]}>
-        <MaterialIcons name={icon} size={18} color={color} />
+    <View style={[S.detCard, isNull && { opacity: 0.5 }]}>
+      <View style={S.detHead}>
+        <View style={[S.detIcon, { backgroundColor: badgeBg + "30" }]}>
+          <MaterialIcons name={icon} size={18} color={badgeColor} />
+        </View>
+        <Text style={S.detTitle}>{title}</Text>
+        <View style={[S.detBadge, { backgroundColor: badgeBg }]}>
+          <Text style={[S.detBadgeText, { color: badgeColor }]}>{badge}</Text>
+        </View>
       </View>
-      <View style={styles.sensorCardBody}>
-        <Text
-          style={[styles.sensorCardValue, { color: alert ? color : "#1E293B" }]}
-        >
-          {value}
-          <Text style={styles.sensorCardUnit}> {unit}</Text>
-        </Text>
-        <Text style={styles.sensorCardLabel}>{label}</Text>
-      </View>
-      {alert && (
-        <MaterialIcons
-          name="warning"
-          size={14}
-          color={color}
-          style={{ marginLeft: "auto" }}
-        />
+      {isNull ? (
+        <Text style={S.detNull}>Non évalué — image indisponible</Text>
+      ) : (
+        <View style={S.detBody}>{children}</View>
       )}
     </View>
   );
 }
 
-// ─── Sensors Section ─────────────────────────────────────────────────────────
+// ─── Ligne dans une carte de détection ───────────────────────────────────────
 
-function SensorsSection({ sensors, thresholds }) {
-  if (!sensors) {
-    return (
-      <View style={styles.noSensorBox}>
-        <MaterialIcons name="sensors-off" size={18} color="#94A3B8" />
-        <Text style={styles.noSensorText}>
-          Capteurs non connectés — aucune donnée disponible
-        </Text>
-      </View>
-    );
-  }
-
-  const rows = [];
-
-  if (hasSensorValue(sensors.temperature)) {
-    const thresh = thresholds?.tempMax ?? 30;
-    const alert = sensors.temperature > thresh;
-    rows.push(
-      <SensorCard
-        key="temp"
-        icon="thermostat"
-        label="Température"
-        value={`${Number(sensors.temperature).toFixed(1)}`}
-        unit="°C"
-        color={alert ? "#EF4444" : "#F97316"}
-        alert={alert}
-      />,
-    );
-  }
-
-  if (hasSensorValue(sensors.humidity)) {
-    const thresh = thresholds?.humidityMax ?? 75;
-    const alert = sensors.humidity > thresh;
-    rows.push(
-      <SensorCard
-        key="hum"
-        icon="water-drop"
-        label="Humidité"
-        value={`${Number(sensors.humidity).toFixed(0)}`}
-        unit="%"
-        color={alert ? "#EF4444" : "#3B82F6"}
-        alert={alert}
-      />,
-    );
-  }
-
-  if (hasSensorValue(sensors.waterLevel)) {
-    const alert = sensors.waterLevel < 20;
-    rows.push(
-      <SensorCard
-        key="water"
-        icon="local-drink"
-        label="Niveau d'eau"
-        value={`${Number(sensors.waterLevel).toFixed(0)}`}
-        unit="%"
-        color={
-          alert ? "#EF4444" : sensors.waterLevel < 40 ? "#F59E0B" : "#22C55E"
-        }
-        alert={alert}
-      />,
-    );
-  }
-
-  if (hasSensorValue(sensors.airQualityPercent)) {
-    const thresh = thresholds?.airQualityMin ?? 50;
-    const alert = sensors.airQualityPercent < thresh;
-    rows.push(
-      <SensorCard
-        key="air"
-        icon="air"
-        label="Qualité de l'air"
-        value={`${Number(sensors.airQualityPercent).toFixed(0)}`}
-        unit="%"
-        color={alert ? "#EF4444" : "#8B5CF6"}
-        alert={alert}
-      />,
-    );
-  }
-
-  if (hasSensorValue(sensors.co2)) {
-    const alert = sensors.co2 > 3000;
-    rows.push(
-      <SensorCard
-        key="co2"
-        icon="cloud"
-        label="CO₂"
-        value={`${Math.round(sensors.co2)}`}
-        unit="ppm"
-        color={alert ? "#EF4444" : "#6B7280"}
-        alert={alert}
-      />,
-    );
-  }
-
-  if (hasSensorValue(sensors.nh3)) {
-    const alert = sensors.nh3 > 25;
-    rows.push(
-      <SensorCard
-        key="nh3"
-        icon="science"
-        label="Ammoniac (NH₃)"
-        value={`${Number(sensors.nh3).toFixed(1)}`}
-        unit="ppm"
-        color={alert ? "#EF4444" : "#F59E0B"}
-        alert={alert}
-      />,
-    );
-  }
-
-  if (rows.length === 0) {
-    return (
-      <View style={styles.noSensorBox}>
-        <MaterialIcons name="sensors-off" size={18} color="#94A3B8" />
-        <Text style={styles.noSensorText}>
-          Capteurs non connectés — aucune donnée disponible
-        </Text>
-      </View>
-    );
-  }
-
-  return <View style={styles.sensorGrid}>{rows}</View>;
-}
-
-// ─── Advice Item ─────────────────────────────────────────────────────────────
-
-function AdviceItem({ text, index }) {
+function DetRow({ icon, iconColor, text, textColor }) {
   return (
-    <View style={styles.adviceItem}>
-      <View style={styles.adviceNumber}>
-        <Text style={styles.adviceNumberText}>{index + 1}</Text>
-      </View>
-      <Text style={styles.adviceText}>{text}</Text>
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 7 }}>
+      <MaterialIcons
+        name={icon}
+        size={14}
+        color={iconColor}
+        style={{ marginTop: 2 }}
+      />
+      <Text style={[S.detRowText, textColor && { color: textColor }]}>
+        {text}
+      </Text>
     </View>
   );
 }
 
-// ─── History Item ────────────────────────────────────────────────────────────
+// ─── Capteur individuel ───────────────────────────────────────────────────────
 
-function HistoryItem({ item, onPress }) {
-  const urgency = item.result?.urgencyLevel;
-  const score = item.result?.healthScore; //   peut être null
-
-  const color =
-    urgency === "critique"
-      ? "#EF4444"
-      : urgency === "attention"
-        ? "#F59E0B"
-        : urgency === "inconnu"
-          ? "#94A3B8"
-          : "#22C55E";
-
-  const label =
-    urgency === "critique"
-      ? "Critique"
-      : urgency === "attention"
-        ? "Attention"
-        : urgency === "inconnu"
-          ? "Inconnu"
-          : "Normal";
-
-  const poor = isResultPoorImage(item);
-
-  const date = new Date(item.createdAt).toLocaleString("fr-FR", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-
-  //   Affiche "—" si score null, sinon "70/100"
-  const scoreText =
-    score !== null && score !== undefined ? `${score}/100` : "—";
-
+function SensorCard({ icon, label, value, unit, color, alert }) {
   return (
-    <TouchableOpacity
-      style={styles.historyItem}
-      onPress={onPress}
-      activeOpacity={0.7}
+    <View
+      style={[
+        S.sensorCard,
+        alert && { borderWidth: 1, borderColor: color + "80" },
+      ]}
     >
-      <View style={styles.historyThumb}>
-        {item.image?.url ? (
-          <Image
-            source={{ uri: item.image.thumbnailUrl || item.image.url }}
-            style={[
-              { width: 48, height: 48, borderRadius: 12 },
-              poor && { opacity: 0.4 },
-            ]}
-            resizeMode="cover"
-          />
-        ) : (
-          <MaterialIcons name="image-not-supported" size={20} color="#94A3B8" />
-        )}
-        {poor && (
-          <View style={styles.historyThumbBadge}>
-            <MaterialIcons name="blur-on" size={10} color="#fff" />
-          </View>
-        )}
+      <View style={[S.sensorIcon, { backgroundColor: color + "18" }]}>
+        <MaterialIcons name={icon} size={17} color={color} />
       </View>
-      <View style={styles.historyInfo}>
-        <Text style={styles.historyDate}>{date}</Text>
-        {/*   scoreText jamais vide */}
-        <Text style={[styles.historyScore, { color }]}>
-          {scoreText} — {label}
-          {poor ? " (sans image)" : ""}
+      <View style={{ flex: 1 }}>
+        <Text style={[S.sensorVal, alert && { color }]}>
+          {value}
+          <Text style={S.sensorUnit}> {unit}</Text>
         </Text>
+        <Text style={S.sensorLabel}>{label}</Text>
       </View>
-      <MaterialIcons name="chevron-right" size={20} color="#CBD5E1" />
-    </TouchableOpacity>
+      {alert && <MaterialIcons name="warning" size={13} color={color} />}
+    </View>
   );
 }
 
-// ─── Phase Step Indicator ────────────────────────────────────────────────────
+// ─── Section capteurs complète ────────────────────────────────────────────────
+
+function SensorsSection({ sensors }) {
+  if (!sensors)
+    return (
+      <View style={S.noSensor}>
+        <MaterialIcons name="sensors-off" size={17} color={C.textMuted} />
+        <Text style={S.noSensorText}>Capteurs non connectés</Text>
+      </View>
+    );
+
+  const cards = [];
+
+  if (hasSensorValue(sensors.temperature)) {
+    const v = Number(sensors.temperature);
+    const alert = v > 30 || v < 15;
+    cards.push(
+      <SensorCard
+        key="temp"
+        icon="thermostat"
+        label="Température"
+        value={v.toFixed(1)}
+        unit="°C"
+        color={alert ? C.red : "#D97706"}
+        alert={alert}
+      />,
+    );
+  }
+  if (hasSensorValue(sensors.humidity)) {
+    const v = Number(sensors.humidity);
+    const alert = v > 80 || v < 30;
+    cards.push(
+      <SensorCard
+        key="hum"
+        icon="water-drop"
+        label="Humidité"
+        value={Math.round(v)}
+        unit="%"
+        color={alert ? C.red : C.blue}
+        alert={alert}
+      />,
+    );
+  }
+  if (hasSensorValue(sensors.waterLevel)) {
+    const v = Number(sensors.waterLevel);
+    const alert = v < 20;
+    const color = v < 20 ? C.red : v < 40 ? "#D97706" : C.greenMid;
+    cards.push(
+      <SensorCard
+        key="water"
+        icon="local-drink"
+        label="Niveau d'eau"
+        value={Math.round(v)}
+        unit="%"
+        color={color}
+        alert={alert}
+      />,
+    );
+  }
+  if (hasSensorValue(sensors.airQualityPercent)) {
+    const v = Number(sensors.airQualityPercent);
+    const alert = v < 40;
+    cards.push(
+      <SensorCard
+        key="air"
+        icon="air"
+        label="Qualité de l'air"
+        value={Math.round(v)}
+        unit="%"
+        color={alert ? C.red : C.purple}
+        alert={alert}
+      />,
+    );
+  }
+  if (hasSensorValue(sensors.co2)) {
+    const v = Number(sensors.co2);
+    const alert = v > 3000;
+    cards.push(
+      <SensorCard
+        key="co2"
+        icon="cloud"
+        label="CO₂"
+        value={Math.round(v)}
+        unit="ppm"
+        color={alert ? C.red : C.gray}
+        alert={alert}
+      />,
+    );
+  }
+  if (hasSensorValue(sensors.nh3)) {
+    const v = Number(sensors.nh3);
+    const alert = v > 25;
+    cards.push(
+      <SensorCard
+        key="nh3"
+        icon="science"
+        label="Ammoniac (NH₃)"
+        value={v.toFixed(1)}
+        unit="ppm"
+        color={alert ? C.red : "#D97706"}
+        alert={alert}
+      />,
+    );
+  }
+
+  if (cards.length === 0)
+    return (
+      <View style={S.noSensor}>
+        <MaterialIcons name="sensors-off" size={17} color={C.textMuted} />
+        <Text style={S.noSensorText}>Aucune donnée capteur disponible</Text>
+      </View>
+    );
+
+  return <View style={S.sensorGrid}>{cards}</View>;
+}
+
+// ─── Étapes de progression ────────────────────────────────────────────────────
 
 function PhaseSteps({ currentPhase }) {
   const steps = [
@@ -608,47 +504,47 @@ function PhaseSteps({ currentPhase }) {
       label: "Déclenchement caméra",
     },
     { key: "uploading", icon: "cloud-upload", label: "Envoi de la photo" },
-    { key: "analyzing", icon: "biotech", label: "Analyse IA en cours" },
+    { key: "analyzing", icon: "biotech", label: "Analyse IA" },
   ];
-
-  const phaseOrder = ["capturing", "uploading", "analyzing"];
-  const currentIdx = phaseOrder.indexOf(currentPhase);
-
+  const order = ["capturing", "uploading", "analyzing"];
+  const cur = order.indexOf(currentPhase);
   return (
-    <View style={styles.phaseSteps}>
-      {steps.map((step, idx) => {
-        const done = idx < currentIdx;
-        const active = idx === currentIdx;
-        const color = done ? "#22C55E" : active ? "#3B82F6" : "#CBD5E1";
+    <View style={S.phaseRow}>
+      {steps.map((s, i) => {
+        const done = i < cur;
+        const active = i === cur;
+        const color = done ? C.greenMid : active ? C.blue : "#CBD5E1";
         return (
-          <View key={step.key} style={styles.phaseStep}>
+          <View key={s.key} style={S.phaseStep}>
             <View
               style={[
-                styles.phaseStepIcon,
+                S.phaseIcon,
                 {
                   backgroundColor: done
-                    ? "#F0FDF4"
+                    ? C.greenLight
                     : active
-                      ? "#EFF6FF"
-                      : "#F8FAFC",
-                  borderWidth: active ? 2 : 1,
+                      ? C.blueLight
+                      : C.grayLight,
                   borderColor: color,
+                  borderWidth: active ? 2 : 1,
                 },
               ]}
             >
               {done ? (
-                <MaterialIcons name="check" size={14} color="#22C55E" />
+                <MaterialIcons name="check" size={13} color={C.greenMid} />
               ) : (
-                <MaterialIcons name={step.icon} size={14} color={color} />
+                <MaterialIcons name={s.icon} size={13} color={color} />
               )}
             </View>
             <Text
               style={[
-                styles.phaseStepLabel,
-                { color: active ? "#1E293B" : done ? "#22C55E" : "#94A3B8" },
+                S.phaseLabel,
+                {
+                  color: active ? C.textPrimary : done ? C.greenMid : "#94A3B8",
+                },
               ]}
             >
-              {step.label}
+              {s.label}
             </Text>
           </View>
         );
@@ -657,14 +553,84 @@ function PhaseSteps({ currentPhase }) {
   );
 }
 
-// ─── Main Screen ─────────────────────────────────────────────────────────────
+// ─── Historique item ──────────────────────────────────────────────────────────
+
+function HistoryItem({ item, onPress }) {
+  const level = item.result?.urgencyLevel;
+  const score = item.result?.healthScore;
+  const cfg = urgencyConfig(level);
+  const date = new Date(item.createdAt).toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return (
+    <TouchableOpacity style={S.histItem} onPress={onPress} activeOpacity={0.7}>
+      <View style={[S.histThumb, { backgroundColor: cfg.bg }]}>
+        {item.image?.url ? (
+          <Image
+            source={{ uri: item.image.thumbnailUrl || item.image.url }}
+            style={{ width: 46, height: 46, borderRadius: 10 }}
+            resizeMode="cover"
+          />
+        ) : (
+          <MaterialIcons
+            name="image-not-supported"
+            size={18}
+            color={cfg.color}
+          />
+        )}
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={S.histDate}>{date}</Text>
+        <Text style={[S.histScore, { color: cfg.color }]}>
+          {score !== null && score !== undefined ? `${score}/100` : "—"} —{" "}
+          {cfg.label}
+        </Text>
+      </View>
+      <MaterialIcons name="chevron-right" size={18} color="#CBD5E1" />
+    </TouchableOpacity>
+  );
+}
+
+// ─── En-tête de section ───────────────────────────────────────────────────────
+
+function SectionHeader({ icon, label }) {
+  return (
+    <View style={S.sectionHeader}>
+      <MaterialIcons name={icon} size={14} color={C.textMuted} />
+      <Text style={S.sectionLabel}>{label}</Text>
+    </View>
+  );
+}
+
+// ─── Conseil ─────────────────────────────────────────────────────────────────
+
+function AdviceItem({ text, index, urgent }) {
+  return (
+    <View style={[S.adviceItem, urgent && { backgroundColor: C.redLight }]}>
+      <View
+        style={[S.adviceNum, { backgroundColor: urgent ? C.red : C.greenMid }]}
+      >
+        <Text style={S.adviceNumText}>{index + 1}</Text>
+      </View>
+      <Text style={[S.adviceText, urgent && { color: C.redText }]}>{text}</Text>
+    </View>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ÉCRAN PRINCIPAL
+// ════════════════════════════════════════════════════════════════════════════
 
 export default function AIAnalysisScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const params = route?.params || {};
   const poultryId = params.poultryId || params.poulaillerId;
-  const poultryName = params.poultryName || params.poulaillerName;
+  const poultryName =
+    params.poultryName || params.poulaillerName || "Poulailler";
   const insets = useSafeAreaInsets();
 
   const [phase, setPhase] = useState("idle");
@@ -674,6 +640,7 @@ export default function AIAnalysisScreen() {
   const [sensors, setSensors] = useState(null);
   const [history, setHistory] = useState([]);
   const [progress, setProgress] = useState(0);
+  const [testLoading, setTestLoading] = useState(false);
   const [toast, setToast] = useState({
     visible: false,
     message: "",
@@ -691,9 +658,9 @@ export default function AIAnalysisScreen() {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      if (pollTimeoutRef.current) clearTimeout(pollTimeoutRef.current);
-      if (progressInterval.current) clearInterval(progressInterval.current);
+      clearInterval(pollIntervalRef.current);
+      clearTimeout(pollTimeoutRef.current);
+      clearInterval(progressInterval.current);
     };
   }, []);
 
@@ -703,104 +670,65 @@ export default function AIAnalysisScreen() {
     loadLatestAnalysis();
   }, [poultryId]);
 
-  // ── loadHistory ────────────────────────────────────────────────────────────
-
   const loadHistory = async () => {
-    if (!poultryId) return;
     try {
       const res = await api.get(`/ai/history/${poultryId}`);
       if (res.data?.success && isMountedRef.current)
         setHistory(res.data.data || []);
-    } catch (e) {
-      console.warn("[AI] Erreur historique:", e.message);
-    }
+    } catch (_) {}
   };
 
-  // ── loadLatestAnalysis ─────────────────────────────────────────────────────
-
   const loadLatestAnalysis = async () => {
-    if (!poultryId) return;
     try {
       const res = await api.get(`/ai/latest/${poultryId}`);
       if (res.data?.success && res.data.data && isMountedRef.current) {
-        const latest = res.data.data;
-
-        //   Merge imageQuality depuis la racine ET depuis result
-        const rootIQ = latest.imageQuality || {};
-        const resultIQ = latest.result?.imageQuality || {};
-        const mergedIQ = {
-          ...resultIQ,
-          ...rootIQ,
-          status:
-            rootIQ.status === "poor" || resultIQ.status === "poor"
-              ? "poor"
-              : rootIQ.status || resultIQ.status || "unknown",
-          usable: rootIQ.usable !== undefined ? rootIQ.usable : resultIQ.usable,
-          score: rootIQ.score !== undefined ? rootIQ.score : resultIQ.score,
-        };
-
+        const doc = res.data.data;
+        const mergedIQ = mergeImageQuality(
+          doc.result?.imageQuality,
+          doc.imageQuality,
+        );
         setResult({
-          ...latest.result,
+          ...doc.result,
           imageQuality: mergedIQ,
           imageUsable:
-            latest.imageUsable !== undefined
-              ? latest.imageUsable
-              : latest.result?.imageUsable,
+            doc.imageUsable !== undefined
+              ? doc.imageUsable
+              : doc.result?.imageUsable,
           imageAvailable:
-            latest.imageAvailable !== undefined
-              ? latest.imageAvailable
-              : latest.result?.imageAvailable,
+            doc.imageAvailable !== undefined
+              ? doc.imageAvailable
+              : doc.result?.imageAvailable,
         });
-
-        //   Extraction multi-chemins + normalisation des noms de champs
-        const rawSensors = extractRawSensors(latest);
-        console.log("[AI] rawSensors:", JSON.stringify(rawSensors, null, 2));
-        console.log("[AI] normalized:", normalizeSensors(rawSensors));
-        setSensors(normalizeSensors(rawSensors));
-
-        if (latest.image?.url) setImageUri(latest.image.url);
+        setSensors(normalizeSensors(extractRawSensors(doc)));
+        if (doc.image?.url) setImageUri(doc.image.url);
         setPhase("done");
         fadeAnim.setValue(1);
       }
-    } catch (e) {
-      console.warn("[AI] Erreur dernière analyse:", e.message);
-    }
+    } catch (_) {}
   };
 
-  // ── stopPolling ────────────────────────────────────────────────────────────
-
   const stopPolling = useCallback(() => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-    if (pollTimeoutRef.current) {
-      clearTimeout(pollTimeoutRef.current);
-      pollTimeoutRef.current = null;
-    }
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
-      progressInterval.current = null;
-    }
+    clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = null;
+    clearTimeout(pollTimeoutRef.current);
+    pollTimeoutRef.current = null;
+    clearInterval(progressInterval.current);
+    progressInterval.current = null;
   }, []);
 
   const showToast = useCallback((message, type = "success") => {
     setToast({ visible: true, message, type });
   }, []);
 
-  // ── startPolling ───────────────────────────────────────────────────────────
-
   const startPolling = useCallback(
     (requestId) => {
       setPhase("capturing");
-      setPhaseLabel("Attente de l'image ESP32...");
-
+      setPhaseLabel("En attente de la photo...");
       Animated.timing(progressAnim, {
         toValue: 1,
         duration: 30000,
         useNativeDriver: false,
       }).start();
-
       let p = 0;
       progressInterval.current = setInterval(() => {
         p += 1;
@@ -814,7 +742,7 @@ export default function AIAnalysisScreen() {
           setPhase("idle");
           setPhaseLabel("");
           showToast(
-            "La caméra n'a pas répondu (90s). Vérifiez la connexion et réessayez.",
+            "Délai dépassé (90s). Vérifiez la connexion et réessayez.",
             "error",
           );
         }
@@ -825,80 +753,55 @@ export default function AIAnalysisScreen() {
           stopPolling();
           return;
         }
-
         try {
           const statusRes = await api.get(`/ai/capture-status/${requestId}`);
-          const statusData = statusRes.data?.data;
-          if (!statusData) return;
+          const d = statusRes.data?.data;
+          if (!d) return;
 
           const phaseMap = {
-            pending: {
-              phase: "capturing",
-              label: "Attente de l'image ESP32...",
-            },
+            pending: { phase: "capturing", label: "En attente de la photo..." },
             capturing: {
               phase: "capturing",
               label: "La caméra prend la photo...",
             },
             uploading: {
               phase: "uploading",
-              label: "Envoi de la photo vers le cloud...",
+              label: "Photo envoyée vers le serveur...",
             },
             analyzing: {
               phase: "analyzing",
-              label: "Analyse IA en cours (Gemma 3)...",
+              label: "L'IA analyse votre troupeau...",
             },
           };
-          if (phaseMap[statusData.status] && isMountedRef.current) {
-            setPhase(phaseMap[statusData.status].phase);
-            setPhaseLabel(phaseMap[statusData.status].label);
+          if (phaseMap[d.status] && isMountedRef.current) {
+            setPhase(phaseMap[d.status].phase);
+            setPhaseLabel(phaseMap[d.status].label);
           }
 
-          if (statusData.status === "completed") {
+          if (d.status === "completed") {
             stopPolling();
             if (!isMountedRef.current) return;
-
             setProgress(100);
-            if (statusData.imageUrl) setImageUri(statusData.imageUrl);
-
-            if (statusData.analysis) {
-              //   Merge imageQuality
-              const aIQ = statusData.analysis?.imageQuality || {};
-              const sIQ = statusData.imageQuality || {};
-              const mergedIQ = {
-                ...aIQ,
-                ...sIQ,
-                status:
-                  sIQ.status === "poor" || aIQ.status === "poor"
-                    ? "poor"
-                    : !statusData.imageUrl
-                      ? "poor"
-                      : sIQ.status || aIQ.status || "optimized",
-                usable: sIQ.usable !== undefined ? sIQ.usable : aIQ.usable,
-                score: sIQ.score !== undefined ? sIQ.score : aIQ.score,
-              };
+            if (d.imageUrl) setImageUri(d.imageUrl);
+            if (d.analysis) {
+              const mergedIQ = mergeImageQuality(
+                d.analysis?.imageQuality,
+                d.imageQuality,
+              );
               setResult({
-                ...statusData.analysis,
+                ...d.analysis,
                 imageQuality: mergedIQ,
                 imageUsable:
-                  statusData.imageUsable !== undefined
-                    ? statusData.imageUsable
-                    : statusData.analysis?.imageUsable,
+                  d.imageUsable !== undefined
+                    ? d.imageUsable
+                    : d.analysis?.imageUsable,
                 imageAvailable:
-                  statusData.imageAvailable !== undefined
-                    ? statusData.imageAvailable
-                    : statusData.analysis?.imageAvailable,
+                  d.imageAvailable !== undefined
+                    ? d.imageAvailable
+                    : d.analysis?.imageAvailable,
               });
             }
-
-            //   Extraction multi-chemins + normalisation
-            const rawSensors = extractRawSensors(statusData);
-            console.log(
-              "[AI] rawSensors (poll):",
-              JSON.stringify(rawSensors, null, 2),
-            );
-            setSensors(normalizeSensors(rawSensors));
-
+            setSensors(normalizeSensors(extractRawSensors(d)));
             Animated.timing(fadeAnim, {
               toValue: 1,
               duration: 500,
@@ -906,18 +809,13 @@ export default function AIAnalysisScreen() {
             }).start();
             setPhase("done");
             setPhaseLabel("");
-
-            const poor =
-              !statusData.imageUrl ||
-              statusData.imageQuality?.status === "poor";
+            const score = d.analysis?.healthScore;
             showToast(
-              poor
-                ? `Analyse terminée — image floue. Score : ${statusData.analysis?.healthScore ?? "—"}/100`
-                : `Analyse terminée — Score : ${statusData.analysis?.healthScore ?? "—"}/100`,
-              poor ? "warn" : "success",
+              `Analyse terminée — Score : ${score ?? "—"}/100`,
+              "success",
             );
             loadHistory();
-          } else if (statusData.status === "failed") {
+          } else if (d.status === "failed") {
             stopPolling();
             if (isMountedRef.current) {
               setPhase("idle");
@@ -926,60 +824,42 @@ export default function AIAnalysisScreen() {
             }
           }
         } catch (err) {
-          const httpStatus = err.response?.status;
-          if (httpStatus === 404) {
+          const s = err.response?.status;
+          if (s === 404 || s === 500) {
             stopPolling();
             if (isMountedRef.current) {
               setPhase("idle");
               setPhaseLabel("");
-              showToast("Session expirée. Relancez l'analyse.", "error");
+              showToast(
+                s === 404
+                  ? "Session expirée. Relancez l'analyse."
+                  : err.response?.data?.error || "Erreur serveur",
+                "error",
+              );
             }
-            return;
           }
-          if (httpStatus === 500) {
-            stopPolling();
-            if (isMountedRef.current) {
-              setPhase("idle");
-              setPhaseLabel("");
-              showToast(err.response?.data?.error || "Erreur serveur", "error");
-            }
-            return;
-          }
-          console.warn("[AI] Erreur polling réseau:", err.message);
         }
       }, 2000);
     },
     [stopPolling, fadeAnim, progressAnim, showToast],
   );
 
-  // ── handleAnalyze ──────────────────────────────────────────────────────────
-
   const handleAnalyze = useCallback(async () => {
-    if (phase === "capturing" || phase === "uploading" || phase === "analyzing")
-      return;
-
+    if (["capturing", "uploading", "analyzing"].includes(phase)) return;
     stopPolling();
     fadeAnim.setValue(0);
     progressAnim.setValue(0);
     setProgress(0);
     setResult(null);
     setSensors(null);
-
     setPhase("capturing");
     setPhaseLabel("Envoi de la commande à la caméra...");
-    showToast("Commande envoyée à la caméra ESP32...", "info");
-
+    showToast("Commande envoyée à la caméra...", "info");
     try {
       const captureRes = await api.post(`/ai/capture/${poultryId}`);
       if (!captureRes.data?.success)
-        throw new Error(
-          captureRes.data?.error || "Erreur déclenchement capture",
-        );
-
-      const requestId = captureRes.data.data?.requestId;
-      const mqttSent = captureRes.data.data?.mqttSent;
-      const cameraMac = captureRes.data.data?.cameraMac;
-
+        throw new Error(captureRes.data?.error || "Erreur déclenchement");
+      const { requestId, mqttSent, cameraMac } = captureRes.data.data || {};
       if (!requestId) {
         showToast("Erreur serveur — aucun identifiant reçu", "error");
         if (isMountedRef.current) {
@@ -988,14 +868,12 @@ export default function AIAnalysisScreen() {
         }
         return;
       }
-
       showToast(
         mqttSent
-          ? "Caméra déclenchée — attente de la photo..."
+          ? "Caméra déclenchée — photo en cours..."
           : `Reconnexion en cours... (${cameraMac || "caméra"})`,
         mqttSent ? "info" : "warn",
       );
-
       startPolling(requestId);
     } catch (err) {
       showToast(err.message || "Erreur déclenchement", "error");
@@ -1014,7 +892,45 @@ export default function AIAnalysisScreen() {
     showToast,
   ]);
 
-  // ── handleReset ────────────────────────────────────────────────────────────
+  const isLoading = ["capturing", "uploading", "analyzing"].includes(phase);
+
+  const handleTestImage = useCallback(async () => {
+    if (isLoading || testLoading) return;
+    setTestLoading(true);
+    try {
+      stopPolling();
+      fadeAnim.setValue(0);
+      progressAnim.setValue(0);
+      setProgress(0);
+      setResult(null);
+      setSensors(null);
+      showToast("Sélectionnez une image à analyser...", "info");
+      const testData = await pickAndSendTestImage(poultryId);
+      if (!testData) {
+        setTestLoading(false);
+        return;
+      }
+      showToast("Image envoyée — analyse en cours...", "info");
+      startPolling(testData.requestId);
+    } catch (err) {
+      showToast(err.message || "Erreur test image", "error");
+      if (isMountedRef.current) {
+        setPhase("idle");
+        setPhaseLabel("");
+      }
+    } finally {
+      setTestLoading(false);
+    }
+  }, [
+    isLoading,
+    testLoading,
+    poultryId,
+    stopPolling,
+    startPolling,
+    fadeAnim,
+    progressAnim,
+    showToast,
+  ]);
 
   const handleReset = useCallback(() => {
     stopPolling();
@@ -1037,7 +953,6 @@ export default function AIAnalysisScreen() {
       }),
     [navigation, poultryId, poultryName],
   );
-
   const goToChat = useCallback(
     () =>
       navigation.navigate("AIChat", {
@@ -1048,47 +963,112 @@ export default function AIAnalysisScreen() {
     [navigation, poultryId, poultryName, result],
   );
 
-  const isLoading =
-    phase === "capturing" || phase === "uploading" || phase === "analyzing";
-  const poorImage = result ? isResultPoorImage(result) : false;
-  const detections = result?.detections || {};
+  // ── Données dérivées — toutes sécurisées contre undefined/null ────────────
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  const imageQuality = result?.imageQuality ?? {};
+  const isPoor = imageQuality?.status === "poor";
+
+  const det = result?.detections || {};
+  const comptage = result?.comptage ?? {};
+  const maladie = result?.maladie_suspectee || {};
+  const advices = Array.isArray(result?.advices) ? result.advices : [];
+
+  const mortalityDetected = isPoor ? null : (det.mortalityDetected ?? null);
+  const nombreMorts = isPoor
+    ? null
+    : Number.isFinite(det.nombreMorts)
+      ? det.nombreMorts
+      : null;
+  const behaviorNormal = isPoor ? null : (det.behaviorNormal ?? null);
+
+  const maladieSuspicion = isPoor ? null : (maladie.suspicion ?? null);
+  // ── FIX: toujours un tableau, jamais undefined ──────────────────────────
+  const signesObserves = Array.isArray(maladie?.signes_observes)
+    ? maladie.signes_observes
+    : [];
+
+  const comptageEstimation = comptage?.estimation ?? null;
+
+  const urgencyLevel = result?.urgencyLevel ?? "inconnu";
+  const healthScore = Number.isFinite(result?.healthScore)
+    ? result.healthScore
+    : null;
+
+  // ── Texte comportement anormal — adapté au nombre de volailles ────────────
+  const behaviorAnormalText = (() => {
+    if (signesObserves.length > 0) {
+      return `Comportements anormaux détectés — ${signesObserves.slice(0, 2).join(", ")}.`;
+    }
+    if (comptageEstimation !== null && comptageEstimation <= 1) {
+      return "Comportement anormal détecté — observez attentivement cette volaille.";
+    }
+    return "Comportements anormaux détectés — observez vos volailles de plus près.";
+  })();
+
+  // ── Configs badges ─────────────────────────────────────────────────────────
+
+  const mortalityCfg =
+    mortalityDetected === true
+      ? {
+          color: C.red,
+          bg: C.redLight,
+          badge: `${nombreMorts ?? "?"} MORTE${(nombreMorts ?? 0) > 1 ? "S" : ""}`,
+        }
+      : mortalityDetected === false
+        ? { color: C.greenMid, bg: C.greenLight, badge: "AUCUNE" }
+        : { color: C.gray, bg: C.grayLight, badge: "N/A" };
+
+  const behaviorCfg =
+    behaviorNormal === true
+      ? { color: C.greenMid, bg: C.greenLight, badge: "NORMAL" }
+      : behaviorNormal === false
+        ? { color: "#D97706", bg: C.amberLight, badge: "ANORMAL" }
+        : { color: C.gray, bg: C.grayLight, badge: "N/A" };
+
+  const maladieCfg =
+    maladieSuspicion === true
+      ? { color: C.red }
+      : maladieSuspicion === false
+        ? { color: C.greenMid, bg: C.greenLight, badge: "RAS" }
+        : { color: C.gray, bg: C.grayLight, badge: "N/A" };
+
+  const comptageCfg =
+    comptageEstimation !== null && comptageEstimation !== undefined
+      ? {
+          color: C.blue,
+          bg: C.blueLight,
+          badge: `~ ${comptageEstimation} vol.`,
+        }
+      : { color: C.gray, bg: C.grayLight, badge: "N/A" };
+
+  // ── Rendu ──────────────────────────────────────────────────────────────────
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={S.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* ── Header ── */}
-      <View style={styles.header}>
+      {/* ── En-tête ── */}
+      <View style={S.header}>
         <TouchableOpacity
-          style={styles.backBtn}
+          style={S.backBtn}
           onPress={() => navigation.goBack()}
           activeOpacity={0.7}
         >
-          <Ionicons name="arrow-back" size={20} color="#1E293B" />
+          <Ionicons name="arrow-back" size={20} color={C.textPrimary} />
         </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>Analyse IA — Santé</Text>
-          {poultryName && (
-            <Text style={styles.headerSub} numberOfLines={1}>
-              {poultryName}
-            </Text>
-          )}
+        <View style={{ flex: 1 }}>
+          <Text style={S.headerTitle}>Santé du troupeau</Text>
+          <Text style={S.headerSub} numberOfLines={1}>
+            {poultryName}
+          </Text>
         </View>
         <View
-          style={[
-            styles.liveBadge,
-            isLoading && { backgroundColor: "#FEF3C7" },
-          ]}
+          style={[S.livePill, isLoading && { backgroundColor: C.amberLight }]}
         >
           <View
-            style={[
-              styles.liveDot,
-              isLoading && { backgroundColor: "#F59E0B" },
-            ]}
+            style={[S.liveDot, isLoading && { backgroundColor: "#D97706" }]}
           />
-          <Text style={[styles.liveText, isLoading && { color: "#92400E" }]}>
+          <Text style={[S.liveText, isLoading && { color: C.amberText }]}>
             {isLoading ? "EN COURS" : "ACTIF"}
           </Text>
         </View>
@@ -1097,23 +1077,25 @@ export default function AIAnalysisScreen() {
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: 100 + Math.max(insets.bottom, 0) },
+          S.scroll,
+          { paddingBottom: 96 + Math.max(insets.bottom, 0) },
         ]}
       >
         {/* ── Zone image ── */}
-        <View style={[styles.imageZone, imageUri && styles.imageZoneHasImage]}>
+        <View style={[S.imageZone, imageUri && S.imageZoneFull]}>
           {phase === "capturing" ? (
-            <View style={styles.capturingOverlay}>
-              <View style={styles.capturingIconWrap}>
+            <View style={S.imagePlaceholder}>
+              <View style={[S.imageIconWrap, { backgroundColor: C.blueLight }]}>
                 <MaterialIcons
                   name="settings-remote"
                   size={28}
-                  color="#22C55E"
+                  color={C.blue}
                 />
               </View>
-              <Text style={styles.capturingTitle}>Déclenchement caméra</Text>
-              <Text style={styles.capturingHint}>
+              <Text style={[S.imagePlaceholderTitle, { color: C.blue }]}>
+                Caméra en cours...
+              </Text>
+              <Text style={S.imagePlaceholderSub}>
                 La caméra va prendre une photo du poulailler
               </Text>
             </View>
@@ -1121,68 +1103,65 @@ export default function AIAnalysisScreen() {
             <>
               <Image
                 source={{ uri: imageUri }}
-                style={[StyleSheet.absoluteFill, poorImage && { opacity: 0.4 }]}
+                style={StyleSheet.absoluteFill}
                 resizeMode="cover"
               />
-              {poorImage && (
-                <View style={styles.poorImageOverlay}>
-                  <MaterialIcons name="blur-on" size={28} color="#fff" />
-                  <Text style={styles.poorImageText}>
-                    Image floue — non exploitable
-                  </Text>
-                </View>
-              )}
-              <View style={styles.imageOverlay}>
-                <View style={styles.imageOverlayTop}>
-                  <View style={styles.imageBadge}>
+              <View style={S.imageOverlay}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <View style={S.imagePill}>
                     <MaterialIcons name="camera-alt" size={11} color="#fff" />
-                    <Text style={styles.imageBadgeText}>ESP32CAM</Text>
+                    <Text style={S.imagePillText}>ESP32-CAM</Text>
                   </View>
-                  {result && (
+                  {healthScore !== null && (
                     <View
                       style={[
-                        styles.imageBadge,
+                        S.imagePill,
                         {
-                          backgroundColor: poorImage
-                            ? "rgba(100,116,139,0.85)"
-                            : result.urgencyLevel === "critique"
-                              ? "rgba(239,68,68,0.9)"
-                              : result.urgencyLevel === "attention"
-                                ? "rgba(245,158,11,0.9)"
-                                : "rgba(34,197,94,0.9)",
+                          backgroundColor:
+                            urgencyLevel === "critique"
+                              ? "rgba(220,38,38,0.9)"
+                              : urgencyLevel === "attention"
+                                ? "rgba(217,119,6,0.9)"
+                                : "rgba(99,153,34,0.9)",
                         },
                       ]}
                     >
-                      <Text style={styles.imageBadgeText}>
-                        {result.healthScore}/100{poorImage ? " ⚠" : ""}
-                      </Text>
+                      <Text style={S.imagePillText}>{healthScore} / 100</Text>
                     </View>
                   )}
                 </View>
               </View>
             </>
           ) : (
-            <View style={styles.imagePlaceholder}>
-              <View style={styles.imageIconWrap}>
-                <MaterialIcons name="camera-alt" size={30} color="#22C55E" />
+            <View style={S.imagePlaceholder}>
+              <View style={S.imageIconWrap}>
+                <MaterialIcons name="camera-alt" size={28} color={C.greenMid} />
               </View>
-              <Text style={styles.imageHint}>
+              <Text style={S.imagePlaceholderTitle}>Prêt à analyser</Text>
+              <Text style={S.imagePlaceholderSub}>
                 Appuyez sur{" "}
-                <Text style={styles.imageHintHighlight}>Analyser</Text>
-                {"\n"}pour déclencher la caméra et obtenir un diagnostic
+                <Text style={{ color: C.greenMid, fontWeight: "700" }}>
+                  Analyser
+                </Text>{" "}
+                pour déclencher la caméra
               </Text>
             </View>
           )}
         </View>
 
-        {/* ── Progression analyse ── */}
+        {/* ── Progression ── */}
         {isLoading && (
-          <View style={styles.progressCard}>
+          <View style={S.card}>
             <PhaseSteps currentPhase={phase} />
-            <View style={styles.progressBarBg}>
+            <View style={S.progressBg}>
               <Animated.View
                 style={[
-                  styles.progressBarFill,
+                  S.progressFill,
                   {
                     width: progressAnim.interpolate({
                       inputRange: [0, 1],
@@ -1192,226 +1171,416 @@ export default function AIAnalysisScreen() {
                 ]}
               />
             </View>
-            <View style={styles.progressMeta}>
-              <Text style={styles.progressLabel}>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                marginTop: 6,
+              }}
+            >
+              <Text style={S.progressLabel}>
                 {phaseLabel || "Analyse en cours..."}
               </Text>
-              <Text style={styles.progressPct}>{progress}%</Text>
+              <Text
+                style={[
+                  S.progressLabel,
+                  { color: C.greenMid, fontWeight: "700" },
+                ]}
+              >
+                {progress}%
+              </Text>
             </View>
-            <Text style={styles.progressModel}>Gemma 3 · Cloudflare AI</Text>
+            <Text style={S.progressModel}>Llama Vision · Cloudflare AI</Text>
           </View>
         )}
 
-        {/* ── Résultat ── */}
+        {/* ── Résultats ── */}
         {phase === "done" && result && (
-          <Animated.View style={{ opacity: fadeAnim }}>
-            {/* Bannière image floue */}
-            {poorImage && (
-              <View style={styles.poorBanner}>
-                <MaterialIcons name="camera-roll" size={18} color="#92400E" />
+          <Animated.View style={{ opacity: fadeAnim, gap: 10 }}>
+            {/* Bannières urgence */}
+            {urgencyLevel === "critique" && (
+              <View
+                style={[
+                  S.banner,
+                  { backgroundColor: C.redLight, borderColor: "#F7C1C1" },
+                ]}
+              >
+                <MaterialIcons name="error" size={20} color={C.red} />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.poorBannerTitle}>
-                    Image inexploitable
+                  <Text style={[S.bannerTitle, { color: C.redText }]}>
+                    Intervention urgente requise
                   </Text>
-                  <Text style={styles.poorBannerDesc}>
-                    Photo trop floue ou trop sombre. Le bilan est basé
-                    uniquement sur les capteurs disponibles.
+                  <Text style={[S.bannerDesc, { color: C.red }]}>
+                    Vérifiez immédiatement votre troupeau
+                  </Text>
+                </View>
+              </View>
+            )}
+            {urgencyLevel === "attention" && (
+              <View
+                style={[
+                  S.banner,
+                  { backgroundColor: C.amberLight, borderColor: "#FAC775" },
+                ]}
+              >
+                <MaterialIcons name="warning" size={20} color={C.amber} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[S.bannerTitle, { color: C.amberText }]}>
+                    Surveillance renforcée conseillée
+                  </Text>
+                  <Text style={[S.bannerDesc, { color: C.amber }]}>
+                    Contrôlez les capteurs et observez vos volailles
                   </Text>
                 </View>
               </View>
             )}
 
-            {/* Bannière aucune donnée */}
-            {result.urgencyLevel === "inconnu" && (
-              <View style={styles.unknownBanner}>
-                <MaterialIcons name="sensors-off" size={18} color="#64748B" />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.unknownBannerTitle}>
-                    Aucune donnée disponible
-                  </Text>
-                  <Text style={styles.unknownBannerDesc}>
-                    Capteurs non connectés et image inexploitable. Vérifiez vos
-                    équipements.
-                  </Text>
-                </View>
-              </View>
-            )}
-
-            {/* ── Carte principale ── */}
-            <View style={styles.resultCard}>
-              {/* Score + Urgence */}
-              <View style={styles.scoreRow}>
-                <ScoreCircle
-                  score={result.healthScore}
-                  size={88}
-                  dimmed={
-                    result.healthScore === null ||
-                    result.healthScore === undefined ||
-                    poorImage ||
-                    result.urgencyLevel === "inconnu"
-                  }
-                />
-                <View style={styles.scoreInfo}>
-                  <UrgencyBadge level={result.urgencyLevel} />
+            {/* Carte score + diagnostic */}
+            <View style={S.card}>
+              <View style={S.scoreRow}>
+                <ScoreCircle score={healthScore} size={84} />
+                <View style={{ flex: 1, gap: 7 }}>
+                  <UrgencyBadge level={urgencyLevel} large />
                   {result.confidence != null && (
-                    <Text style={styles.confidenceText}>
-                      Confiance : {result.confidence}%
-                      {poorImage ? " (capteurs)" : ""}
+                    <Text style={S.confText}>
+                      Confiance IA : {result.confidence}%
                     </Text>
                   )}
-                  <View style={styles.imageQualityRow}>
-                    <MaterialIcons
-                      name={poorImage ? "broken-image" : "photo-camera"}
-                      size={12}
-                      color={poorImage ? "#F59E0B" : "#94A3B8"}
-                    />
-                    <Text
-                      style={[
-                        styles.imageQualityText,
-                        poorImage && { color: "#F59E0B" },
-                      ]}
-                    >
-                      {poorImage ? "Sans image" : "Image analysée"}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Diagnostic */}
-              <View style={styles.diagnosticBox}>
-                <Text style={styles.diagnosticText}>{result.diagnostic}</Text>
-              </View>
-
-              {/* ── Détections visuelles ── */}
-              <View style={styles.sectionHeader}>
-                <MaterialIcons name="search" size={15} color="#94A3B8" />
-                <Text style={styles.sectionLabel}>Détections visuelles</Text>
-              </View>
-
-              {poorImage && (
-                <View style={styles.unavailableRow}>
-                  <MaterialIcons
-                    name="visibility-off"
-                    size={15}
-                    color="#94A3B8"
-                  />
-                  <Text style={styles.unavailableText}>
-                    Impossible sans image exploitable — relancez l'analyse
+                  <Text style={S.confText}>
+                    {result.imageUsable
+                      ? "Image analysée"
+                      : "Analyse capteurs uniquement"}
                   </Text>
                 </View>
-              )}
+              </View>
 
-              <View style={styles.detectionList}>
-                <DetectionRow
+              <View style={S.diagBox}>
+                <Text style={S.diagText}>
+                  {result.diagnostic || "Analyse effectuée."}
+                </Text>
+              </View>
+
+              {/* ── Ce que l'IA a vu ── */}
+              <SectionHeader icon="biotech" label="Ce que l'IA a vu" />
+              <View style={{ gap: 8 }}>
+                {/* Volailles mortes */}
+                <DetCard
+                  icon="warning"
+                  title="Volailles mortes"
+                  badge={mortalityCfg.badge}
+                  badgeColor={mortalityCfg.color}
+                  badgeBg={mortalityCfg.bg}
+                  isNull={
+                    mortalityDetected === null ||
+                    mortalityDetected === undefined
+                  }
+                >
+                  {mortalityDetected === true ? (
+                    nombreMorts > 0 ? (
+                      <>
+                        <DetRow
+                          icon="report"
+                          iconColor={C.red}
+                          text={`${nombreMorts} volaille${nombreMorts > 1 ? "s" : ""} morte${nombreMorts > 1 ? "s" : ""} détectée${nombreMorts > 1 ? "s" : ""} sur l'image.`}
+                          textColor={C.red}
+                        />
+                        <View style={[S.vetBadge, { marginTop: 8 }]}>
+                          <MaterialIcons
+                            name="local-hospital"
+                            size={14}
+                            color={C.red}
+                          />
+                          <Text style={[S.vetBadgeText, { color: C.red }]}>
+                            Appelez un vétérinaire immédiatement
+                          </Text>
+                        </View>
+                      </>
+                    ) : (
+                      <DetRow
+                        icon="report"
+                        iconColor={C.red}
+                        text="Des volailles mortes ont été détectées. Contactez un vétérinaire."
+                        textColor={C.red}
+                      />
+                    )
+                  ) : (
+                    <DetRow
+                      icon="check-circle"
+                      iconColor={C.greenMid}
+                      text="Aucune volaille au sol ou immobile détectée sur l'image."
+                    />
+                  )}
+                </DetCard>
+
+                {/* Comptage */}
+                <DetCard
+                  icon="groups"
+                  title="Volailles comptées sur l'image"
+                  badge={comptageCfg.badge}
+                  badgeColor={comptageCfg.color}
+                  badgeBg={comptageCfg.bg}
+                  isNull={
+                    comptageEstimation === null ||
+                    comptageEstimation === undefined
+                  }
+                >
+                  {comptageEstimation !== null &&
+                  comptageEstimation !== undefined ? (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 12,
+                      }}
+                    >
+                      <View style={S.comptageBox}>
+                        <Text style={S.comptageNum}>{comptageEstimation}</Text>
+                        <Text style={S.comptageSub}>visibles</Text>
+                      </View>
+                      <View style={{ flex: 1, gap: 5 }}>
+                        {comptage.fiabilite && (
+                          <View
+                            style={[
+                              S.fiabBadge,
+                              {
+                                backgroundColor:
+                                  comptage.fiabilite === "bonne"
+                                    ? C.greenLight
+                                    : comptage.fiabilite === "moyenne"
+                                      ? C.amberLight
+                                      : C.grayLight,
+                              },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                S.fiabText,
+                                {
+                                  color:
+                                    comptage.fiabilite === "bonne"
+                                      ? C.green
+                                      : comptage.fiabilite === "moyenne"
+                                        ? C.amber
+                                        : C.gray,
+                                },
+                              ]}
+                            >
+                              Fiabilité {comptage.fiabilite}
+                            </Text>
+                          </View>
+                        )}
+                        {comptage.note && (
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              color: C.textMuted,
+                              lineHeight: 16,
+                            }}
+                          >
+                            {comptage.note}
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                  ) : (
+                    <DetRow
+                      icon="help-outline"
+                      iconColor={C.gray}
+                      text="Comptage impossible — visibilité insuffisante."
+                    />
+                  )}
+                </DetCard>
+
+                {/* Signes cliniques / maladie */}
+                <DetCard
+                  icon="coronavirus"
+                  title="Signes observés sur l'image"
+                  badge={maladieCfg.badge}
+                  badgeColor={maladieCfg.color}
+                  badgeBg={maladieCfg.bg}
+                  isNull={
+                    maladieSuspicion === null || maladieSuspicion === undefined
+                  }
+                >
+                  {maladieSuspicion === true ? (
+                    <View style={{ gap: 8 }}>
+                      {signesObserves.length > 0 && (
+                        <View style={S.signesBox}>
+                          {signesObserves.map((s, i) => (
+                            <View
+                              key={i}
+                              style={{
+                                flexDirection: "row",
+                                alignItems: "flex-start",
+                                gap: 6,
+                                marginTop: 3,
+                              }}
+                            >
+                              <View style={S.signeDot} />
+                              <Text style={S.signeText}>{s}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                      {maladie.urgence_veterinaire && (
+                        <View style={S.vetBadge}>
+                          <MaterialIcons
+                            name="local-hospital"
+                            size={14}
+                            color={C.red}
+                          />
+                          <Text style={S.vetBadgeText}>
+                            Consultation vétérinaire urgente
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  ) : (
+                    <DetRow
+                      icon="check-circle"
+                      iconColor={C.greenMid}
+                      text="Aucun signe clinique suspect (plumes, posture, yeux, crête)."
+                    />
+                  )}
+                </DetCard>
+
+                {/* Comportement */}
+                <DetCard
                   icon="psychology"
-                  label="Comportement"
-                  desc="Activité et posture des volailles"
-                  value={poorImage ? null : detections.behaviorNormal}
-                />
-                <DetectionRow
-                  icon="favorite"
-                  label="Mortalité"
-                  desc="Présence de cadavres dans l'image"
-                  value={poorImage ? null : detections.mortalityDetected}
-                  isMortality
-                />
-                <DetectionRow
-                  icon="group"
-                  label="Densité"
-                  desc="Répartition des volailles au m²"
-                  value={poorImage ? null : detections.densityOk}
-                />
-                <DetectionRow
-                  icon="cleaning-services"
-                  label="Litière"
-                  desc="État et propreté de la litière"
-                  value={poorImage ? null : detections.cleanEnvironment}
-                />
-                <DetectionRow
-                  icon="air"
-                  label="Ventilation"
-                  desc="Circulation d'air visible"
-                  value={poorImage ? null : detections.ventilationAdequate}
-                />
+                  title="Comportement du troupeau"
+                  badge={behaviorCfg.badge}
+                  badgeColor={behaviorCfg.color}
+                  badgeBg={behaviorCfg.bg}
+                  isNull={
+                    behaviorNormal === null || behaviorNormal === undefined
+                  }
+                >
+                  {behaviorNormal === true ? (
+                    <DetRow
+                      icon="check-circle"
+                      iconColor={C.greenMid}
+                      text="Activité normale — les volailles se comportent bien."
+                    />
+                  ) : (
+                    // ── FIX: texte dynamique selon contexte, pas de "regroupements" pour 1 volaille ──
+                    <DetRow
+                      icon="warning"
+                      iconColor="#D97706"
+                      text={behaviorAnormalText}
+                      textColor={C.amberText}
+                    />
+                  )}
+                </DetCard>
               </View>
 
               {/* ── Capteurs ── */}
-              <View style={[styles.sectionHeader, { marginTop: 20 }]}>
-                <MaterialIcons name="device-hub" size={15} color="#94A3B8" />
-                <Text style={styles.sectionLabel}>Données capteurs</Text>
-              </View>
-
-              <SensorsSection
-                sensors={sensors}
-                thresholds={result?.thresholds}
-              />
+              <SectionHeader icon="sensors" label="Capteurs du poulailler" />
+              <SensorsSection sensors={sensors} />
 
               {/* ── Recommandations ── */}
-              {(result.advices || []).length > 0 &&
-                !(poorImage && result.urgencyLevel === "inconnu") && (
-                  <>
-                    <View style={[styles.sectionHeader, { marginTop: 20 }]}>
-                      <MaterialIcons
-                        name="lightbulb"
-                        size={15}
-                        color="#94A3B8"
+              {advices.length > 0 && (
+                <>
+                  <SectionHeader icon="lightbulb" label="Ce qu'il faut faire" />
+                  <View style={{ gap: 7 }}>
+                    {advices.map((a, i) => (
+                      <AdviceItem
+                        key={i}
+                        text={a}
+                        index={i}
+                        urgent={urgencyLevel === "critique" && i === 0}
                       />
-                      <Text style={styles.sectionLabel}>Recommandations</Text>
-                    </View>
-                    <View style={styles.adviceList}>
-                      {(result.advices || []).map((advice, i) => (
-                        <AdviceItem key={i} text={advice} index={i} />
-                      ))}
-                    </View>
-                  </>
-                )}
-
-              {/* CTA relancer si image floue */}
-              {poorImage && (
-                <TouchableOpacity
-                  style={styles.retryBtn}
-                  onPress={handleAnalyze}
-                  activeOpacity={0.8}
-                >
-                  <MaterialIcons name="camera-alt" size={16} color="#fff" />
-                  <Text style={styles.retryBtnText}>
-                    Relancer avec une nouvelle photo
-                  </Text>
-                </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
               )}
             </View>
           </Animated.View>
         )}
 
-        {/* ── État initial (idle sans résultat) ── */}
+        {/* ── État idle sans résultat ── */}
         {phase === "idle" && !result && (
-          <View style={styles.idleCard}>
-            <View style={styles.idleIconWrap}>
-              <MaterialIcons name="biotech" size={32} color="#22C55E" />
+          <View
+            style={[
+              S.card,
+              { alignItems: "center", paddingVertical: 28, gap: 10 },
+            ]}
+          >
+            <View
+              style={[
+                S.imageIconWrap,
+                { width: 64, height: 64, borderRadius: 32 },
+              ]}
+            >
+              <MaterialIcons name="biotech" size={30} color={C.greenMid} />
             </View>
-            <Text style={styles.idleTitle}>Prêt à analyser</Text>
-            <Text style={styles.idleDesc}>
-              L'IA va déclencher la caméra, prendre une photo et analyser l'état
-              de santé de votre troupeau en quelques secondes.
+            <Text
+              style={{ fontSize: 16, fontWeight: "700", color: C.textPrimary }}
+            >
+              Prêt à analyser
+            </Text>
+            <Text
+              style={{
+                fontSize: 13,
+                color: C.textSecondary,
+                textAlign: "center",
+                lineHeight: 20,
+                paddingHorizontal: 12,
+              }}
+            >
+              L'IA déclenche la caméra, prend une photo et analyse l'état de
+              santé de votre troupeau en quelques secondes.
             </Text>
           </View>
         )}
 
         {/* ── Historique ── */}
-        <View style={styles.historyCard}>
-          <View style={styles.historyHeader}>
-            <View style={styles.historyTitleRow}>
-              <MaterialIcons name="history" size={18} color="#1E293B" />
-              <Text style={styles.historyTitle}>Historique</Text>
+        <View style={S.card}>
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 12,
+            }}
+          >
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 6 }}
+            >
+              <MaterialIcons name="history" size={17} color={C.textPrimary} />
+              <Text
+                style={{
+                  fontSize: 14,
+                  fontWeight: "700",
+                  color: C.textPrimary,
+                }}
+              >
+                Historique
+              </Text>
             </View>
             <TouchableOpacity
-              onPress={() => navigation.navigate("AIHistory", { poultryId })}
+              onPress={() =>
+                navigation.navigate("AIHistory", {
+                  poultryId,
+                  poultryName,
+                })
+              }
             >
-              <Text style={styles.historyLink}>Voir tout</Text>
+              <Text
+                style={{ fontSize: 13, fontWeight: "700", color: C.greenMid }}
+              >
+                Voir tout
+              </Text>
             </TouchableOpacity>
           </View>
           {history.length === 0 ? (
-            <Text style={styles.historyEmpty}>
+            <Text
+              style={{
+                color: C.textMuted,
+                fontSize: 13,
+                textAlign: "center",
+                paddingVertical: 16,
+              }}
+            >
               Aucune analyse effectuée pour l'instant
             </Text>
           ) : (
@@ -1428,34 +1597,41 @@ export default function AIAnalysisScreen() {
         </View>
       </ScrollView>
 
-      {/* ── Barre de boutons ── */}
+      {/* ── Barre d'actions ── */}
       <View
         style={[
-          styles.bottomBar,
-          { paddingBottom: Math.max(insets.bottom, 16) + 12 },
+          S.bottomBar,
+          { paddingBottom: Math.max(insets.bottom, 16) + 10 },
         ]}
       >
         <TouchableOpacity
-          style={styles.chatBtn}
-          onPress={goToChat}
-          activeOpacity={0.7}
+          style={[S.testBtn, (isLoading || testLoading) && { opacity: 0.4 }]}
+          onPress={handleTestImage}
+          disabled={isLoading || testLoading}
+          activeOpacity={0.8}
         >
-          <MaterialIcons name="chat" size={18} color="#475569" />
-          <Text style={styles.chatBtnText}>Chat IA</Text>
+          {testLoading ? (
+            <ActivityIndicator size="small" color={C.purple} />
+          ) : (
+            <>
+              <MaterialIcons name="photo-library" size={15} color={C.purple} />
+              <Text style={S.testBtnText}>Tester</Text>
+            </>
+          )}
         </TouchableOpacity>
 
         {phase === "done" && (
           <TouchableOpacity
-            style={styles.resetBtn}
+            style={S.resetBtn}
             onPress={handleReset}
             activeOpacity={0.7}
           >
-            <MaterialIcons name="refresh" size={18} color="#475569" />
+            <MaterialIcons name="refresh" size={18} color={C.gray} />
           </TouchableOpacity>
         )}
 
         <TouchableOpacity
-          style={[styles.analyzeBtn, isLoading && styles.analyzeBtnDisabled]}
+          style={[S.analyzeBtn, isLoading && S.analyzeBtnDisabled]}
           onPress={handleAnalyze}
           disabled={isLoading}
           activeOpacity={0.85}
@@ -1465,7 +1641,7 @@ export default function AIAnalysisScreen() {
           ) : (
             <>
               <MaterialIcons name="biotech" size={20} color="#fff" />
-              <Text style={styles.analyzeBtnText}>
+              <Text style={S.analyzeBtnText}>
                 {phase === "done" ? "Nouvelle analyse" : "Analyser"}
               </Text>
             </>
@@ -1483,267 +1659,169 @@ export default function AIAnalysisScreen() {
   );
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// STYLES
+// ════════════════════════════════════════════════════════════════════════════
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8FAF9" },
+const S = StyleSheet.create({
+  container: { flex: 1, backgroundColor: C.bg },
 
-  // ── Header
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 16,
     paddingVertical: 12,
-    backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    backgroundColor: C.white,
+    borderBottomWidth: 0.5,
+    borderBottomColor: C.border,
     gap: 12,
   },
   backBtn: {
     width: 38,
     height: 38,
     borderRadius: 12,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: C.grayLight,
     alignItems: "center",
     justifyContent: "center",
   },
-  headerCenter: { flex: 1 },
-  headerTitle: {
-    fontSize: 15,
-    fontWeight: "800",
-    color: "#1E293B",
-    lineHeight: 20,
-  },
-  headerSub: {
-    fontSize: 11,
-    color: "#94A3B8",
-    fontWeight: "600",
-    marginTop: 1,
-  },
-  liveBadge: {
+  headerTitle: { fontSize: 15, fontWeight: "800", color: C.textPrimary },
+  headerSub: { fontSize: 11, color: C.textMuted, marginTop: 1 },
+  livePill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 20,
-    backgroundColor: "#F0FDF4",
+    backgroundColor: C.greenLight,
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: "#22C55E",
+    backgroundColor: C.greenMid,
   },
   liveText: {
     fontSize: 10,
     fontWeight: "700",
-    color: "#16A34A",
+    color: C.greenText,
     letterSpacing: 0.5,
   },
 
-  scrollContent: { paddingTop: 12 },
+  scroll: { paddingTop: 12, paddingHorizontal: 12, gap: 10 },
 
-  // ── Image zone
   imageZone: {
-    marginHorizontal: 12,
-    marginBottom: 12,
-    height: 220,
+    height: 210,
     borderRadius: 20,
     borderWidth: 2,
     borderStyle: "dashed",
-    borderColor: "#22C55E",
-    backgroundColor: "#F0FDF4",
+    borderColor: C.greenMid,
+    backgroundColor: C.greenLight,
     overflow: "hidden",
-  },
-  imageZoneHasImage: { borderStyle: "solid", borderColor: "transparent" },
-  imagePlaceholder: {
-    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
-    paddingHorizontal: 24,
   },
+  imageZoneFull: { borderStyle: "solid", borderColor: "transparent" },
+  imagePlaceholder: { alignItems: "center", gap: 10, paddingHorizontal: 28 },
   imageIconWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#22C55E15",
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: C.greenLight,
     alignItems: "center",
     justifyContent: "center",
   },
-  imageHint: {
+  imagePlaceholderTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: C.textPrimary,
+  },
+  imagePlaceholderSub: {
     fontSize: 13,
-    color: "#64748B",
+    color: C.textSecondary,
     textAlign: "center",
-    lineHeight: 20,
+    lineHeight: 19,
   },
-  imageHintHighlight: { color: "#22C55E", fontWeight: "700" },
-  capturingOverlay: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    paddingHorizontal: 24,
-  },
-  capturingIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: "#F0FDF4",
-    borderWidth: 2,
-    borderColor: "#22C55E",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  capturingTitle: { fontSize: 15, fontWeight: "700", color: "#22C55E" },
-  capturingHint: {
-    fontSize: 12,
-    color: "#64748B",
-    textAlign: "center",
-    lineHeight: 18,
-  },
-  poorImageOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.38)",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  poorImageText: { fontSize: 13, fontWeight: "700", color: "#fff" },
   imageOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "space-between",
     padding: 12,
   },
-  imageOverlayTop: { flexDirection: "row", justifyContent: "space-between" },
-  imageBadge: {
+  imagePill: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
     paddingHorizontal: 9,
     paddingVertical: 4,
     borderRadius: 20,
-    backgroundColor: "rgba(0,0,0,0.6)",
+    backgroundColor: "rgba(0,0,0,0.55)",
   },
-  imageBadgeText: { fontSize: 11, fontWeight: "700", color: "#fff" },
+  imagePillText: { fontSize: 11, fontWeight: "700", color: "#fff" },
 
-  // ── Progress
-  progressCard: {
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 18,
-    backgroundColor: "#fff",
+  card: {
+    backgroundColor: C.white,
     borderRadius: 20,
+    borderWidth: 0.5,
+    borderColor: C.border,
+    padding: 18,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
+    shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 2,
   },
-  phaseSteps: {
+
+  phaseRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginBottom: 16,
   },
-  phaseStep: { alignItems: "center", gap: 6, flex: 1 },
-  phaseStepIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  phaseStep: { alignItems: "center", gap: 5, flex: 1 },
+  phaseIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
   },
-  phaseStepLabel: { fontSize: 9, fontWeight: "600", textAlign: "center" },
-  progressBarBg: {
+  phaseLabel: { fontSize: 9, fontWeight: "600", textAlign: "center" },
+  progressBg: {
     height: 6,
     borderRadius: 3,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: C.grayLight,
     overflow: "hidden",
-    marginBottom: 8,
   },
-  progressBarFill: {
+  progressFill: {
     height: "100%",
     borderRadius: 3,
-    backgroundColor: "#22C55E",
+    backgroundColor: C.greenMid,
   },
-  progressMeta: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  progressLabel: { fontSize: 11, color: "#64748B", flex: 1 },
-  progressPct: { fontSize: 12, fontWeight: "700", color: "#22C55E" },
+  progressLabel: { fontSize: 11, color: C.textMuted },
   progressModel: {
     fontSize: 10,
     color: "#CBD5E1",
-    marginTop: 6,
+    marginTop: 5,
     textAlign: "center",
   },
 
-  // ── Banners
-  poorBanner: {
+  banner: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    marginHorizontal: 12,
-    marginBottom: 10,
-    backgroundColor: "#FEF3C7",
     borderRadius: 14,
     padding: 12,
     borderWidth: 1,
-    borderColor: "#FCD34D",
   },
-  poorBannerTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#92400E",
-    marginBottom: 2,
-  },
-  poorBannerDesc: { fontSize: 12, color: "#92400E", lineHeight: 18 },
-  unknownBanner: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    marginHorizontal: 12,
-    marginBottom: 10,
-    backgroundColor: "#F1F5F9",
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-  unknownBannerTitle: {
-    fontSize: 13,
-    fontWeight: "700",
-    color: "#475569",
-    marginBottom: 2,
-  },
-  unknownBannerDesc: { fontSize: 12, color: "#64748B", lineHeight: 18 },
+  bannerTitle: { fontSize: 13, fontWeight: "700", marginBottom: 2 },
+  bannerDesc: { fontSize: 12, lineHeight: 18 },
 
-  // ── Result card
-  resultCard: {
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 20,
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-
-  // ── Score
   scoreRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 20,
-    marginBottom: 16,
+    gap: 18,
+    marginBottom: 14,
   },
-  scoreInfo: { flex: 1, gap: 6 },
-  urgencyBadge: {
+  badge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
@@ -1752,312 +1830,243 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignSelf: "flex-start",
   },
-  urgencyBadgeText: { fontSize: 12, fontWeight: "700" },
-  confidenceText: { fontSize: 11, color: "#94A3B8" },
-  imageQualityRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  imageQualityText: { fontSize: 11, color: "#94A3B8", fontWeight: "600" },
+  badgeText: { fontWeight: "700" },
+  confText: { fontSize: 11, color: C.textMuted },
 
-  // ── Diagnostic
-  diagnosticBox: {
-    backgroundColor: "#F8FAFC",
+  diagBox: {
+    backgroundColor: "#F8FAF6",
     borderRadius: 12,
     padding: 12,
     borderLeftWidth: 3,
-    borderLeftColor: "#22C55E",
+    borderLeftColor: C.greenMid,
     marginBottom: 18,
   },
-  diagnosticText: {
+  diagText: {
     fontSize: 13,
-    color: "#475569",
+    color: C.textSecondary,
     lineHeight: 21,
     fontWeight: "500",
   },
 
-  // ── Section headers
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
     marginBottom: 10,
+    marginTop: 16,
   },
   sectionLabel: {
     fontSize: 10,
     fontWeight: "700",
-    letterSpacing: 1.0,
+    letterSpacing: 0.9,
     textTransform: "uppercase",
-    color: "#94A3B8",
+    color: C.textMuted,
   },
 
-  // ── Detections
-  detectionList: { gap: 8 },
-  detectionRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    padding: 11,
-    borderRadius: 12,
-    backgroundColor: "#F8FAFC",
-  },
-  detectionIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  detectionContent: { flex: 1 },
-  detectionTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 2,
-  },
-  detectionName: { fontSize: 13, fontWeight: "700", color: "#1E293B" },
-  detectionBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  detectionBadgeText: { fontSize: 10, fontWeight: "800" },
-  detectionDesc: { fontSize: 11, color: "#94A3B8" },
-  detectionNa: {
-    fontSize: 11,
-    color: "#CBD5E1",
-    fontStyle: "italic",
-    marginTop: 3,
-  },
-
-  unavailableRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    backgroundColor: "#F8FAFC",
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
-  },
-  unavailableText: { fontSize: 12, color: "#94A3B8", fontWeight: "600" },
-
-  // ── Sensors
-  sensorGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  sensorCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "#F8FAFC",
-    width: (width - 24 - 8 - 40) / 2,
-  },
-  sensorCardIcon: {
+  detCard: { borderRadius: 14, backgroundColor: "#F8FAF6", overflow: "hidden" },
+  detHead: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12 },
+  detIcon: {
     width: 34,
     height: 34,
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
-  sensorCardBody: { flex: 1 },
-  sensorCardValue: { fontSize: 15, fontWeight: "800", color: "#1E293B" },
-  sensorCardUnit: { fontSize: 10, fontWeight: "600", color: "#94A3B8" },
-  sensorCardLabel: {
-    fontSize: 10,
-    color: "#64748B",
-    marginTop: 1,
-    fontWeight: "600",
+  detTitle: { flex: 1, fontSize: 13, fontWeight: "700", color: C.textPrimary },
+  detBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8 },
+  detBadgeText: { fontSize: 10, fontWeight: "800" },
+  detBody: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    paddingTop: 8,
+    borderTopWidth: 0.5,
+    borderTopColor: C.border,
+    gap: 6,
   },
-  noSensorBox: {
+  detNull: {
+    fontSize: 11,
+    color: "#CBD5E1",
+    fontStyle: "italic",
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+  },
+  detRowText: {
+    flex: 1,
+    fontSize: 12,
+    color: C.textSecondary,
+    lineHeight: 18,
+    fontWeight: "500",
+  },
+
+  comptageBox: {
+    backgroundColor: C.blueLight,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignItems: "center",
+    minWidth: 68,
+  },
+  comptageNum: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: C.blue,
+    lineHeight: 26,
+  },
+  comptageSub: { fontSize: 9, fontWeight: "600", color: "#93C5FD" },
+  fiabBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: "flex-start",
+  },
+  fiabText: { fontSize: 11, fontWeight: "700" },
+
+  signesBox: { backgroundColor: C.white, borderRadius: 9, padding: 9 },
+  signeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: C.red,
+    marginTop: 5,
+  },
+  signeText: { flex: 1, fontSize: 12, color: C.textSecondary, lineHeight: 17 },
+  vetBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: C.redLight,
+    borderRadius: 9,
+    padding: 8,
+  },
+  vetBadgeText: { fontSize: 12, fontWeight: "700", color: C.red },
+
+  sensorGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  sensorCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "#F8FAFC",
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#F8FAF6",
+    width: (width - 24 - 8 - 36) / 2,
+  },
+  sensorIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sensorVal: { fontSize: 15, fontWeight: "800", color: C.textPrimary },
+  sensorUnit: { fontSize: 10, fontWeight: "600", color: C.textMuted },
+  sensorLabel: {
+    fontSize: 10,
+    color: C.textSecondary,
+    marginTop: 1,
+    fontWeight: "600",
+  },
+  noSensor: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#F8FAF6",
     borderRadius: 12,
     padding: 12,
     borderWidth: 1,
     borderStyle: "dashed",
-    borderColor: "#E2E8F0",
+    borderColor: C.border,
   },
   noSensorText: {
     fontSize: 12,
-    color: "#94A3B8",
+    color: C.textMuted,
     fontStyle: "italic",
     flex: 1,
-    lineHeight: 18,
   },
 
-  // ── Advices
-  adviceList: { gap: 7 },
   adviceItem: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
-    padding: 11,
+    backgroundColor: C.greenLight,
     borderRadius: 12,
-    backgroundColor: "#F0FDF4",
+    padding: 11,
   },
-  adviceNumber: {
+  adviceNum: {
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: "#22C55E",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 1,
   },
-  adviceNumberText: { fontSize: 10, fontWeight: "800", color: "#fff" },
+  adviceNumText: { fontSize: 10, fontWeight: "800", color: "#fff" },
   adviceText: {
     flex: 1,
     fontSize: 13,
-    color: "#166534",
+    color: C.greenText,
     lineHeight: 20,
     fontWeight: "500",
   },
 
-  // ── Retry button
-  retryBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    backgroundColor: "#22C55E",
-    borderRadius: 14,
-    paddingVertical: 13,
-    marginTop: 16,
-  },
-  retryBtnText: { fontSize: 13, fontWeight: "700", color: "#fff" },
-
-  // ── Idle state
-  idleCard: {
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 24,
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    alignItems: "center",
-    gap: 10,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-  idleIconWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: "#F0FDF4",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  idleTitle: { fontSize: 16, fontWeight: "800", color: "#1E293B" },
-  idleDesc: {
-    fontSize: 13,
-    color: "#64748B",
-    textAlign: "center",
-    lineHeight: 20,
-  },
-
-  // ── History
-  historyCard: {
-    marginHorizontal: 12,
-    marginBottom: 12,
-    padding: 18,
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-  historyHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 14,
-  },
-  historyTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  historyTitle: { fontSize: 15, fontWeight: "700", color: "#1E293B" },
-  historyLink: { fontSize: 13, fontWeight: "700", color: "#22C55E" },
-  historyEmpty: {
-    color: "#94A3B8",
-    fontSize: 13,
-    textAlign: "center",
-    paddingVertical: 16,
-  },
-  historyItem: {
+  histItem: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     padding: 10,
     borderRadius: 12,
-    backgroundColor: "#F8FAFC",
-    marginBottom: 7,
+    backgroundColor: "#F8FAF6",
+    marginBottom: 6,
   },
-  historyThumb: {
-    width: 48,
-    height: 48,
+  histThumb: {
+    width: 46,
+    height: 46,
     borderRadius: 12,
-    backgroundColor: "#F0FDF4",
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
-    position: "relative",
   },
-  historyThumbBadge: {
-    position: "absolute",
-    bottom: 0,
-    right: 0,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: "#F59E0B",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  historyInfo: { flex: 1 },
-  historyDate: { fontSize: 11, fontWeight: "600", color: "#94A3B8" },
-  historyScore: { fontSize: 13, fontWeight: "700", marginTop: 2 },
+  histDate: { fontSize: 11, fontWeight: "600", color: C.textMuted },
+  histScore: { fontSize: 13, fontWeight: "700", marginTop: 2 },
 
-  // ── Bottom bar
   bottomBar: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: "#fff",
+    backgroundColor: C.white,
     paddingHorizontal: 12,
     paddingTop: 12,
     flexDirection: "row",
     gap: 8,
+    borderTopWidth: 0.5,
+    borderTopColor: C.border,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.06,
     shadowRadius: 16,
     elevation: 10,
   },
-  chatBtn: {
-    flex: 1,
+  testBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: 5,
     paddingVertical: 13,
+    paddingHorizontal: 13,
     borderRadius: 14,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: C.purpleLight,
+    borderWidth: 1.5,
+    borderColor: "#C4B5FD",
   },
-  chatBtnText: { fontSize: 13, fontWeight: "700", color: "#475569" },
+  testBtnText: { fontSize: 12, fontWeight: "700", color: C.purple },
   resetBtn: {
     width: 46,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: 13,
     borderRadius: 14,
-    backgroundColor: "#F1F5F9",
+    backgroundColor: C.grayLight,
   },
   analyzeBtn: {
     flex: 2,
@@ -2067,7 +2076,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 13,
     borderRadius: 14,
-    backgroundColor: "#22C55E",
+    backgroundColor: C.greenMid,
   },
   analyzeBtnDisabled: { backgroundColor: "#94A3B8" },
   analyzeBtnText: { fontSize: 14, fontWeight: "800", color: "#fff" },

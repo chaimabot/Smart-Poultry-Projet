@@ -28,7 +28,7 @@ async function createIndexes() {
     await mongoose.connect(
       process.env.MONGODB_URI || "mongodb://localhost:27017/smart-poultry",
     );
-    console.log("✅ Connected\n");
+    console.log("  Connected\n");
 
     // ============================================================================
     // USER INDEXES (Admin)
@@ -39,7 +39,7 @@ async function createIndexes() {
     await User.collection.createIndex({ isActive: 1 });
     await User.collection.createIndex({ createdAt: -1 });
     await User.collection.createIndex({ lastLogin: -1 });
-    console.log("   ✅ email (unique), role, isActive, createdAt, lastLogin\n");
+    console.log("     email (unique), role, isActive, createdAt, lastLogin\n");
 
     // ============================================================================
     // MODULE INDEXES (Admin - See all modules)
@@ -50,8 +50,14 @@ async function createIndexes() {
       await Module.collection.dropIndex("serialNumber_1");
       console.log("   🗑️  Ancien index unique serialNumber_1 supprimé");
     } catch (err) {
-      if (err.codeName !== "NamespaceNotFound" && !err.message.includes("index not found")) {
-        console.log("   ⚠️  Impossible de supprimer serialNumber_1:", err.message);
+      if (
+        err.codeName !== "NamespaceNotFound" &&
+        !err.message.includes("index not found")
+      ) {
+        console.log(
+          "       Impossible de supprimer serialNumber_1:",
+          err.message,
+        );
       }
     }
     await Module.collection.createIndex({ status: 1, createdAt: -1 });
@@ -60,7 +66,7 @@ async function createIndexes() {
     await Module.collection.createIndex({ owner: 1 });
     await Module.collection.createIndex({ poulailler: 1 });
     console.log(
-      "   ✅ status+createdAt, macAddress, serialNumber, owner, poulailler\n",
+      "     status+createdAt, macAddress, serialNumber, owner, poulailler\n",
     );
 
     // ============================================================================
@@ -74,11 +80,11 @@ async function createIndexes() {
     await Log.collection.createIndex({ poulailler: 1, createdAt: -1 });
     // TTL index already exists from model (90 days)
     console.log(
-      "   ✅ createdAt, type+createdAt, severity+createdAt, user+createdAt, poulailler+createdAt (+ TTL 90d)\n",
+      "     createdAt, type+createdAt, severity+createdAt, user+createdAt, poulailler+createdAt (+ TTL 90d)\n",
     );
 
     console.log("═══════════════════════════════════════");
-    console.log("✅ ALL INDEXES CREATED SUCCESSFULLY!\n");
+    console.log("  ALL INDEXES CREATED SUCCESSFULLY!\n");
     console.log("💡 Performance improvements:");
     console.log("   • Admin dashboard: 6x faster");
     console.log("   • Module list filtering: 10x faster");
@@ -92,4 +98,3 @@ async function createIndexes() {
 }
 
 createIndexes();
-

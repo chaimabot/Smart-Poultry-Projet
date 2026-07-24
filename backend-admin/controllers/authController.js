@@ -4,7 +4,7 @@ const Joi = require("joi");
 const bcrypt = require("bcryptjs");
 const logService = require("../services/logService");
 
-// Validation Joi pour l'inscription 
+// Validation Joi pour l'inscription
 const registerAdminSchema = Joi.object({
   firstName: Joi.string().required(),
   lastName: Joi.string().required(),
@@ -13,7 +13,7 @@ const registerAdminSchema = Joi.object({
   phone: Joi.string().allow("", null),
 });
 
-// Validation Joi pour la connexion 
+// Validation Joi pour la connexion
 const loginAdminSchema = Joi.object({
   email: Joi.string().email().required(),
   password: Joi.string().required(),
@@ -22,10 +22,9 @@ const loginAdminSchema = Joi.object({
 // Générer un JWT avec le rôle
 const generateToken = (id, role) => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET, {
-    expiresIn: "30d",
+    expiresIn: "30m",
   });
 };
-
 
 exports.registerAdmin = async (req, res) => {
   const { error } = registerAdminSchema.validate(req.body);
@@ -53,7 +52,7 @@ exports.registerAdmin = async (req, res) => {
       email,
       password,
       phone,
-      role: "admin", 
+      role: "admin",
     });
 
     // Log user creation

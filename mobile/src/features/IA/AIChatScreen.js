@@ -178,7 +178,7 @@ export default function AIChatScreen() {
 
   const contextLabel = context
     ? `${poultryName || "Poulailler"} | Score santé: ${context.healthScore}/100`
-    : `${poultryName || "Poulailler"} | Aucune analyse récente`;
+    : `${poultryName || "Poulailler"}`;
 
   const welcomeMsg = {
     id: "welcome",

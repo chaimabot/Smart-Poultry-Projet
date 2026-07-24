@@ -7,7 +7,8 @@ const Poulailler = require("../models/Poulailler");
 const emailService = require("../services/emailService");
 const logService = require("../services/logService");
 
-// Validation schemas
+// ─── Validation schemas ────────────────────────────────────────────────────────
+
 const inviteSchema = Joi.object({
   email: Joi.string().email().required(),
   firstName: Joi.string().allow("", null),
@@ -30,14 +31,20 @@ const updateEleveurSchema = Joi.object({
   isActive: Joi.boolean(),
 });
 
-// Generate invite token
-const generateInviteToken = () => {
-  return crypto.randomBytes(32).toString("hex");
-};
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
-// @desc    Inviter un nouvel éleveur
-// @route   POST /api/admin/eleveurs/invite
-// @access  Private/Admin
+const generateInviteToken = () => crypto.randomBytes(32).toString("hex");
+
+const INVITE_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 jours
+const RESET_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 heures
+
+// ─── Controllers ──────────────────────────────────────────────────────────────
+
+/**
+ * @desc    Inviter un nouvel éleveur
+ * @route   POST /api/admin/eleveurs/invite
+ * @access  Privé / Admin
+ */
 exports.inviteEleveur = async (req, res) => {
   const { error } = inviteSchema.validate(req.body);
   if (error) {
@@ -49,95 +56,144 @@ exports.inviteEleveur = async (req, res) => {
   const { email, firstName, lastName, phone } = req.body;
 
   try {
-    // Vérifier si l'utilisateur existe déjà
     const existingUser = await User.findOne({ email });
 
     if (existingUser) {
-      // Si l'utilisateur on le réactive et on renvoie une invitation
-      if (existingUser.status === "archived") {
-        // Générer un nouveau token d'invitation
-        const inviteToken = generateInviteToken();
-        const inviteTokenExpires = new Date(
-          Date.now() + 7 * 24 * 60 * 60 * 1000,
-        ); // 7 jours
+      // CAS 1 : compte actif sans token → impossible de réinviter
+      if (existingUser.status === "active" && !existingUser.inviteToken) {
+        return res.status(409).json({
+          success: false,
+          error:
+            "Un compte actif est déjà associé à cette adresse email. Veuillez utiliser une autre adresse.",
+        });
+      }
 
-        // Réactiver l'utilisateur
+      // CAS 2 : compte archivé → réactivation et renvoi
+      if (existingUser.status === "archived") {
+        const inviteToken = generateInviteToken();
+        const inviteTokenExpires = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
+
         existingUser.status = "pending";
-        existingUser.isActive = true;
+        existingUser.isActive = false;
         existingUser.inviteToken = inviteToken;
         existingUser.inviteTokenExpires = inviteTokenExpires;
         existingUser.firstName = firstName || existingUser.firstName;
         existingUser.lastName = lastName || existingUser.lastName;
         existingUser.phone = phone || existingUser.phone;
+
         await existingUser.save();
 
-        // Envoyer l'email d'invitation
         try {
           await emailService.sendInviteEmail(
             email,
             inviteToken,
-            firstName || existingUser.firstName,
+            existingUser.firstName,
           );
         } catch (emailError) {
-          console.error("[EMAIL ERROR]", emailError);
+          console.error(
+            "[EMAIL ERROR] sendInviteEmail (archived):",
+            emailError.message,
+          );
         }
 
         return res.status(200).json({
           success: true,
-          message: "Invitation renvoyée avec succès (éléveur réactivé)",
-          data: {
-            id: existingUser._id,
-            email: existingUser.email,
-            firstName: existingUser.firstName,
-            lastName: existingUser.lastName,
-            status: existingUser.status,
-          },
+          message:
+            "Le compte a été réactivé et une nouvelle invitation a été envoyée à l'adresse indiquée.",
         });
       }
 
-      // Si l'utilisateur existe et n'est pas archivé, retourner une erreur
-      return res
-        .status(409)
-        .json({ success: false, error: "Cet email est déjà utilisé" });
+      // CAS 3 : compte pending OU actif avec token encore valide
+      if (existingUser.status === "pending" || existingUser.inviteToken) {
+        const tokenValid =
+          existingUser.inviteToken &&
+          existingUser.inviteTokenExpires &&
+          existingUser.inviteTokenExpires > new Date();
+
+        if (tokenValid) {
+          return res.status(200).json({
+            success: true,
+            message:
+              "Une invitation est déjà en attente pour cette adresse. Utilisez l'action « Renvoyer l'invitation » si l'email n'a pas été reçu.",
+          });
+        }
+
+        // Token expiré → renouvellement
+        const newToken = generateInviteToken();
+        const newExpiry = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
+
+        existingUser.inviteToken = newToken;
+        existingUser.inviteTokenExpires = newExpiry;
+        existingUser.firstName = firstName || existingUser.firstName;
+        existingUser.lastName = lastName || existingUser.lastName;
+        existingUser.phone = phone || existingUser.phone;
+
+        await existingUser.save();
+
+        try {
+          await emailService.sendInviteEmail(
+            email,
+            newToken,
+            existingUser.firstName,
+          );
+        } catch (emailError) {
+          console.error(
+            "[EMAIL ERROR] sendInviteEmail (pending, expired):",
+            emailError.message,
+          );
+        }
+
+        return res.status(200).json({
+          success: true,
+          message:
+            "L'invitation précédente était expirée. Une nouvelle invitation a été envoyée avec succès.",
+        });
+      }
+
+      // Fallback
+      return res.status(409).json({
+        success: false,
+        error: "Cette adresse email est déjà associée à un compte existant.",
+      });
     }
 
-    // Générer le token d'invitation
+    // ── Nouveau compte ──────────────────────────────────────────────────────────
     const inviteToken = generateInviteToken();
-    const inviteTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 jours
+    const inviteTokenExpires = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
 
-    // Créer l'utilisateur avec statut pending
     const user = await User.create({
       email,
       firstName: firstName || "",
       lastName: lastName || "",
       phone: phone || null,
-      password: "temp_password_for_invitation", // Mot de passe temporaire
+      password: crypto.randomBytes(16).toString("hex"),
       role: "eleveur",
       status: "pending",
       inviteToken,
       inviteTokenExpires,
-      isActive: true,
+      isActive: false,
     });
 
-    // Envoyer l'email d'invitation
     try {
       await emailService.sendInviteEmail(email, inviteToken, firstName || "");
     } catch (emailError) {
-      console.error("[EMAIL ERROR]", emailError);
-      // On continue même si l'email échoue
+      console.error(
+        "[EMAIL ERROR] sendInviteEmail (new user):",
+        emailError.message,
+      );
     }
 
-    // Log: qui a invité et qui a été invité
     await logService.userCreated(
-      req.user?._id, // L'admin qui invite
-      user._id, // Le nouvel utilisateur invité
-      email, // Email du nouvel utilisateur
+      req.user?._id,
+      user._id,
+      email,
       req.ip || req.connection?.remoteAddress,
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: "Invitation envoyée avec succès",
+      message:
+        "Invitation envoyée avec succès. L'éleveur recevra un email pour finaliser son inscription.",
       data: {
         id: user._id,
         email: user.email,
@@ -147,16 +203,15 @@ exports.inviteEleveur = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("[INVITE ELEVEUR ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de l'invitation" });
+    console.error("[INVITE ELEVEUR ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error:
+        "Une erreur est survenue lors de l'envoi de l'invitation. Veuillez réessayer.",
+    });
   }
 };
 
-// @desc    Ré-envoyer une invitation
-// @route   POST /api/admin/eleveurs/:id/resend-invite
-// @access  Private/Admin
 exports.resendInvite = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -164,7 +219,10 @@ exports.resendInvite = async (req, res) => {
     if (!user) {
       return res
         .status(404)
-        .json({ success: false, error: "Éleveur non trouvé" });
+        .json({
+          success: false,
+          error: "Éleveur introuvable. Il a peut-être été supprimé.",
+        });
     }
 
     if (user.role !== "eleveur") {
@@ -172,15 +230,14 @@ exports.resendInvite = async (req, res) => {
         .status(400)
         .json({
           success: false,
-          error: "Cet utilisateur n'est pas un élèveur",
+          error: "Cette action est réservée aux comptes de type Éleveur.",
         });
     }
 
-    if (user.status === "active") {
-      // Envoyer un email avec les coordonnées de connexion (reset password link)
-      const crypto = require("crypto");
+    // CAS 1 : compte actif sans token en attente → reset d'accès
+    if (user.status === "active" && !user.inviteToken) {
       const resetToken = crypto.randomBytes(32).toString("hex");
-      const resetExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+      const resetExpires = new Date(Date.now() + RESET_TOKEN_TTL_MS);
 
       user.inviteToken = resetToken;
       user.inviteTokenExpires = resetExpires;
@@ -193,48 +250,116 @@ exports.resendInvite = async (req, res) => {
           user.firstName,
         );
       } catch (emailError) {
-        console.error("[EMAIL ERROR]", emailError);
+        console.error(
+          "[EMAIL ERROR] sendCredentialsEmail:",
+          emailError.message,
+        );
+        return res.status(500).json({
+          success: false,
+          error:
+            "Le token a été généré mais l'email n'a pas pu être envoyé. Veuillez réessayer.",
+        });
       }
 
       return res.json({
         success: true,
-        message: "Coordonnées envoyées avec succès",
+        message:
+          "Un email de réinitialisation d'accès a été envoyé à l'adresse de l'éleveur.",
       });
     }
 
-    // Cas pending : logique existante
-    const inviteToken = generateInviteToken();
-    const inviteTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    // CAS 2 : compte pending OU actif avec token encore valide → renvoi invitation
+    if (user.status === "pending" || user.inviteToken) {
+      const tokenValid =
+        user.inviteToken &&
+        user.inviteTokenExpires &&
+        user.inviteTokenExpires > new Date();
 
-    user.inviteToken = inviteToken;
-    user.inviteTokenExpires = inviteTokenExpires;
-    await user.save();
+      if (tokenValid) {
+        try {
+          await emailService.sendInviteEmail(
+            user.email,
+            user.inviteToken,
+            user.firstName,
+          );
+        } catch (emailError) {
+          console.error(
+            "[EMAIL ERROR] sendInviteEmail (resend, valid token):",
+            emailError.message,
+          );
+          return res.status(500).json({
+            success: false,
+            error: "L'email n'a pas pu être renvoyé. Veuillez réessayer.",
+          });
+        }
 
-    try {
-      await emailService.sendInviteEmail(
-        user.email,
-        inviteToken,
-        user.firstName,
-      );
-    } catch (emailError) {
-      console.error("[EMAIL ERROR]", emailError);
+        return res.json({
+          success: true,
+          message:
+            "L'invitation a été renvoyée avec succès à l'adresse de l'éleveur.",
+        });
+      }
+
+      // Token expiré → renouvellement
+      const newToken = generateInviteToken();
+      const newExpiry = new Date(Date.now() + INVITE_TOKEN_TTL_MS);
+
+      user.inviteToken = newToken;
+      user.inviteTokenExpires = newExpiry;
+      await user.save();
+
+      try {
+        await emailService.sendInviteEmail(
+          user.email,
+          newToken,
+          user.firstName,
+        );
+      } catch (emailError) {
+        console.error(
+          "[EMAIL ERROR] sendInviteEmail (resend, new token):",
+          emailError.message,
+        );
+        return res.status(500).json({
+          success: false,
+          error:
+            "Le token a été renouvelé mais l'email n'a pas pu être envoyé. Veuillez réessayer.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message:
+          "Le lien d'invitation précédent était expiré. Une nouvelle invitation a été envoyée avec succès.",
+      });
     }
 
-    res.json({ success: true, message: "Invitation renvoyée avec succès" });
+    return res.status(400).json({
+      success: false,
+      error:
+        "Impossible d'envoyer une invitation pour ce compte dans son état actuel.",
+    });
   } catch (err) {
-    console.error("[RESEND INVITE ERROR]", err);
-    res.status(500).json({ success: false, error: "Erreur lors du renvoi" });
+    console.error("[RESEND INVITE ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Une erreur est survenue lors de l'envoi. Veuillez réessayer.",
+    });
   }
 };
 
-// @desc    Vérifier le token d'invitation (page publique) - pour eleveurs ET admins
-// @route   GET /api/admin/eleveurs/verify-invite
-// @access  Public
+/**
+ * @desc    Vérifier le token d'invitation (page publique)
+ * @route   GET /api/admin/eleveurs/verify-invite
+ * @access  Public
+ */
 exports.verifyInvite = async (req, res) => {
   const { token } = req.query;
 
   if (!token) {
-    return res.status(400).json({ success: false, error: "Token manquant" });
+    return res.status(400).json({
+      success: false,
+      error: "Token manquant. Veuillez utiliser le lien reçu par email.",
+    });
   }
 
   try {
@@ -244,32 +369,38 @@ exports.verifyInvite = async (req, res) => {
     });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Lien expiré ou invalide" });
+      return res.status(400).json({
+        success: false,
+        error:
+          "Ce lien d'invitation est invalide ou a expiré. Veuillez contacter votre administrateur pour en obtenir un nouveau.",
+      });
     }
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         valid: true,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
-        role: user.role, // Retourne le rôle pour permettre la redirection appropriée
+        role: user.role,
       },
     });
   } catch (err) {
-    console.error("[VERIFY INVITE ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de la vérification" });
+    console.error("[VERIFY INVITE ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error:
+        "Une erreur est survenue lors de la vérification. Veuillez réessayer.",
+    });
   }
 };
 
-// @desc    Compléter l'inscription (page publique)
-// @route   POST /api/admin/eleveurs/complete-invite
-// @access  Public
+/**
+ * @desc    Finaliser l'inscription depuis le lien d'invitation
+ * @route   POST /api/admin/eleveurs/complete-invite
+ * @access  Public
+ */
 exports.completeInvite = async (req, res) => {
   const { error } = completeInviteSchema.validate(req.body);
   if (error) {
@@ -287,36 +418,44 @@ exports.completeInvite = async (req, res) => {
     });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Lien expiré ou invalide" });
+      return res.status(400).json({
+        success: false,
+        error:
+          "Ce lien d'activation est invalide ou a expiré. Veuillez contacter votre administrateur.",
+      });
     }
 
-    // Don't hash here - the model's pre-save hook will do it automatically
     user.password = password;
     user.firstName = firstName;
     user.lastName = lastName;
     user.phone = phone || null;
     user.status = "active";
-    user.inviteToken = null;
-    user.inviteTokenExpires = null;
+    user.isActive = true;
+    user.inviteToken = undefined;
+    user.inviteTokenExpires = undefined;
+
     await user.save();
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Compte activé avec succès",
+      message:
+        "Votre compte a été activé avec succès. Vous pouvez maintenant vous connecter.",
     });
   } catch (err) {
-    console.error("[COMPLETE INVITE ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de l'activation" });
+    console.error("[COMPLETE INVITE ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error:
+        "Une erreur est survenue lors de l'activation. Veuillez réessayer.",
+    });
   }
 };
 
-// @desc    Liste des éleveurs
-// @route   GET /api/admin/eleveurs
-// @access  Private/Admin
+/**
+ * @desc    Liste des éleveurs
+ * @route   GET /api/admin/eleveurs
+ * @access  Privé / Admin
+ */
 exports.getEleveurs = async (req, res) => {
   try {
     const { search, status, page = 1, limit = 10 } = req.query;
@@ -326,7 +465,6 @@ exports.getEleveurs = async (req, res) => {
     if (status) {
       query.status = status;
     } else {
-      // Par défaut, exclure les éleveurs archivés
       query.status = { $ne: "archived" };
     }
 
@@ -339,13 +477,14 @@ exports.getEleveurs = async (req, res) => {
     }
 
     const total = await User.countDocuments(query);
+
+    // ✅ On garde inviteToken dans le select pour calculer hasInviteToken
     const eleveurs = await User.find(query)
-      .select("-password -inviteToken -inviteTokenExpires")
+      .select("-password -inviteTokenExpires")
       .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
+      .skip((page - 1) * parseInt(limit))
       .limit(parseInt(limit));
 
-    // Ajouter le nombre de poulaillers pour chaque éleveur
     const eleveursWithCount = await Promise.all(
       eleveurs.map(async (eleveur) => {
         const poulaillersCount = await Poulailler.countDocuments({
@@ -360,6 +499,8 @@ exports.getEleveurs = async (req, res) => {
           phone: eleveur.phone,
           status: eleveur.status,
           isActive: eleveur.isActive,
+          // ✅ Booléen exposé — le token brut n'est jamais envoyé au frontend
+          hasInviteToken: !!eleveur.inviteToken,
           lastLogin: eleveur.lastLogin,
           poulaillersCount,
           createdAt: eleveur.createdAt,
@@ -367,26 +508,29 @@ exports.getEleveurs = async (req, res) => {
       }),
     );
 
-    res.json({
+    return res.json({
       success: true,
       data: eleveursWithCount,
       pagination: {
         total,
         page: parseInt(page),
-        pages: Math.ceil(total / limit),
+        pages: Math.ceil(total / parseInt(limit)),
       },
     });
   } catch (err) {
-    console.error("[GET ELEVEURS ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de la récupération" });
+    console.error("[GET ELEVEURS ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Une erreur est survenue lors de la récupération des éleveurs.",
+    });
   }
 };
 
-// @desc    Obtenir un éleveur par ID
-// @route   GET /api/admin/eleveurs/:id
-// @access  Private/Admin
+/**
+ * @desc    Obtenir un éleveur par ID
+ * @route   GET /api/admin/eleveurs/:id
+ * @access  Privé / Admin
+ */
 exports.getEleveurById = async (req, res) => {
   try {
     const eleveur = await User.findById(req.params.id).select(
@@ -396,23 +540,24 @@ exports.getEleveurById = async (req, res) => {
     if (!eleveur) {
       return res
         .status(404)
-        .json({ success: false, error: "Éleveur non trouvé" });
+        .json({ success: false, error: "Éleveur introuvable." });
     }
 
     if (eleveur.role !== "eleveur") {
-      return res.status(400).json({
-        success: false,
-        error: "Cet utilisateur n'est pas un élèveur",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Cet identifiant ne correspond pas à un compte Éleveur.",
+        });
     }
 
-    // Nombre de poulaillers
     const poulaillersCount = await Poulailler.countDocuments({
       owner: eleveur._id,
       isArchived: false,
     });
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         id: eleveur._id,
@@ -428,16 +573,19 @@ exports.getEleveurById = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("[GET ELEVEUR BY ID ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de la récupération" });
+    console.error("[GET ELEVEUR BY ID ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error: "Une erreur est survenue lors de la récupération de l'éleveur.",
+    });
   }
 };
 
-// @desc    Mettre à jour un élèveur
-// @route   PUT /api/admin/eleveurs/:id
-// @access  Private/Admin
+/**
+ * @desc    Mettre à jour un éleveur
+ * @route   PUT /api/admin/eleveurs/:id
+ * @access  Privé / Admin
+ */
 exports.updateEleveur = async (req, res) => {
   const { error } = updateEleveurSchema.validate(req.body);
   if (error) {
@@ -452,14 +600,16 @@ exports.updateEleveur = async (req, res) => {
     if (!eleveur) {
       return res
         .status(404)
-        .json({ success: false, error: "Éleveur non trouvé" });
+        .json({ success: false, error: "Éleveur introuvable." });
     }
 
     if (eleveur.role !== "eleveur") {
-      return res.status(400).json({
-        success: false,
-        error: "Cet utilisateur n'est pas un élèveur",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Cet identifiant ne correspond pas à un compte Éleveur.",
+        });
     }
 
     const { firstName, lastName, phone, isActive } = req.body;
@@ -471,9 +621,10 @@ exports.updateEleveur = async (req, res) => {
 
     await eleveur.save();
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Éleveur mis à jour avec succès",
+      message:
+        "Les informations de l'éleveur ont été mises à jour avec succès.",
       data: {
         id: eleveur._id,
         email: eleveur.email,
@@ -485,42 +636,42 @@ exports.updateEleveur = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("[UPDATE ELEVEUR ERROR]", err);
-    res
-      .status(500)
-      .json({ success: false, error: "Erreur lors de la mise à jour" });
+    console.error("[UPDATE ELEVEUR ERROR]", err.message);
+    return res.status(500).json({
+      success: false,
+      error:
+        "Une erreur est survenue lors de la mise à jour. Veuillez réessayer.",
+    });
   }
 };
 
-// @desc    Supprimer DÉFINITIVEMENT un élèveur
-// @route   DELETE /api/admin/eleveurs/:id
-// @access  Private/Admin
+/**
+ * @desc    Supprimer définitivement un éleveur
+ * @route   DELETE /api/admin/eleveurs/:id
+ * @access  Privé / Admin
+ */
 exports.deleteEleveur = async (req, res) => {
   try {
-    console.log(
-      "[DELETE ELEVEUR] Starting PERMANENT deletion for ID:",
-      req.params.id,
-    );
-
     const eleveur = await User.findById(req.params.id);
-    console.log("[DELETE ELEVEUR] Found eleveur:", eleveur);
 
     if (!eleveur) {
-      console.log("[DELETE ELEVEUR] Eleveur not found");
       return res
         .status(404)
-        .json({ success: false, error: "Éleveur non trouvé" });
+        .json({
+          success: false,
+          error: "Éleveur introuvable. Il a peut-être déjà été supprimé.",
+        });
     }
 
     if (eleveur.role !== "eleveur") {
-      console.log("[DELETE ELEVEUR] Not an eleveur, role:", eleveur.role);
-      return res.status(400).json({
-        success: false,
-        error: "Cet utilisateur n'est pas un élèveur",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Cet identifiant ne correspond pas à un compte Éleveur.",
+        });
     }
 
-    // Log: qui a supprimé et qui a été supprimé
     await logService.userDeleted(
       req.user?._id,
       eleveur._id,
@@ -528,31 +679,20 @@ exports.deleteEleveur = async (req, res) => {
       req.ip || req.connection?.remoteAddress,
     );
 
-    // SUPPRIMER DÉFINITIVEMENT les poulaillers associés
-    console.log(
-      "[DELETE ELEVEUR] Deleting poulaillers for owner:",
-      eleveur._id,
-    );
-    const poulaillersResult = await Poulailler.deleteMany({
-      owner: eleveur._id,
-    });
-    console.log("[DELETE ELEVEUR] Poulaillers deleted:", poulaillersResult);
-
-    // SUPPRIMER DÉFINITIVEMENT l'utilisateur
-    console.log("[DELETE ELEVEUR] Permanently deleting eleveur...");
+    await Poulailler.deleteMany({ owner: eleveur._id });
     await User.findByIdAndDelete(req.params.id);
-    console.log("[DELETE ELEVEUR] Eleveur permanently deleted!");
 
-    res.json({
+    return res.json({
       success: true,
-      message: "Éleveur supprimé définitivement",
+      message:
+        "Le compte et l'ensemble des données associées ont été supprimés définitivement.",
     });
   } catch (err) {
-    console.error("[DELETE ELEVEUR ERROR]", err);
-    console.error("[DELETE ELEVEUR ERROR STACK]", err.stack);
-    res.status(500).json({
+    console.error("[DELETE ELEVEUR ERROR]", err.message);
+    return res.status(500).json({
       success: false,
-      error: "Erreur lors de la suppression: " + err.message,
+      error:
+        "Une erreur est survenue lors de la suppression. Veuillez réessayer.",
     });
   }
 };

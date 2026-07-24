@@ -49,7 +49,7 @@ const poulaillerSchema = new mongoose.Schema(
     attachments: { type: [attachmentSchema], default: [] },
     status: {
       type: String,
-      enum: ["en_attente_module", "connecte", "hors_ligne", "maintenance"],
+      enum: ["en_attente_module", "connecte", "hors_ligne"],
       default: "en_attente_module",
     },
     isCritical: { type: Boolean, default: false },

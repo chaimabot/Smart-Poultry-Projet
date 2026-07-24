@@ -87,7 +87,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
 
   const dynamicPaddingBottom = 70 + Math.max(insets.bottom, 10) + 20;
 
-  // ✅ FIX : Utiliser stats.unread en priorité (plus fiable que la liste paginée)
+  //   FIX : Utiliser stats.unread en priorité (plus fiable que la liste paginée)
   const unreadCount = stats?.unread ?? alerts.filter((a) => !a.read).length;
 
   // ── Input helper ────────────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
           {poultryName} — Alertes
         </Text>
 
-        {/* ✅ FIX : Logique des boutons selon l'onglet actif */}
+        {/*   FIX : Logique des boutons selon l'onglet actif */}
         {activeTab === "settings" ? (
           hasChanges ? (
             <TouchableOpacity onPress={handleSave} disabled={saving}>
@@ -287,7 +287,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
               </View>
             </View>
 
-            {/* ✅ FIX : Switch Notifications supprimé (non fonctionnel) */}
+            {/*   FIX : Switch Notifications supprimé (non fonctionnel) */}
 
             {/* Température */}
             {renderSectionLabel("thermostat", "Température")}
@@ -387,7 +387,7 @@ const AlertSettingsScreen = ({ route, navigation }) => {
                     color: "#ef4444",
                   },
                   {
-                    // ✅ FIX : Accès correct à bySeverity.danger
+                    //   FIX : Accès correct à bySeverity.danger
                     label: "Danger",
                     value: stats.bySeverity?.danger ?? 0,
                     icon: "error-outline",

@@ -53,7 +53,7 @@ const userSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "active", "inactive", "archived"],
+      enum: ["pending", "active", "inactive"],
       default: "pending",
     },
     lastLogin: {
@@ -66,9 +66,6 @@ const userSchema = new mongoose.Schema(
   },
 );
 
-// ✅ Hook pre-save corrigé — ne chiffre QUE si le mot de passe a été modifié
-// Le bug "next is not a function" venait d'un appel à .save() dans un contexte
-// où le modèle utilisait findByIdAndUpdate() — ce hook ne se déclenche pas dans ce cas.
 userSchema.pre("save", async function () {
   // Hook async sans `next` : évite l’erreur `next is not a function`.
   if (!this.isModified("password")) return;

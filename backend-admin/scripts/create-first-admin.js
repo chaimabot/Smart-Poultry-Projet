@@ -37,12 +37,12 @@ async function createFirstAdmin() {
     await mongoose.connect(
       process.env.MONGODB_URI || "mongodb://localhost:27017/smart-poultry",
     );
-    console.log("✅ Connected to MongoDB\n");
+    console.log("  Connected to MongoDB\n");
 
     // Check if admin already exists
     const existingAdmin = await User.findOne({ role: "admin" });
     if (existingAdmin) {
-      console.warn("⚠️  WARNING: An admin user already exists!");
+      console.warn("    WARNING: An admin user already exists!");
       console.warn(`   Email: ${existingAdmin.email}`);
       const proceed = await question(
         "\nDo you want to create another admin? (y/N): ",
@@ -96,11 +96,11 @@ async function createFirstAdmin() {
 
     console.log("\n📊 ADMIN CREATED SUCCESSFULLY!\n");
     console.log("═══════════════════════════════════════");
-    console.log(`✅ Admin ID:     ${admin._id}`);
-    console.log(`✅ Name:         ${admin.firstName} ${admin.lastName}`);
-    console.log(`✅ Email:        ${admin.email}`);
-    console.log(`✅ Role:         ${admin.role}`);
-    console.log(`✅ Status:       ${admin.status}`);
+    console.log(`  Admin ID:     ${admin._id}`);
+    console.log(`  Name:         ${admin.firstName} ${admin.lastName}`);
+    console.log(`  Email:        ${admin.email}`);
+    console.log(`  Role:         ${admin.role}`);
+    console.log(`  Status:       ${admin.status}`);
     console.log("═══════════════════════════════════════\n");
 
     console.log("🔐 Next Steps:");

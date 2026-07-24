@@ -1,0 +1,33 @@
+{
+  "name": "smart-poultry",
+  "version": "1.0.0",
+  "description": "Smart Poultry - AI-Powered Poultry Farm Management System",
+  "main": "backend/app.js",
+  "scripts": {
+    "start": "cd backend && npm start",
+    "dev": "cd backend && npm run dev",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:ai": "jest test/aiService.test.js",
+    "mobile": "cd mobile && npm start",
+    "web": "cd web && npm start"
+  },
+  "workspaces": [
+    "backend",
+    "mobile",
+    "web"
+  ],
+  "keywords": [
+    "poultry",
+    "farm",
+    "IoT",
+    "AI",
+    "monitoring"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

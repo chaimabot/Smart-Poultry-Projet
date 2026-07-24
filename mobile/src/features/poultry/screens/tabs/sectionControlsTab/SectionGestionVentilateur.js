@@ -6,7 +6,7 @@ import { MaterialIcons } from "@expo/vector-icons";
 export default function SectionGestionVentilateur({
   fanOn,
   fanAuto,
-  fanAutoReason, // ✅ Raison du déclenchement AUTO (depuis backend)
+  fanAutoReason, //   Raison du déclenchement AUTO (depuis backend)
   onToggleAuto,
   onFanOn,
   onFanOff,
@@ -66,7 +66,7 @@ export default function SectionGestionVentilateur({
         </TouchableOpacity>
       </View>
 
-      {/* ✅ Afficher la raison en mode AUTO (vient du backend) */}
+      {/*   Afficher la raison en mode AUTO (vient du backend) */}
       {fanAuto && fanAutoReason && (
         <View
           style={[
@@ -121,7 +121,7 @@ export default function SectionGestionVentilateur({
         </View>
       )}
 
-      {/* ✅ Info mode auto - mis à jour : c'est le SERVEUR qui contrôle */}
+      {/*   Info mode auto - mis à jour : c'est le SERVEUR qui contrôle */}
       {fanAuto && (
         <View style={styles.autoInfo}>
           <MaterialIcons name="cloud-done" size={13} color="#22C55E" />
@@ -169,7 +169,7 @@ const styles = StyleSheet.create({
   segmentText: { fontSize: 10, fontWeight: "700", color: "#94A3B8" },
   textWhite: { color: "#fff" },
 
-  // ✅ Style pour la raison AUTO - dynamique selon état
+  //   Style pour la raison AUTO - dynamique selon état
   reasonBox: {
     flexDirection: "row",
     alignItems: "center",

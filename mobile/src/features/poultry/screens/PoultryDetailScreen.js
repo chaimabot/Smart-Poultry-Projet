@@ -102,8 +102,8 @@ export default function PoultryDetailScreen({ route, navigation }) {
   }, [activeTab, loadLatestAI]);
 
   // ─── Capteurs pour OverviewTab ────────────────────────────────────────────
-  // ✅ On utilise directement sensors du hook (live MQTT, déjà au bon format)
-  // ✅ On filtre les capteurs sans valeur réelle ("--")
+  //   On utilise directement sensors du hook (live MQTT, déjà au bon format)
+  //   On filtre les capteurs sans valeur réelle ("--")
   const formattedSensors = useMemo(() => {
     if (!Array.isArray(sensors)) return [];
     return sensors.filter(
@@ -112,7 +112,7 @@ export default function PoultryDetailScreen({ route, navigation }) {
   }, [sensors]);
 
   // ─── Seuils pour OverviewTab ──────────────────────────────────────────────
-  // ✅ thresholds du hook est déjà transformé par buildThresholdsForDisplay()
+  //   thresholds du hook est déjà transformé par buildThresholdsForDisplay()
   //    mais on doit renommer les clés pour OverviewTab :
   //    airQualityPercent → { min } (pas max)
   //    waterLevel        → { min }
@@ -398,11 +398,11 @@ export default function PoultryDetailScreen({ route, navigation }) {
               onRefresh();
               loadLatestAI();
             }}
-            // ✅ sensors du hook — live MQTT, filtrés (pas de "--")
+            //   sensors du hook — live MQTT, filtrés (pas de "--")
             sensors={formattedSensors}
-            // ✅ thresholds du hook — déjà transformés, noms corrects
+            //   thresholds du hook — déjà transformés, noms corrects
             thresholds={formattedThresholds}
-            // ✅ données IA réelles depuis /ai/latest
+            //   données IA réelles depuis /ai/latest
             aiScore={aiScore}
             aiInsight={aiInsight}
             lastAnalysis={lastAnalysis}

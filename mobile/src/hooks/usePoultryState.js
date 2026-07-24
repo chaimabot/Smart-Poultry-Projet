@@ -338,7 +338,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
         macAddressRef.current = mac;
         console.log("[MQTT] MAC résolue :", mac);
       } else {
-        console.warn("[MQTT] ⚠️ Aucune MAC trouvée pour ce poulailler");
+        console.warn("[MQTT]    Aucune MAC trouvée pour ce poulailler");
       }
     } catch (e) {
       console.warn("[API] getDeviceByPoulailler:", e?.message);
@@ -571,7 +571,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
 
     try {
       if (!newAuto) {
-        // ✅ FIX : AUTO → MANUEL — envoyer arrêt physique (changeModeOnly=false + action=off)
+        //   FIX : AUTO → MANUEL — envoyer arrêt physique (changeModeOnly=false + action=off)
         //         Le backend détecte isAutoToManual=true et publie { on: false, mode: "manual" } via MQTT
         await controlPump(poultryId, "manual", "off", false);
       } else {
@@ -579,7 +579,7 @@ export default function usePoultryState({ poultryId, poultryName }) {
         await controlPump(poultryId, "auto", null, true);
       }
 
-      console.log("[togglePumpAuto] ✅ Mode changé avec succès");
+      console.log("[togglePumpAuto]   Mode changé avec succès");
 
       // Rafraîchir après 1.5s pour synchroniser avec le backend
       setTimeout(() => fetchPoultryInfo(), 1500);

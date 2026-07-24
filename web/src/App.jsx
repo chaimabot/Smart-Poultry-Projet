@@ -19,6 +19,7 @@ import Parametres from "./features/parametres/parametres";
 import Profile from "./features/profile/Profile";
 import Logs from "./features/logs/logs";
 import Dossiers from "./features/dossiers/dossiers";
+import AnalysesIA from "./features/Poulaillers/AnalysesIA";
 
 function App() {
   return (
@@ -165,7 +166,14 @@ function App() {
             </ProtectedRoute>
           }
         />
-
+        <Route
+          path="/analyses-ia"
+          element={
+            <ProtectedRoute>
+              <AnalysesIA />
+            </ProtectedRoute>
+          }
+        />
         {/* Redirection par défaut vers login */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

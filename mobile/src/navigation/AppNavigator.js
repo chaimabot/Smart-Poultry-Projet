@@ -16,8 +16,7 @@ import AIAnalysisScreen from "../features/poultry/screens/tabs/AIAnalysisScreen"
 import AIChatScreen from "../features/IA/AIChatScreen";
 import AIHistoryScreen from "../features/IA/AIHistoryScreen";
 import WifiSettingsScreen from "../features/parametres/WifiSettingsScreen";
-import AIDetailScreen from "../features/IA/Aianalysisdetailscreen";
-
+import AIDetailScreen from "../features/IA/AIDetailScreen";
 const Stack = createNativeStackNavigator();
 
 export default function AppNavigator() {

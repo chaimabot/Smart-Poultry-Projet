@@ -105,7 +105,7 @@ static bool tryConnectWifi() {
 
   Serial.println("[WIFI] Utilisation du WiFi par defaut : " + defaultSsid);
   if (connectToWifi(defaultSsid, defaultPass)) {
-    // ✅ FIX : Ne pas écraser le NVS avec le WiFi par défaut
+    //   FIX : Ne pas écraser le NVS avec le WiFi par défaut
     // L'ESP32 garde les credentials NVS pour réessayer au prochain démarrage
     return true;
   }

@@ -367,28 +367,6 @@ const CreateCameraModal = ({
               </p>
             )}
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-              URL du flux MJPEG{" "}
-              <span className="text-slate-400 font-normal">(optionnel)</span>
-            </label>
-            <input
-              type="text"
-              value={streamUrl}
-              onChange={(e) => setStreamUrl(e.target.value)}
-              placeholder="http://192.168.1.50:81/stream"
-              className="w-full px-4 py-2.5 border rounded-xl bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-sm border-slate-300 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
-            />
-            <p className="text-xs text-slate-400 mt-1">
-              Si vide, l'ESP32-CAM utilisera la capture à la demande via MQTT.
-            </p>
-          </div>
-          <div className="p-3 bg-cyan-50 dark:bg-cyan-900/20 border border-cyan-200 dark:border-cyan-800 rounded-xl">
-            <p className="text-xs text-cyan-700 dark:text-cyan-300">
-              La caméra sera associée à un poulailler pour le déclenchement de
-              l'analyse IA Gemma 3.
-            </p>
-          </div>
         </div>
         <div className="px-6 pb-6 flex justify-end gap-3">
           <button
@@ -1339,11 +1317,6 @@ const CameraTab = () => {
         <div>
           <p className="text-sm font-medium text-cyan-800 dark:text-cyan-200">
             Caméras IA pour l'analyse visuelle
-          </p>
-          <p className="text-xs text-cyan-700 dark:text-cyan-300 mt-0.5">
-            Chaque ESP32-CAM est associée à un poulailler. Le déclenchement se
-            fait via MQTT à la demande depuis l'app mobile. L'image est analysée
-            par Gemma 3 / Cloudflare AI.
           </p>
         </div>
       </div>

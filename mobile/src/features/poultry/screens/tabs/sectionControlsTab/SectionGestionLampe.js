@@ -41,7 +41,7 @@ const SectionGestionLampe = ({
     if (isSubmitting.current) return;
     isSubmitting.current = true;
 
-    // ✅ Mise à jour optimiste immédiate — l'UI bascule sans attendre MQTT
+    //   Mise à jour optimiste immédiate — l'UI bascule sans attendre MQTT
     const newAuto = !lampAuto;
     setLampAuto(newAuto);
 

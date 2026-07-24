@@ -1,4 +1,4 @@
-// screens/Notifications.jsx - 100% DYNAMIC ✅ Compatible AlertController
+// screens/Notifications.jsx - 100% DYNAMIC   Compatible AlertController
 import React, { useState, useCallback, useMemo, useEffect } from "react";
 import {
   View,
@@ -66,7 +66,7 @@ function severityConfig(severity) {
       badgeBg: "#FFFBEB",
       badgeColor: "#92400E",
       badgeBorder: "#FCD34D",
-      label: "⚠️ Attention",
+      label: "   Attention",
       shortLabel: "Attention",
       sectionTitle: "À surveiller",
       sectionIcon: "error-outline",
@@ -1144,7 +1144,7 @@ export default function Notifications() {
           onPress: async () => {
             try {
               if (onDeleteAllRead) {
-                // ✅ Utilise DELETE /api/alerts?poultryId=...
+                //   Utilise DELETE /api/alerts?poultryId=...
                 await onDeleteAllRead(
                   selectedPoultry !== "all" ? selectedPoultry : "all",
                 );

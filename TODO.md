@@ -1,26 +1,9 @@
-# TODO - Fix POST /api/lampe/:id/control 404
+# TODO - Smart-Poultry-Projet
 
-## Plan approuvé :
+- [ ] Appliquer Fix 3 (nettoyage prompt: suppression des commentaires JS) dans `backend/services/aiService.js`
+- [ ] Appliquer Fix 1 (passer `enrichedSensorData` à Llama Vision + Gemma fallback)
+- [ ] Appliquer Fix 2 (bloquer tout résultat IA si pas de contenu biologique via `_imageMeta.imageHasBiologicalContent`)
+- [ ] Appliquer Fix 4 (diagnostic + clair dans `buildPoorImageResult` + mapping `reasonMessages`)
+- [ ] Appliquer Fix 5 (`IMAGE_MAX_BRIGHTNESS` = 245)
+- [ ] Lancer tests JS (jest) et vérifier que parsing/structure JSON OK
 
-1. [x] ✅ Renommé `backend/controllers/lampeController.js` → `backend/controllers/LampeController.js` _(confirmé list_files)_
-2. [x] ✅ Git stage rename (Windows cache)
-3. [x] ✅ git commit/push - fix lampe controller casing
-4. [x] ✅ Tested locally - server logs confirm lampe routes loaded/mounted ✓
-
-## Status Git (à vérifier):
-
-Untracked: TODO.md
-Modified: mobile files
-Backend rename: force add
-
-## Test après restart/deploy:
-
-curl -X POST 'http://localhost:5000/api/lampe/69f27e9b62b5f08c9bf125f9/control' \\
--H 'Authorization: Bearer TOKEN' \\
--H 'Content-Type: application/json' \\
--d '{\"mode\":\"manual\",\"action\":\"on\"}'
-
-## Logs à vérifier:
-
-[ROUTES] ✓ lampeRoutes loaded successfully
-[ROUTES] Mounting /api/lampe ✓

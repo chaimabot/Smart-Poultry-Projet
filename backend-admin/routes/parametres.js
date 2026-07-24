@@ -7,71 +7,17 @@ const Poulailler = require("../models/Poulailler");
 const { protect, admin } = require("../middlewares/auth");
 
 // ───────────────────────────────────────────────
-// Récupérer les seuils par défaut (codés en dur)
+// Récupérer les seuils par défaut (depuis DB)
 // ───────────────────────────────────────────────
-router.get("/", protect, admin, (req, res) => {
-  const defaultThresholds = {
-    temperatureMin: 18,
-    temperatureMax: 28,
-    humidityMin: 40,
-    humidityMax: 70,
-    co2Max: 1500,
-    nh3Max: 25,
-    dustMax: 150,
-    waterLevelMin: 20,
-  };
+const { getParametres, updateParametres } = require("../controllers/parametresController");
 
-  res.status(200).json({
-    success: true,
-    defaults: defaultThresholds,
-    message:
-      "Ces valeurs sont appliquées aux nouveaux poulaillers (codées dans le modèle Poulailler)",
-  });
-});
+router.get("/", protect, admin, getParametres);
 
 // ───────────────────────────────────────────────
-// Mettre à jour les seuils par défaut (globaux)
+// Mettre à jour les seuils par défaut (depuis DB)
 // ───────────────────────────────────────────────
-router.put("/", protect, admin, async (req, res) => {
-  try {
-    const { thresholds } = req.body;
+router.put("/", protect, admin, updateParametres);
 
-    console.log("[PARAMETRES PUT] Body reçu:", req.body);
-
-    if (!thresholds || typeof thresholds !== "object") {
-      return res.status(400).json({
-        success: false,
-        error: "Aucun seuil valide fourni",
-      });
-    }
-
-    // Ici, vous pouvez sauvegarder dans un modèle Settings si vous en avez un
-    // Pour l'instant, on retourne juste les seuilsmis à jour
-    const updatedThresholds = {
-      temperatureMin: thresholds.temperatureMin ?? 18,
-      temperatureMax: thresholds.temperatureMax ?? 28,
-      humidityMin: thresholds.humidityMin ?? 40,
-      humidityMax: thresholds.humidityMax ?? 70,
-      co2Warning: thresholds.co2Warning ?? 2500,
-      co2Critical: thresholds.co2Critical ?? 3000,
-      nh3Max: thresholds.nh3Max ?? 25,
-      dustMax: thresholds.dustMax ?? 150,
-      waterLevelMin: thresholds.waterLevelMin ?? 20,
-    };
-
-    res.status(200).json({
-      success: true,
-      message: "Seuils globaux mis à jour",
-      defaults: updatedThresholds,
-    });
-  } catch (err) {
-    console.error("[PARAMETRES PUT ERROR]", err.message, err.stack);
-    res.status(500).json({
-      success: false,
-      error: "Erreur serveur interne",
-    });
-  }
-});
 
 // ────────────────────────────────────────────────
 // Mettre à jour les seuils d'un poulailler existant

@@ -358,24 +358,10 @@ export default function Profile() {
                 </div>
                 <div className="p-6 space-y-4">
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Dernière connexion</span>
-                    <span className="text-slate-900 dark:text-white text-right">
-                      {user?.lastLogin
-                        ? new Date(user.lastLogin).toLocaleString("fr-FR")
-                        : "Jamais"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
                     <span className="text-slate-500">Statut du compte</span>
                     <span className="text-green-600 font-medium flex items-center gap-1">
                       <span className="w-2 h-2 bg-green-500 rounded-full"></span>
                       Actif
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">ID Utilisateur</span>
-                    <span className="text-slate-900 dark:text-white text-sm font-mono">
-                      {user?.id?.slice(0, 8)}...
                     </span>
                   </div>
                 </div>

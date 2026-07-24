@@ -20,7 +20,7 @@ const mqttReducer = (state, action) => {
       const parts = topic.split("/");
       if (parts.length < 3 || parts[0] !== "poulailler") return state;
 
-      // ✅ FIX : parts[1] est la macAddress (ex: "142B2FC7D704")
+      //   FIX : parts[1] est la macAddress (ex: "142B2FC7D704")
       //         On l'utilise comme clé dans le state MQTT.
       //         Le mapping macAddress → poulaillerId est géré côté composant
       //         (via usePoultryState qui connaît les deux).
@@ -65,7 +65,7 @@ export const MqttProvider = ({ children }) => {
 
         await realtimeService.connect(userToken);
 
-        // ✅ FIX : le serveur doit envoyer la macAddress dans le payload
+        //   FIX : le serveur doit envoyer la macAddress dans le payload
         //         Exemple attendu : { macAddress: "142B2FC7D704", temperature: 25, ... }
         realtimeService.onMeasures((data) => {
           if (isMounted && data.macAddress) {
@@ -107,13 +107,13 @@ export const MqttProvider = ({ children }) => {
     };
   }, []);
 
-  // ✅ FIX : subscribe prend maintenant la macAddress (pas le poulaillerId)
+  //   FIX : subscribe prend maintenant la macAddress (pas le poulaillerId)
   //         Appeler avec : subscribe(macAddress)  ex: subscribe("142B2FC7D704")
   const subscribe = useCallback((macAddress) => {
     realtimeService.joinPoulailler(macAddress);
   }, []);
 
-  // ✅ FIX : sendCommand utilise la macAddress dans le topic
+  //   FIX : sendCommand utilise la macAddress dans le topic
   //         Appeler avec : sendCommand(macAddress, command, value)
   const sendCommand = useCallback((macAddress, command, value = null) => {
     realtimeService.sendCommand(macAddress, command, value);

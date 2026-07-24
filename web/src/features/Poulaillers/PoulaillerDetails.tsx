@@ -54,6 +54,12 @@ interface PoulaillerDetails {
   isOnline: boolean;
   lastCommunicationAt?: string;
   createdAt: string;
+  lastAiAnalysis?: {
+    healthScore: number;
+    diagnostic?: string;
+    urgencyLevel: "normal" | "moderate" | "critical";
+    createdAt: string;
+  };
   moduleId?: {
     id: string;
     serialNumber: string;
@@ -777,6 +783,105 @@ export default function PoulaillerDetails() {
                 ? formatLastCheck(pulailler.lastMeasureAt)
                 : "Jamais"}
             </p>
+          </div>
+
+          {/* Santé IA */}
+          <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-violet-500">
+                  smart_toy
+                </span>
+                <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
+                  Analyse IA — Santé du Troupeau
+                </h2>
+              </div>
+              <Link
+                to={`/analyses-ia?poulailler=${poulailler.id}`}
+                className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+              >
+                Voir tout l'historique
+                <span className="material-symbols-outlined text-base">
+                  arrow_forward
+                </span>
+              </Link>
+            </div>
+            {poulailler.lastAiAnalysis ? (
+              <div className="flex flex-col md:flex-row gap-6 items-start">
+                {/* Score */}
+                <div
+                  className="flex flex-col items-center justify-center w-32 h-32 rounded-full border-4 shrink-0 mx-auto md:mx-0"
+                  style={{
+                    borderColor:
+                      poulailler.lastAiAnalysis.healthScore >= 75
+                        ? "#10b981"
+                        : poulailler.lastAiAnalysis.healthScore >= 50
+                          ? "#f59e0b"
+                          : "#ef4444",
+                  }}
+                >
+                  <span className="text-3xl font-bold text-slate-900 dark:text-white">
+                    {poulailler.lastAiAnalysis.healthScore}
+                  </span>
+                  <span className="text-xs text-slate-500">/100</span>
+                </div>
+                {/* Détails */}
+                <div className="flex-1 space-y-3">
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase mb-1">
+                      Diagnostic
+                    </p>
+                    <p className="text-slate-900 dark:text-white text-sm">
+                      {poulailler.lastAiAnalysis.diagnostic || "—"}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-4">
+                    <div>
+                      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase mb-1">
+                        Urgence
+                      </p>
+                      <span
+                        className={cn(
+                          "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",
+                          poulailler.lastAiAnalysis.urgencyLevel === "critical"
+                            ? "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300"
+                            : poulailler.lastAiAnalysis.urgencyLevel ===
+                                "moderate"
+                              ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                              : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+                        )}
+                      >
+                        {poulailler.lastAiAnalysis.urgencyLevel === "critical"
+                          ? "Critique"
+                          : poulailler.lastAiAnalysis.urgencyLevel ===
+                              "moderate"
+                            ? "Modérée"
+                            : "Normale"}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase mb-1">
+                        Analysée le
+                      </p>
+                      <p className="text-slate-900 dark:text-white text-sm">
+                        {new Date(
+                          poulailler.lastAiAnalysis.createdAt,
+                        ).toLocaleString("fr-FR")}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <span className="material-symbols-outlined text-4xl text-slate-300 dark:text-slate-600 mb-2 block">
+                  biotech
+                </span>
+                <p className="text-slate-500 dark:text-slate-400">
+                  Aucune analyse IA disponible pour ce poulailler
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Alertes récentes */}

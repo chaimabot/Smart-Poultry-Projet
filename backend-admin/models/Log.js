@@ -84,7 +84,7 @@ logSchema.index({ severity: 1, createdAt: -1 });
 logSchema.index({ user: 1, createdAt: -1 });
 logSchema.index({ poulailler: 1, createdAt: -1 });
 
-// ✅ TTL INDEX: Auto-delete logs older than 90 days (keep longer than measures for audit)
+//   TTL INDEX: Auto-delete logs older than 90 days (keep longer than measures for audit)
 logSchema.index(
   { createdAt: 1 },
   { expireAfterSeconds: 90 * 24 * 60 * 60 }, // 90 days in seconds

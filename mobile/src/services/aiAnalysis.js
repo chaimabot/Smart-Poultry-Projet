@@ -30,17 +30,22 @@ export const sendImageToBackend = async (poulaillerId, imageBase64) => {
 // Déclenche une analyse IA manuelle sur un poulailler
 // Body : { triggeredBy: "manual" }
 // Retourne : { success, data: AiAnalysis }
-export const analyzePoultry = async (poulaillerId, triggeredBy = "manual") => {
+// Ajoutez ce paramètre optionnel pour passer le requestId existant
+export async function analyzePoultry(
+  poultryId,
+  triggeredBy = "manual",
+  requestId = null,
+) {
   try {
-    const response = await api.post(`/ai/analyze/${poulaillerId}`, {
+    const res = await api.post(`/ai/analyze/${poultryId}`, {
       triggeredBy,
+      requestId, // ← AJOUTÉ : si fourni, le backend l'utilise au lieu d'en créer un nouveau
     });
-    return response.data;
-  } catch (error) {
-    throw error.response ? error.response.data : { error: "Erreur réseau" };
+    return res.data;
+  } catch (err) {
+    throw err;
   }
-};
-
+}
 // Récupère la dernière analyse IA d'un poulailler
 // Retourne : { success, data: AiAnalysis | null }
 export const getLatestAnalysis = async (poulaillerId) => {

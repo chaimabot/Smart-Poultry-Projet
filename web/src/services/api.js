@@ -69,7 +69,6 @@ export const modulesAPI = {
     api.patch(`/admin/modules/${moduleId}/dissociate`, data),
 };
 
-// ─── CAMERAS API (ESP32-CAM) ──────────────────────────────────────────────────
 export const camerasAPI = {
   getAll: (params) => api.get("/admin/cameras", { params }),
   getPendingPoulaillers: () => api.get("/admin/cameras/pending-poulaillers"),
@@ -154,6 +153,11 @@ export const dossiersAPI = {
   clore: (id, body) => api.patch(`/admin/dossiers/clore/${id}`, body),
   annuler: (id, body) => api.patch(`/admin/dossiers/annuler/${id}`, body),
   delete: (id) => api.delete(`/admin/dossiers/${id}`),
+  updateEtape: (id, body) => api.patch(`/admin/dossiers/${id}/etape`, body),
+  marquerContratSigne: (id, formData) =>
+    api.patch(`/admin/dossiers/${id}/contrat-signe`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
 };
 
 export default api;

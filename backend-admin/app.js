@@ -4,8 +4,15 @@ const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const fs = require("fs");
+const path = require("path");
 
-// ✅ NEW: Session timeout middleware
+// Créer le dossier uploads/contrats s'il n'existe pas
+if (!fs.existsSync("uploads/contrats")) {
+  fs.mkdirSync("uploads/contrats", { recursive: true });
+}
+
+// Session timeout middleware
 const {
   updateActivity,
   checkSessionTimeout,
@@ -35,18 +42,18 @@ app.use(helmet());
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
-      "http://localhost:5173", // Vite dev
-      "http://localhost:3000", // React dev
+      "http://localhost:5173",
+      "http://localhost:3000",
       "http://127.0.0.1:5173",
       "http://127.0.0.1:3000",
-      "http://192.168.1.100:5173", // Local network
-      process.env.WEB_ADMIN_URL, // Production admin
+      "http://192.168.1.100:5173",
+      process.env.WEB_ADMIN_URL,
     ].filter(Boolean);
 
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.warn(`[CORS] ⚠️ Blocked origin: ${origin}`);
+      console.warn(`[CORS] Blocked origin: ${origin}`);
       callback(new Error("CORS not allowed"));
     }
   },
@@ -63,23 +70,21 @@ const limiter = rateLimit({
   max: 100,
   message: "Trop de requêtes, réessaye dans 10 min",
 });
-app.use(limiter);
+//app.use(limiter);
 
 // Body Parser
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// ✅ Session Timeout: Update activity on every request
+// Servir les fichiers uploadés
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// Session Timeout
 app.use(updateActivity);
-// ✅ Check for expired sessions on protected routes (applied later per-route)
 
-// ============================================================================
-// ROUTES - ORDRE IMPORTANT : spécifiques AVANT génériques
-// ============================================================================
-
-// 1. Routes spécifiques (les plus précises en premier)
+// Routes
 const modulesRoutes = require("./routes/modules");
-app.use("/api/admin/modules", modulesRoutes); // ← Déplacé ici : AVANT /api/admin
+app.use("/api/admin/modules", modulesRoutes);
 
 const dashboardRoutes = require("./routes/dashboard");
 app.use("/api/admin/dashboard", dashboardRoutes);
@@ -95,6 +100,7 @@ app.use("/api/admin/utilisateurs", utilisateursRoutes);
 
 const eleveursRoutes = require("./routes/eleveurs");
 app.use("/api/admin/eleveurs", eleveursRoutes);
+
 const camerasRouter = require("./routes/cameras");
 app.use("/api/admin/cameras", camerasRouter);
 
@@ -110,11 +116,14 @@ app.use("/api/admin/rapports", rapportsRoutes);
 const dossierRoutes = require("./routes/dossier");
 app.use("/api/admin/dossiers", dossierRoutes);
 
-// 2. Route générique admin (après toutes les spécifiques)
+const analysesIARoutes = require("./routes/analysesIA");
+app.use("/api/admin/analyses-ia", analysesIARoutes);
+
+// Route générique admin
 const adminRoutes = require("./routes/admin");
 app.use("/api/admin", adminRoutes);
 
-// 3. Autres routes
+// Autres routes
 const poulaillersRoutes = require("./routes/poulaillers");
 app.use("/api/poulaillers", poulaillersRoutes);
 
@@ -126,8 +135,8 @@ app.get("/", (req, res) => {
   res.send("API Smart Poultry est en ligne");
 });
 
-// 404 - Route non trouvée
-app.use((req, res, next) => {
+// 404
+app.use((req, res) => {
   res.status(404).json({ success: false, error: "Route non trouvée" });
 });
 
@@ -142,12 +151,11 @@ app.use((err, req, res, next) => {
 
 // Port
 const PORT = process.env.PORT || 5001;
-
 const server = app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
 });
 
-process.on("unhandledRejection", (err, promise) => {
+process.on("unhandledRejection", (err) => {
   console.log(`Erreur: ${err.message}`);
   server.close(() => process.exit(1));
 });

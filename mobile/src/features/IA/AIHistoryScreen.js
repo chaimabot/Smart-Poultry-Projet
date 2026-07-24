@@ -1,75 +1,94 @@
 // screens/ai/AIHistoryScreen.js
-// ============================================================
-// Historique des analyses IA — Smart Poultry
-// Connecté à GET /api/ai/history/:id et /api/ai/stats/:id
-// ============================================================
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   View,
   Text,
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  Dimensions,
-  Modal,
-  Pressable,
   ActivityIndicator,
   RefreshControl,
+  Image,
+  Dimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
-import { LinearGradient } from "expo-linear-gradient";
+import { MaterialIcons } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
-
-import { useAIAnalysis } from "../../hooks/useAIAnalysis";
+import api from "../../services/api";
 
 const { width } = Dimensions.get("window");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const getStatusColor = (status) => {
-  switch (status) {
-    case "ok":
-      return "#22C55E";
-    case "warn":
-      return "#F59E0B";
-    case "danger":
-      return "#EF4444";
-    default:
-      return "#CBD5E1";
-  }
-};
+function urgencyConfig(level) {
+  if (level === "critique")
+    return {
+      color: "#DC2626",
+      darkColor: "#A32D2D",
+      bg: "#FCEBEB",
+      diagBg: "#FFF5F5",
+      textColor: "#791F1F",
+      accent: "#EF4444",
+      label: "Critique",
+      icon: "error-outline",
+    };
+  if (level === "attention")
+    return {
+      color: "#D97706",
+      darkColor: "#854F0B",
+      bg: "#FAEEDA",
+      diagBg: "#FFFBF2",
+      textColor: "#633806",
+      accent: "#F59E0B",
+      label: "Attention",
+      icon: "warning-amber",
+    };
+  if (level === "normal")
+    return {
+      color: "#639922",
+      darkColor: "#3B6D11",
+      bg: "#EAF3DE",
+      diagBg: "#F8FAF6",
+      textColor: "#27500A",
+      accent: "#639922",
+      label: "Normal",
+      icon: "check-circle-outline",
+    };
+  return {
+    color: "#64748B",
+    darkColor: "#475569",
+    bg: "#F1F5F9",
+    diagBg: "#F8FAFC",
+    textColor: "#334155",
+    accent: "#94A3B8",
+    label: "Inconnu",
+    icon: "help-outline",
+  };
+}
 
-const getBadgeStyle = (status) => {
-  switch (status) {
-    case "ok":
-      return { bg: "#F0FDF4", text: "#166534" };
-    case "warn":
-      return { bg: "#FEF3C7", text: "#92400E" };
-    case "danger":
-      return { bg: "#FEF2F2", text: "#991B1B" };
-    default:
-      return { bg: "#F1F5F9", text: "#64748B" };
-  }
-};
+function scoreColor(score) {
+  if (score >= 70) return "#639922";
+  if (score >= 40) return "#D97706";
+  return "#DC2626";
+}
 
-const getScoreColor = (score) => {
-  if (score >= 70) return "#22C55E";
-  if (score >= 50) return "#F59E0B";
+function scoreAccent(score) {
+  if (score >= 70) return "#639922";
+  if (score >= 40) return "#F59E0B";
   return "#EF4444";
-};
+}
 
-function fmtRelative(iso) {
+function fmtDate(iso) {
   if (!iso) return "--";
-  const now = Date.now();
-  const diff = now - new Date(iso).getTime();
-  const hours = Math.floor(diff / 3_600_000);
-  if (hours < 1) return "Il y a moins d'1h";
-  if (hours < 24) return `Il y a ${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return "Hier";
-  return `Il y a ${days}j`;
+  return new Date(iso).toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function fmtDateGroup(iso) {
@@ -80,194 +99,299 @@ function fmtDateGroup(iso) {
   if (diff === 0) return "Aujourd'hui";
   if (diff === 1) return "Hier";
   if (diff < 7) return "Cette semaine";
-  return d.toLocaleDateString("fr-FR", { day: "2-digit", month: "long" });
+  if (diff < 30) return "Ce mois-ci";
+  return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 }
 
 // ── Composants ────────────────────────────────────────────────────────────────
 
-const ScoreBar = ({ score, status }) => {
-  const segments = 10;
-  const filledCount = Math.round((score / 100) * segments);
-  const color = getStatusColor(status);
-
+function DateSeparator({ label }) {
   return (
-    <View style={styles.scoreBar}>
-      {Array.from({ length: segments }).map((_, i) => (
-        <View
-          key={i}
-          style={[
-            styles.scoreSegment,
-            i < filledCount && { backgroundColor: color },
-          ]}
-        />
-      ))}
+    <View style={S.dateSep}>
+      <View style={S.dateSepLine} />
+      <Text style={S.dateSepText}>{label}</Text>
+      <View style={S.dateSepLine} />
     </View>
   );
-};
+}
 
-const DateSeparator = ({ label }) => (
-  <View style={styles.dateSep}>
-    <View style={styles.dateSepLine} />
-    <Text style={styles.dateSepText}>{label}</Text>
-    <View style={styles.dateSepLine} />
-  </View>
-);
+function ScoreBar({ score }) {
+  if (score === null || score === undefined) return null;
+  return (
+    <View style={S.barTrack}>
+      <View
+        style={[
+          S.barFill,
+          { width: `${score}%`, backgroundColor: scoreAccent(score) },
+        ]}
+      />
+    </View>
+  );
+}
 
-const HistoryCard = ({ item, onPressDetail, onPressChat }) => {
-  const badgeStyle = getBadgeStyle(item.status);
+function HistoryCard({ item, onPressDetail, onPressChat }) {
+  const level = item.result?.urgencyLevel ?? item.urgencyLevel;
+  const score = item.result?.healthScore ?? item.healthScore;
+  const cfg = urgencyConfig(level);
+  const diagnostic =
+    item.result?.diagnostic ??
+    item.diagnostic ??
+    "Aucun diagnostic disponible.";
 
   return (
-    <View style={styles.historyCard}>
-      <View style={styles.historyHeader}>
-        <View style={styles.historyThumb}>
-          <Text style={styles.thumbText}>📸</Text>
-        </View>
+    <View style={S.card}>
+      {/* Accent top bar */}
+      <View style={[S.cardAccent, { backgroundColor: cfg.accent }]} />
 
-        <View style={styles.historyInfo}>
-          <Text style={styles.historyTime}>
-            {item.time} • {fmtRelative(item.createdAt)}
-          </Text>
-          <View style={styles.scoreRow}>
-            <ScoreBar score={item.healthScore} status={item.status} />
-            <Text
-              style={[
-                styles.scoreNumber,
-                { color: getScoreColor(item.healthScore) },
-              ]}
-            >
-              {item.healthScore}
-            </Text>
+      <View style={S.cardBody}>
+        {/* Header */}
+        <View style={S.cardTop}>
+          <View style={[S.thumb, { backgroundColor: cfg.bg }]}>
+            {item.image?.url ? (
+              <Image
+                source={{ uri: item.image.thumbnailUrl || item.image.url }}
+                style={{ width: 48, height: 48, borderRadius: 14 }}
+                resizeMode="cover"
+              />
+            ) : (
+              <MaterialIcons name="pets" size={22} color={cfg.darkColor} />
+            )}
+          </View>
+
+          <View style={{ flex: 1 }}>
+            <View style={S.cardDateRow}>
+              <View style={S.cardDateWrap}>
+                <MaterialIcons name="access-time" size={10} color="#A0AEC0" />
+                <Text style={S.cardDate}>{fmtDate(item.createdAt)}</Text>
+              </View>
+              <View style={[S.badge, { backgroundColor: cfg.bg }]}>
+                <MaterialIcons
+                  name={cfg.icon}
+                  size={10}
+                  color={cfg.textColor}
+                  style={{ marginRight: 3 }}
+                />
+                <Text style={[S.badgeText, { color: cfg.textColor }]}>
+                  {cfg.label}
+                </Text>
+              </View>
+            </View>
+
+            <View style={S.scoreRow}>
+              {score !== null && score !== undefined ? (
+                <>
+                  <Text style={[S.scoreBig, { color: scoreColor(score) }]}>
+                    {score}
+                  </Text>
+                  <Text style={S.scoreDenom}>/100</Text>
+                </>
+              ) : (
+                <Text style={[S.scoreBig, { color: "#CBD5E1" }]}>—</Text>
+              )}
+            </View>
+
+            <ScoreBar score={score} />
           </View>
         </View>
 
-        <View style={[styles.badge, { backgroundColor: badgeStyle.bg }]}>
-          <Text style={[styles.badgeText, { color: badgeStyle.text }]}>
-            {item.badge}
+        {/* Diagnostic */}
+        <View style={[S.diagBox, { backgroundColor: cfg.diagBg }]}>
+          <View style={[S.diagIconWrap, { backgroundColor: cfg.bg }]}>
+            <MaterialIcons
+              name="medical-services"
+              size={11}
+              color={cfg.darkColor}
+            />
+          </View>
+          <Text
+            style={[S.diagText, { color: cfg.textColor }]}
+            numberOfLines={3}
+          >
+            {diagnostic}
           </Text>
         </View>
       </View>
 
-      <View style={styles.diagnosticBox}>
-        <Text style={styles.diagnosticText} numberOfLines={3}>
-          {item.diagnostic || "Aucun diagnostic disponible."}
-        </Text>
-      </View>
-
-      <View style={styles.historyFooter}>
+      {/* Footer */}
+      <View style={S.cardFooter}>
         <TouchableOpacity
-          style={styles.actionBtn}
+          style={S.btnChat}
           onPress={onPressChat}
           activeOpacity={0.7}
         >
-          <Text style={styles.actionBtnText}>💬 Chat IA</Text>
+          <MaterialIcons name="chat-bubble-outline" size={13} color="#4B5E3A" />
+          <Text style={S.btnChatText}>Chat IA</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.actionBtnPrimary}
+          style={[S.btnDetail, { backgroundColor: cfg.darkColor }]}
           onPress={onPressDetail}
           activeOpacity={0.7}
         >
-          <Text style={styles.actionBtnPrimaryText}>⋮ Détails</Text>
+          <MaterialIcons name="bar-chart" size={13} color="#fff" />
+          <Text style={S.btnDetailText}>Voir les détails</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
-};
+}
 
-const FILTER_OPTIONS = ["Tout", "Normal", "Attention", "Critique"];
+const FILTER_OPTIONS = [
+  { key: "all", label: "Tout", dotColor: "#1A2E0A" },
+  { key: "normal", label: "Normal", dotColor: "#639922" },
+  { key: "attention", label: "Attention", dotColor: "#F59E0B" },
+  { key: "critique", label: "Critique", dotColor: "#EF4444" },
+];
 
-const FilterDropdown = ({ selected, onSelect }) => {
-  const [visible, setVisible] = useState(false);
+function FilterBar({ selected, onSelect, counts }) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={S.filterRow}
+    >
+      {FILTER_OPTIONS.map((opt) => {
+        const active = selected === opt.key;
+        const count = counts?.[opt.key];
+        return (
+          <TouchableOpacity
+            key={opt.key}
+            style={[S.chip, active && S.chipActive]}
+            onPress={() => onSelect(opt.key)}
+            activeOpacity={0.7}
+          >
+            <View
+              style={[
+                S.chipDot,
+                { backgroundColor: active ? "#fff" : opt.dotColor },
+              ]}
+            />
+            <Text style={[S.chipText, active && S.chipTextActive]}>
+              {opt.label}
+            </Text>
+            {count !== undefined && (
+              <View style={[S.chipCount, active && S.chipCountActive]}>
+                <Text
+                  style={[S.chipCountText, active && S.chipCountTextActive]}
+                >
+                  {count}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+// ── Hero Stats Banner ─────────────────────────────────────────────────────────
+
+function HeroBanner({ stats, history }) {
+  if (!stats && !history?.length) return null;
+
+  const avg = stats?.avgHealthScore ?? null;
+  const total = history?.length ?? 0;
+  const normals =
+    history?.filter(
+      (i) => (i.result?.urgencyLevel ?? i.urgencyLevel) === "normal",
+    ).length ?? 0;
+  const critiques =
+    history?.filter(
+      (i) => (i.result?.urgencyLevel ?? i.urgencyLevel) === "critique",
+    ).length ?? 0;
 
   return (
-    <>
-      <TouchableOpacity
-        style={styles.filterDropdown}
-        onPress={() => setVisible(true)}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.filterIcon}>🔽</Text>
-        <Text style={styles.filterText}>{selected}</Text>
-        <Text style={styles.filterChevron}>▼</Text>
-      </TouchableOpacity>
+    <View style={S.hero}>
+      <View style={S.heroBg1} />
+      <View style={S.heroBg2} />
 
-      <Modal
-        transparent
-        visible={visible}
-        animationType="fade"
-        onRequestClose={() => setVisible(false)}
-      >
-        <Pressable
-          style={styles.modalOverlay}
-          onPress={() => setVisible(false)}
-        >
-          <View style={styles.modalContent}>
-            {FILTER_OPTIONS.map((opt) => (
-              <TouchableOpacity
-                key={opt}
-                style={[
-                  styles.modalItem,
-                  opt === selected && styles.modalItemActive,
-                ]}
-                onPress={() => {
-                  onSelect(opt);
-                  setVisible(false);
-                }}
-              >
-                <Text
-                  style={[
-                    styles.modalItemText,
-                    opt === selected && styles.modalItemTextActive,
-                  ]}
-                >
-                  {opt}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </Pressable>
-      </Modal>
-    </>
+      <Text style={S.heroLabel}>Score santé moyen</Text>
+      <View style={S.heroScoreRow}>
+        <Text style={[S.heroScore, avg !== null && { color: "#fff" }]}>
+          {avg ?? "—"}
+        </Text>
+        <Text style={S.heroScoreDenom}>/100</Text>
+      </View>
+
+      <View style={S.heroStats}>
+        <View style={S.heroStat}>
+          <Text style={S.heroStatVal}>{total}</Text>
+          <Text style={S.heroStatLbl}>Analyses</Text>
+        </View>
+        <View style={[S.heroStatDiv]} />
+        <View style={S.heroStat}>
+          <Text style={[S.heroStatVal, { color: "#97C459" }]}>{normals} ↑</Text>
+          <Text style={S.heroStatLbl}>Normales</Text>
+        </View>
+        <View style={S.heroStatDiv} />
+        <View style={S.heroStat}>
+          <Text style={[S.heroStatVal, { color: "#F09595" }]}>
+            {critiques} ↓
+          </Text>
+          <Text style={S.heroStatLbl}>Critiques</Text>
+        </View>
+      </View>
+    </View>
   );
-};
+}
 
 // ── Écran principal ───────────────────────────────────────────────────────────
+
 export default function AIHistoryScreen() {
   const navigation = useNavigation();
   const route = useRoute();
   const { poultryId, poultryName } = route?.params || {};
 
-  const { history, stats, fetchHistory, fetchStats } = useAIAnalysis(poultryId);
-
-  const [filter, setFilter] = useState("Tout");
-  const [refreshing, setRefreshing] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Chargement initial
+  const loadData = useCallback(async () => {
+    if (!poultryId) return;
+    try {
+      const [histRes, statsRes] = await Promise.all([
+        api.get(`/ai/history/${poultryId}`),
+        api.get(`/ai/stats/${poultryId}`).catch(() => ({ data: null })),
+      ]);
+      if (histRes.data?.success) setHistory(histRes.data.data || []);
+      if (statsRes.data?.success) setStats(statsRes.data.data || null);
+    } catch (_) {}
+  }, [poultryId]);
+
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await Promise.all([fetchHistory(), fetchStats()]);
+      await loadData();
       setLoading(false);
     })();
-  }, []);
+  }, [loadData]);
 
-  // Pull-to-refresh
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.all([fetchHistory(), fetchStats()]);
+    await loadData();
     setRefreshing(false);
-  }, [fetchHistory, fetchStats]);
+  }, [loadData]);
 
-  // Filtrage
+  const counts = {
+    all: history.length,
+    normal: history.filter(
+      (i) => (i.result?.urgencyLevel ?? i.urgencyLevel) === "normal",
+    ).length,
+    attention: history.filter(
+      (i) => (i.result?.urgencyLevel ?? i.urgencyLevel) === "attention",
+    ).length,
+    critique: history.filter(
+      (i) => (i.result?.urgencyLevel ?? i.urgencyLevel) === "critique",
+    ).length,
+  };
+
   const filtered = history.filter((item) => {
-    if (filter === "Tout") return true;
-    if (filter === "Normal") return item.status === "ok";
-    if (filter === "Attention") return item.status === "warn";
-    if (filter === "Critique") return item.status === "danger";
-    return true;
+    if (filter === "all") return true;
+    return (item.result?.urgencyLevel ?? item.urgencyLevel) === filter;
   });
 
-  // Groupement par date
   const grouped = filtered.reduce((acc, item) => {
     const group = fmtDateGroup(item.createdAt);
     if (!acc[group]) acc[group] = [];
@@ -276,121 +400,105 @@ export default function AIHistoryScreen() {
   }, {});
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
+    <SafeAreaView style={S.container} edges={["top"]}>
       <StatusBar barStyle="dark-content" />
 
-      {/* ── Header ── */}
-      <View style={styles.header}>
+      {/* Header */}
+      <View style={S.header}>
         <TouchableOpacity
-          style={styles.backBtn}
+          style={S.backBtn}
           onPress={() => navigation.goBack()}
           activeOpacity={0.7}
         >
-          <Text style={styles.backBtnText}>←</Text>
+          <MaterialIcons name="arrow-back" size={19} color="#1A2E0A" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>
-          Historique IA {poultryName ? `— ${poultryName}` : ""}
-        </Text>
+        <View style={{ flex: 1 }}>
+          <Text style={S.headerTitle}>Historique des analyses</Text>
+          {poultryName ? (
+            <View style={S.headerSubRow}>
+              <View style={S.headerDot} />
+              <Text style={S.headerSub} numberOfLines={1}>
+                {poultryName}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+        {!loading && (
+          <View style={S.countPill}>
+            <MaterialIcons
+              name="history"
+              size={13}
+              color="#97C459"
+              style={{ marginRight: 4 }}
+            />
+            <Text style={S.countText}>{filtered.length}</Text>
+          </View>
+        )}
       </View>
 
       {loading ? (
-        <View style={styles.loadingCenter}>
-          <ActivityIndicator size="large" color="#22C55E" />
-          <Text style={styles.loadingText}>Chargement de l'historique…</Text>
+        <View style={S.loadingCenter}>
+          <View style={S.loadingIconWrap}>
+            <ActivityIndicator size="large" color="#639922" />
+          </View>
+          <Text style={S.loadingTitle}>Chargement…</Text>
+          <Text style={S.loadingSub}>Récupération de l'historique</Text>
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={S.scroll}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
               onRefresh={onRefresh}
-              tintColor="#22C55E"
+              tintColor="#639922"
+              colors={["#639922"]}
             />
           }
           showsVerticalScrollIndicator={false}
         >
-          {/* ── Stats ── */}
-          {stats && (
-            <View style={styles.chartSection}>
-              <View style={styles.chartHeader}>
-                <Text style={styles.chartTitle}>Évolution santé</Text>
-                <View style={styles.chartPeriod}>
-                  <Text style={styles.chartPeriodText}>📅 10 dernières</Text>
-                </View>
-              </View>
+          {/* Hero Banner */}
+          <HeroBanner stats={stats} history={history} />
 
-              <View style={styles.statsRow}>
-                <View style={styles.statPill}>
-                  <Text
-                    style={[
-                      styles.statPillValue,
-                      { color: getScoreColor(stats.avgHealthScore) },
-                    ]}
-                  >
-                    {stats.avgHealthScore}
-                  </Text>
-                  <Text style={styles.statPillLabel}>Score moyen</Text>
-                </View>
-                <View style={styles.statPill}>
-                  <Text style={styles.statPillValue}>
-                    {stats.totalAnalyses}
-                  </Text>
-                  <Text style={styles.statPillLabel}>Analyses</Text>
-                </View>
-                <View style={styles.statPill}>
-                  <Text
-                    style={[
-                      styles.statPillValue,
-                      stats.trend === "amelioration"
-                        ? { color: "#22C55E" }
-                        : stats.trend === "degradation"
-                          ? { color: "#EF4444" }
-                          : {},
-                    ]}
-                  >
-                    {stats.trend === "amelioration"
-                      ? "↑"
-                      : stats.trend === "degradation"
-                        ? "↓"
-                        : "→"}
-                  </Text>
-                  <Text style={styles.statPillLabel}>Tendance</Text>
-                </View>
-              </View>
-            </View>
-          )}
+          {/* Filters */}
+          <FilterBar selected={filter} onSelect={setFilter} counts={counts} />
 
-          {/* ── Filtre ── */}
-          <View style={styles.filterBar}>
-            <FilterDropdown selected={filter} onSelect={setFilter} />
-          </View>
-
-          {/* ── Liste ── */}
+          {/* Cards */}
           {Object.keys(grouped).length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>📋</Text>
-              <Text style={styles.emptyTitle}>Aucune analyse</Text>
-              <Text style={styles.emptyDesc}>
-                {filter === "Tout"
-                  ? "Lancez votre première analyse IA depuis l'écran principal."
-                  : `Aucune analyse avec le statut "${filter}".`}
+            <View style={S.emptyState}>
+              <View style={S.emptyIconWrap}>
+                <MaterialIcons name="history" size={38} color="#C0DD97" />
+              </View>
+              <Text style={S.emptyTitle}>Aucune analyse trouvée</Text>
+              <Text style={S.emptyDesc}>
+                {filter === "all"
+                  ? "Lancez votre première analyse depuis l'écran principal."
+                  : `Aucun résultat pour le filtre "${FILTER_OPTIONS.find((f) => f.key === filter)?.label}".`}
               </Text>
+              {filter !== "all" && (
+                <TouchableOpacity
+                  style={S.emptyBtn}
+                  onPress={() => setFilter("all")}
+                  activeOpacity={0.7}
+                >
+                  <Text style={S.emptyBtnText}>Afficher tout</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             Object.entries(grouped).map(([group, items]) => (
               <View key={group}>
-                <DateSeparator label={group} />
-                {items.map((item) => (
+                <DateSeparator
+                  label={`${group} · ${items.length} analyse${items.length > 1 ? "s" : ""}`}
+                />
+                {items.map((item, i) => (
                   <HistoryCard
-                    key={item.id}
+                    key={item._id || item.id || i}
                     item={item}
                     onPressDetail={() =>
                       navigation.navigate("AIDetail", {
-                        analysisId: item.id,
-                        poultryId,
+                        analysis: item,
                         poultryName,
-                        data: item,
                       })
                     }
                     onPressChat={() =>
@@ -412,244 +520,322 @@ export default function AIHistoryScreen() {
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8FAF9" },
+
+const S = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#EEF0EC" },
 
   // Header
   header: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingVertical: 15,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     backgroundColor: "#fff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#F1F5F9",
+    borderBottomWidth: 0.5,
+    borderBottomColor: "rgba(0,0,0,0.07)",
   },
   backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: "#F1F5F9",
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: "#F4F6F3",
     alignItems: "center",
     justifyContent: "center",
   },
-  backBtnText: { fontSize: 18, color: "#1E293B" },
-  headerTitle: { flex: 1, fontSize: 16, fontWeight: "800", color: "#1E293B" },
+  headerTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#1A2E0A",
+    letterSpacing: -0.2,
+  },
+  headerSubRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 2,
+  },
+  headerDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: "#639922",
+  },
+  headerSub: { fontSize: 11, color: "#8A9B7A" },
+  countPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1A2E0A",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  countText: { fontSize: 12, fontWeight: "700", color: "#fff" },
 
   // Loading
   loadingCenter: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
+    gap: 8,
   },
-  loadingText: { fontSize: 14, color: "#94A3B8", fontWeight: "600" },
+  loadingIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: "#EAF3DE",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+  },
+  loadingTitle: { fontSize: 14, fontWeight: "700", color: "#1A2E0A" },
+  loadingSub: { fontSize: 12, color: "#8A9B7A" },
 
   // Scroll
-  scrollContent: { paddingBottom: 40 },
+  scroll: { paddingHorizontal: 12, paddingTop: 12, paddingBottom: 50 },
 
-  // Chart / Stats
-  chartSection: {
-    margin: 20,
-    padding: 20,
-    backgroundColor: "#fff",
-    borderRadius: 24,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 15,
-    elevation: 3,
+  // Hero Banner
+  hero: {
+    backgroundColor: "#1A2E0A",
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 12,
+    overflow: "hidden",
+    position: "relative",
   },
-  chartHeader: {
+  heroBg1: {
+    position: "absolute",
+    right: -10,
+    top: -10,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "rgba(99,153,34,0.15)",
+  },
+  heroBg2: {
+    position: "absolute",
+    right: 20,
+    bottom: -20,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "rgba(99,153,34,0.08)",
+  },
+  heroLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#8A9B7A",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 6,
+  },
+  heroScoreRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "baseline",
+    gap: 4,
     marginBottom: 16,
   },
-  chartTitle: { fontSize: 16, fontWeight: "700", color: "#1E293B" },
-  chartPeriod: {
-    paddingVertical: 6,
+  heroScore: { fontSize: 44, fontWeight: "800", color: "#fff", lineHeight: 48 },
+  heroScoreDenom: { fontSize: 16, color: "#8A9B7A", fontWeight: "400" },
+  heroStats: {
+    flexDirection: "row",
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderRadius: 14,
+    borderWidth: 0.5,
+    borderColor: "rgba(255,255,255,0.07)",
+    padding: 12,
+  },
+  heroStat: { flex: 1, alignItems: "center" },
+  heroStatVal: { fontSize: 16, fontWeight: "700", color: "#fff" },
+  heroStatLbl: { fontSize: 10, color: "#8A9B7A", marginTop: 2 },
+  heroStatDiv: {
+    width: 0.5,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    alignSelf: "stretch",
+  },
+
+  // Filters
+  filterRow: { gap: 6, paddingBottom: 10 },
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
     paddingHorizontal: 12,
-    borderRadius: 20,
-    backgroundColor: "#F1F5F9",
-  },
-  chartPeriodText: { fontSize: 12, fontWeight: "600", color: "#64748B" },
-
-  statsRow: { flexDirection: "row", gap: 12 },
-  statPill: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 16,
-    backgroundColor: "#F8FAFC",
-    alignItems: "center",
-  },
-  statPillValue: { fontSize: 20, fontWeight: "800", color: "#1E293B" },
-  statPillLabel: {
-    fontSize: 11,
-    color: "#94A3B8",
-    fontWeight: "600",
-    marginTop: 4,
-  },
-
-  // Filtre
-  filterBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-  },
-  filterDropdown: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingVertical: 7,
     borderRadius: 12,
     backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    flex: 1,
+    borderWidth: 0.5,
+    borderColor: "rgba(0,0,0,0.07)",
   },
-  filterIcon: { fontSize: 14 },
-  filterText: { fontSize: 13, fontWeight: "600", color: "#1E293B", flex: 1 },
-  filterChevron: { fontSize: 10, color: "#94A3B8" },
-
-  // Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.3)",
-    justifyContent: "center",
+  chipActive: { backgroundColor: "#639922", borderColor: "#639922" },
+  chipDot: { width: 6, height: 6, borderRadius: 3 },
+  chipText: { fontSize: 12, fontWeight: "600", color: "#64748B" },
+  chipTextActive: { color: "#fff" },
+  chipCount: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 6,
+    backgroundColor: "rgba(0,0,0,0.06)",
+    minWidth: 18,
     alignItems: "center",
-    padding: 40,
   },
-  modalContent: {
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    width: "100%",
-    paddingVertical: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 10,
-  },
-  modalItem: { paddingVertical: 14, paddingHorizontal: 20 },
-  modalItemActive: { backgroundColor: "#F0FDF4" },
-  modalItemText: { fontSize: 15, color: "#1E293B", fontWeight: "500" },
-  modalItemTextActive: { color: "#166534", fontWeight: "700" },
+  chipCountActive: { backgroundColor: "rgba(255,255,255,0.2)" },
+  chipCountText: { fontSize: 10, fontWeight: "700", color: "#64748B" },
+  chipCountTextActive: { color: "#fff" },
 
-  // Date sep
+  // Date separator
   dateSep: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    marginTop: 8,
-  },
-  dateSepLine: { flex: 1, height: 1, backgroundColor: "#F1F5F9" },
-  dateSepText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#94A3B8",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-
-  // History Card
-  historyCard: {
-    marginHorizontal: 20,
-    marginBottom: 12,
-    padding: 16,
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 10,
-    elevation: 2,
-  },
-  historyHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 12,
-  },
-  historyThumb: {
-    width: 56,
-    height: 56,
-    borderRadius: 14,
-    backgroundColor: "#F0FDF4",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  thumbText: { fontSize: 24 },
-  historyInfo: { flex: 1 },
-  historyTime: { fontSize: 12, fontWeight: "600", color: "#94A3B8" },
-  scoreRow: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: 8,
+    marginBottom: 10,
     marginTop: 4,
   },
-  scoreBar: { flexDirection: "row", gap: 2 },
-  scoreSegment: {
-    width: 8,
-    height: 8,
-    borderRadius: 2,
+  dateSepLine: { flex: 1, height: 0.5, backgroundColor: "rgba(0,0,0,0.08)" },
+  dateSepText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "#A0AEC0",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+  },
+
+  // Card
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 18,
+    borderWidth: 0.5,
+    borderColor: "rgba(0,0,0,0.07)",
+    marginBottom: 10,
+    overflow: "hidden",
+  },
+  cardAccent: { height: 3 },
+  cardBody: { padding: 14 },
+  cardTop: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+  thumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    flexShrink: 0,
+  },
+  cardDateRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 5,
+  },
+  cardDateWrap: { flexDirection: "row", alignItems: "center", gap: 3 },
+  cardDate: { fontSize: 10, color: "#A0AEC0", fontWeight: "500" },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  badgeText: { fontSize: 10, fontWeight: "700" },
+  scoreRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 3,
+    marginBottom: 7,
+  },
+  scoreBig: { fontSize: 24, fontWeight: "800" },
+  scoreDenom: { fontSize: 12, color: "#CBD5E1", fontWeight: "400" },
+  barTrack: {
+    height: 5,
     backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    overflow: "hidden",
   },
-  scoreNumber: { fontSize: 16, fontWeight: "800" },
-  badge: { paddingVertical: 4, paddingHorizontal: 10, borderRadius: 8 },
-  badgeText: { fontSize: 10, fontWeight: "800", textTransform: "uppercase" },
+  barFill: { height: 5, borderRadius: 10 },
 
-  diagnosticBox: {
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    backgroundColor: "#F8FAFC",
+  // Diagnostic box
+  diagBox: {
     borderRadius: 12,
+    padding: 10,
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "flex-start",
   },
-  diagnosticText: { fontSize: 13, color: "#475569", lineHeight: 20 },
-
-  historyFooter: { flexDirection: "row", gap: 8, marginTop: 12 },
-  actionBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "#F8FAFC",
+  diagIconWrap: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
+    marginTop: 1,
   },
-  actionBtnText: { fontSize: 12, fontWeight: "700", color: "#64748B" },
-  actionBtnPrimary: {
+  diagText: { fontSize: 12, lineHeight: 18, flex: 1 },
+
+  // Card footer
+  cardFooter: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+  },
+  btnChat: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "#22C55E",
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 5,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#F4F6F3",
   },
-  actionBtnPrimaryText: { fontSize: 12, fontWeight: "700", color: "#fff" },
+  btnChatText: { fontSize: 12, fontWeight: "700", color: "#4B5E3A" },
+  btnDetail: {
+    flex: 1.5,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#1A2E0A",
+  },
+  btnDetailText: { fontSize: 12, fontWeight: "700", color: "#fff" },
 
   // Empty state
   emptyState: {
     alignItems: "center",
-    paddingTop: 60,
+    paddingTop: 70,
     paddingHorizontal: 40,
+    gap: 10,
   },
-  emptyIcon: { fontSize: 48, marginBottom: 16 },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#1E293B",
-    marginBottom: 8,
+  emptyIconWrap: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    backgroundColor: "#EAF3DE",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
   },
+  emptyTitle: { fontSize: 15, fontWeight: "700", color: "#1A2E0A" },
   emptyDesc: {
     fontSize: 13,
-    color: "#94A3B8",
+    color: "#8A9B7A",
     textAlign: "center",
     lineHeight: 20,
   },
+  emptyBtn: {
+    marginTop: 6,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: "#1A2E0A",
+  },
+  emptyBtnText: { fontSize: 13, fontWeight: "700", color: "#fff" },
 });

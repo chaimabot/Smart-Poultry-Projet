@@ -7,9 +7,12 @@
 **/test_code.js
 **/seed_data.js
 **/TEST_*.md
-**/*test*.js
-tests/
 __tests__/
+
+# Jest & Test Coverage (test/ directory IS version controlled)
+coverage/
+.nyc_output/
+jest.log
 
 # Dependencies
 node_modules/

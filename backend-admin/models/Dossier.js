@@ -27,6 +27,19 @@ const dossierSchema = new mongoose.Schema(
       enum: ["EN_ATTENTE", "AVANCE_PAYEE", "TERMINE", "ANNULE"],
       default: "EN_ATTENTE",
     },
+
+    // ✅ Étapes du processus BPMN
+    etapes: {
+      dossierValide: { type: Boolean, default: false },
+      contratSigne: { type: Boolean, default: false },
+      esp32Installe: { type: Boolean, default: false },
+      invitationEnvoyee: { type: Boolean, default: false },
+    },
+
+    // ✅ Contrat signé — preuve PDF optionnelle
+    contratSignePdfUrl: { type: String, default: null },
+    contratSigneDate: { type: Date, default: null },
+
     source: { type: String, default: null },
     dateValidation: { type: Date, default: null },
     validatedBy: {
