@@ -235,7 +235,7 @@ cd smart-poultry
 cd backend
 cp .env.example .env   # configurer les variables d'environnement
 npm install
-npm run dev             # port 5000
+npm run dev            
 ```
 
 ### 3. Backend admin
@@ -244,7 +244,7 @@ npm run dev             # port 5000
 cd backend-admin
 cp .env.example .env   # configurer les variables d'environnement
 npm install
-npm run dev             # port 5001
+npm run dev            
 ```
 
 ### 4. Interface web
@@ -252,7 +252,7 @@ npm run dev             # port 5001
 ```bash
 cd web
 npm install
-npm run dev             # port 5173
+npm run dev            
 ```
 
 ### 5. Application mobile
@@ -276,7 +276,7 @@ cd Embarquee
 
 ## API Endpoints
 
-### API principale (port 5000)
+### API principale 
 
 | Endpoint         | Méthode  | Description               |
 | ----------------- | -------- | -------------------------- |
@@ -292,7 +292,7 @@ cd Embarquee
 | /api/wifi        | POST     | Configuration WiFi ESP32  |
 | /api/health      | GET      | Statut du serveur         |
 
-### API admin (port 5001)
+### API admin 
 
 | Endpoint                | Méthode | Description                   |
 | ------------------------- | ------- | -------------------------------- |
